@@ -1,0 +1,12 @@
+services:
+  mayab-btc-arbitrage:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      MAX_OPERACION_BTC: "0.18"
+      MIN_UTILIDAD_USD: "1.25"
+      MIN_SPREAD_NETO_BPS: "0.65"
+      SLIPPAGE_BPS: "0.35"
+      RETIRO_AMORTIZADO_BPS: "0.12"

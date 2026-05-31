@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: mayab-btc-arbitrage
+    env: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true

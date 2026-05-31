@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mayab Arbitraje BTC</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="pantalla">
+      <header class="barra-superior">
+        <div>
+          <p class="ceja">Mayab Arbitraje BTC</p>
+          <h1>Motor de arbitraje BTC en tiempo real</h1>
+        </div>
+        <div class="estado-live" id="estadoSocket">
+          <span class="pulso"></span>
+          conectando
+        </div>
+      </header>
+
+      <section class="metricas" aria-label="Métricas principales">
+        <article>
+          <span>Ganancia/pérdida simulada</span>
+          <strong id="pnl">$0.00</strong>
+        </article>
+        <article>
+          <span>Retorno</span>
+          <strong id="retorno">0.00 bps</strong>
+        </article>
+        <article>
+          <span>Eventos</span>
+          <strong id="eventos">0</strong>
+        </article>
+        <article>
+          <span>Latencia promedio</span>
+          <strong id="latencia">0 ms</strong>
+        </article>
+      </section>
+
+      <section class="tablero">
+        <section class="panel mercado">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Cinta</p>
+              <h2>Mercado vivo</h2>
+            </div>
+            <span id="riesgo">esperando mercado</span>
+          </div>
+          <div class="exchange-lista" id="exchangeLista"></div>
+        </section>
+
+        <section class="panel mapa">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Rutas</p>
+              <h2>Mapa de arbitraje</h2>
+            </div>
+            <span id="mejorSpread">0.00 bps</span>
+          </div>
+          <canvas id="canvasMapa" width="960" height="620"></canvas>
+        </section>
+
+        <section class="panel cartera">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Riesgo</p>
+              <h2>Carteras</h2>
+            </div>
+            <span id="trabajadores">0 trabajadores</span>
+          </div>
+          <div id="balances" class="balances"></div>
+          <div class="config-grid" id="configGrid"></div>
+        </section>
+      </section>
+
+      <section class="inferior">
+        <section class="panel grafica">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Rendimiento</p>
+              <h2>Ganancia/pérdida y diferencial neto</h2>
+            </div>
+          </div>
+          <canvas id="canvasSeries" width="1200" height="360"></canvas>
+        </section>
+
+        <section class="panel tabla">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Motor</p>
+              <h2>Oportunidades</h2>
+            </div>
+          </div>
+          <div class="tabla-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ruta</th>
+                  <th>Neto</th>
+                  <th>BTC</th>
+                  <th>Utilidad</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="oportunidades"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tabla">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Ejecución</p>
+              <h2>Operaciones</h2>
+            </div>
+          </div>
+          <div class="tabla-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Compra</th>
+                  <th>Venta</th>
+                  <th>BTC</th>
+                  <th>G/P</th>
+                  <th>Lat.</th>
+                </tr>
+              </thead>
+              <tbody id="operaciones"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
