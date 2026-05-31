@@ -3,7 +3,6 @@ package mercado
 import (
 	"encoding/json"
 	"log/slog"
-	"strconv"
 
 	"github.com/raulivan1200/mayab-btc-arbitrage/internal/motor"
 )
@@ -28,16 +27,16 @@ func parsearBinance(mensaje []byte) (motor.Cotizacion, bool) {
 	if err := json.Unmarshal(mensaje, &dato); err != nil || dato.Bid == "" || dato.Ask == "" {
 		return motor.Cotizacion{}, false
 	}
+	bid, okBid := decimalObligatorio(dato.Bid)
+	ask, okAsk := decimalObligatorio(dato.Ask)
+	if !okBid || !okAsk {
+		return motor.Cotizacion{}, false
+	}
 	return motor.Cotizacion{
 		Par:         "BTC/USDT",
-		Bid:         numero(dato.Bid),
-		BidCantidad: numero(dato.BidQty),
-		Ask:         numero(dato.Ask),
-		AskCantidad: numero(dato.AskQty),
+		Bid:         bid,
+		BidCantidad: decimalOpcional(dato.BidQty),
+		Ask:         ask,
+		AskCantidad: decimalOpcional(dato.AskQty),
 	}, true
-}
-
-func numero(valor string) float64 {
-	num, _ := strconv.ParseFloat(valor, 64)
-	return num
 }

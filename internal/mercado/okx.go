@@ -3,7 +3,6 @@ package mercado
 import (
 	"encoding/json"
 	"log/slog"
-	"strconv"
 
 	"github.com/raulivan1200/mayab-btc-arbitrage/internal/motor"
 )
@@ -41,13 +40,17 @@ func parsearOKX(mensaje []byte) (motor.Cotizacion, bool) {
 		return motor.Cotizacion{}, false
 	}
 	item := dato.Data[0]
-	eventoMs, _ := strconv.ParseInt(item.TS, 10, 64)
+	bid, okBid := decimalObligatorio(item.BidPx)
+	ask, okAsk := decimalObligatorio(item.AskPx)
+	if !okBid || !okAsk {
+		return motor.Cotizacion{}, false
+	}
 	return motor.Cotizacion{
 		Par:          dato.Arg.InstID,
-		Bid:          numero(item.BidPx),
-		BidCantidad:  numero(item.BidSz),
-		Ask:          numero(item.AskPx),
-		AskCantidad:  numero(item.AskSz),
-		EventoUnixMs: eventoMs,
+		Bid:          bid,
+		BidCantidad:  decimalOpcional(item.BidSz),
+		Ask:          ask,
+		AskCantidad:  decimalOpcional(item.AskSz),
+		EventoUnixMs: marcaTiempoUnixMs(item.TS),
 	}, true
 }

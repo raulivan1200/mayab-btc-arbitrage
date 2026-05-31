@@ -3,7 +3,6 @@ package mercado
 import (
 	"encoding/json"
 	"log/slog"
-	"time"
 
 	"github.com/raulivan1200/mayab-btc-arbitrage/internal/motor"
 )
@@ -43,11 +42,8 @@ func parsearKraken(mensaje []byte) (motor.Cotizacion, bool) {
 		return motor.Cotizacion{}, false
 	}
 	item := dato.Data[0]
-	eventoMs := int64(0)
-	if item.Timestamp != "" {
-		if ts, err := time.Parse(time.RFC3339Nano, item.Timestamp); err == nil {
-			eventoMs = ts.UnixMilli()
-		}
+	if item.Bid <= 0 || item.Ask <= 0 {
+		return motor.Cotizacion{}, false
 	}
 	return motor.Cotizacion{
 		Par:          item.Symbol,
@@ -55,6 +51,6 @@ func parsearKraken(mensaje []byte) (motor.Cotizacion, bool) {
 		BidCantidad:  item.BidQty,
 		Ask:          item.Ask,
 		AskCantidad:  item.AskQty,
-		EventoUnixMs: eventoMs,
+		EventoUnixMs: marcaTiempoRFC3339Nano(item.Timestamp),
 	}, true
 }

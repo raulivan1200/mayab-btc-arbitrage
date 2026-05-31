@@ -77,7 +77,9 @@ func (a Adaptador) conectar(ctx context.Context, salida chan<- motor.Cotizacion)
 	}
 
 	conn.SetReadLimit(1 << 20)
-	_ = conn.SetReadDeadline(time.Now().Add(40 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(40 * time.Second)); err != nil {
+		return err
+	}
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(40 * time.Second))
 	})
@@ -93,7 +95,9 @@ func (a Adaptador) conectar(ctx context.Context, salida chan<- motor.Cotizacion)
 		if err != nil {
 			return err
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(40 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(40 * time.Second)); err != nil {
+			return err
+		}
 		cotizacion, ok := a.Parsear(mensaje)
 		if !ok {
 			continue

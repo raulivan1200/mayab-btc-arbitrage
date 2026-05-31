@@ -3,8 +3,6 @@ package mercado
 import (
 	"encoding/json"
 	"log/slog"
-	"strconv"
-	"time"
 
 	"github.com/raulivan1200/mayab-btc-arbitrage/internal/motor"
 )
@@ -46,24 +44,18 @@ func parsearCoinbase(mensaje []byte) (motor.Cotizacion, bool) {
 	}
 	for _, evento := range dato.Events {
 		for _, ticker := range evento.Tickers {
-			bid := numeroCoinbase(ticker.BestBid)
-			ask := numeroCoinbase(ticker.BestAsk)
-			if bid <= 0 || ask <= 0 {
+			bid, okBid := decimalObligatorio(ticker.BestBid)
+			ask, okAsk := decimalObligatorio(ticker.BestAsk)
+			if !okBid || !okAsk {
 				continue
 			}
-			bidQty := numeroCoinbase(ticker.BestBidQty)
+			bidQty := decimalOpcional(ticker.BestBidQty)
 			if bidQty == 0 {
-				bidQty = numeroCoinbase(ticker.BestBidSize)
+				bidQty = decimalOpcional(ticker.BestBidSize)
 			}
-			askQty := numeroCoinbase(ticker.BestAskQty)
+			askQty := decimalOpcional(ticker.BestAskQty)
 			if askQty == 0 {
-				askQty = numeroCoinbase(ticker.BestAskSize)
-			}
-			eventoMs := int64(0)
-			if dato.Timestamp != "" {
-				if ts, err := time.Parse(time.RFC3339Nano, dato.Timestamp); err == nil {
-					eventoMs = ts.UnixMilli()
-				}
+				askQty = decimalOpcional(ticker.BestAskSize)
 			}
 			return motor.Cotizacion{
 				Par:          ticker.ProductID,
@@ -71,14 +63,9 @@ func parsearCoinbase(mensaje []byte) (motor.Cotizacion, bool) {
 				BidCantidad:  bidQty,
 				Ask:          ask,
 				AskCantidad:  askQty,
-				EventoUnixMs: eventoMs,
+				EventoUnixMs: marcaTiempoRFC3339Nano(dato.Timestamp),
 			}, true
 		}
 	}
 	return motor.Cotizacion{}, false
-}
-
-func numeroCoinbase(valor string) float64 {
-	num, _ := strconv.ParseFloat(valor, 64)
-	return num
 }

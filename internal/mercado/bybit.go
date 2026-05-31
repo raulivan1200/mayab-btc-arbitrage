@@ -38,12 +38,17 @@ func parsearBybit(mensaje []byte) (motor.Cotizacion, bool) {
 	if dato.Data.BidPrice == "" || dato.Data.AskPrice == "" {
 		return motor.Cotizacion{}, false
 	}
+	bid, okBid := decimalObligatorio(dato.Data.BidPrice)
+	ask, okAsk := decimalObligatorio(dato.Data.AskPrice)
+	if !okBid || !okAsk {
+		return motor.Cotizacion{}, false
+	}
 	return motor.Cotizacion{
 		Par:          dato.Data.Symbol,
-		Bid:          numero(dato.Data.BidPrice),
-		BidCantidad:  numero(dato.Data.BidSize),
-		Ask:          numero(dato.Data.AskPrice),
-		AskCantidad:  numero(dato.Data.AskSize),
+		Bid:          bid,
+		BidCantidad:  decimalOpcional(dato.Data.BidSize),
+		Ask:          ask,
+		AskCantidad:  decimalOpcional(dato.Data.AskSize),
 		EventoUnixMs: dato.TS,
 	}, true
 }
