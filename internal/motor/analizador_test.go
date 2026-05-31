@@ -7,13 +7,13 @@ import (
 
 func TestAnalizadorEjecutaSoloConUtilidadNeta(t *testing.T) {
 	costos := MapaCostos{
-		MaxOperacionBTC:     0.5,
-		MinUtilidadUSD:      1,
-		MinSpreadNetoBps:    0.1,
-		SlippageBps:         0.1,
-		LatenciaRiesgoBps:   0.01,
-		RetiroAmortizadoBps: 0.01,
-		StaleMs:             1000,
+		MaxOperacionBTC:       0.5,
+		MinUtilidadUSD:        1,
+		MinDiferencialNetoBps: 0.1,
+		DeslizamientoBps:      0.1,
+		LatenciaRiesgoBps:     0.01,
+		RetiroAmortizadoBps:   0.01,
+		StaleMs:               1000,
 		Exchanges: map[string]ExchangeConfig{
 			"A": {Nombre: "A", FeeTaker: 0.001},
 			"B": {Nombre: "B", FeeTaker: 0.001},
@@ -38,13 +38,13 @@ func TestAnalizadorEjecutaSoloConUtilidadNeta(t *testing.T) {
 
 func TestAnalizadorMarcaOrdenParcialPorLiquidez(t *testing.T) {
 	costos := MapaCostos{
-		MaxOperacionBTC:     1,
-		MinUtilidadUSD:      1,
-		MinSpreadNetoBps:    0.1,
-		SlippageBps:         0,
-		LatenciaRiesgoBps:   0,
-		RetiroAmortizadoBps: 0,
-		StaleMs:             1000,
+		MaxOperacionBTC:       1,
+		MinUtilidadUSD:        1,
+		MinDiferencialNetoBps: 0.1,
+		DeslizamientoBps:      0,
+		LatenciaRiesgoBps:     0,
+		RetiroAmortizadoBps:   0,
+		StaleMs:               1000,
 		Exchanges: map[string]ExchangeConfig{
 			"A": {Nombre: "A", FeeTaker: 0.0001},
 			"B": {Nombre: "B", FeeTaker: 0.0001},

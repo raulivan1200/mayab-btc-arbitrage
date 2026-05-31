@@ -28,7 +28,7 @@ func (a *Analizador) Buscar(cotizaciones map[string]Cotizacion, carteras *Carter
 			}
 
 			oportunidad := a.calcularOportunidad(compra, venta, carteras, ahora)
-			if oportunidad.SpreadBrutoUSD <= 0 {
+			if oportunidad.DiferencialBrutoUSD <= 0 {
 				continue
 			}
 			oportunidades = append(oportunidades, oportunidad)
@@ -48,7 +48,7 @@ func (a *Analizador) Buscar(cotizaciones map[string]Cotizacion, carteras *Carter
 func (a *Analizador) calcularOportunidad(compra Cotizacion, venta Cotizacion, carteras *Carteras, ahora time.Time) Oportunidad {
 	ask := compra.Ask
 	bid := venta.Bid
-	spreadBruto := bid - ask
+	diferencialBruto := bid - ask
 	precioMedio := (ask + bid) / 2
 	latenciaMax := max(compra.LatenciaMs, venta.LatenciaMs)
 	balanceCompra := carteras.Balance(compra.Exchange)
@@ -63,13 +63,13 @@ func (a *Analizador) calcularOportunidad(compra Cotizacion, venta Cotizacion, ca
 	cantidad := minPositiva(cantidadDeseada, liquidezCompra, liquidezVenta, porUSD, porBTC)
 
 	costos := a.calcularCostos(cantidad, ask, bid, latenciaMax, compra.Exchange, venta.Exchange)
-	utilidad := spreadBruto*cantidad - costos.TotalUSD
-	spreadNetoUnidad := 0.0
+	utilidad := diferencialBruto*cantidad - costos.TotalUSD
+	diferencialNetoUnidad := 0.0
 	if cantidad > 0 {
-		spreadNetoUnidad = utilidad / cantidad
+		diferencialNetoUnidad = utilidad / cantidad
 	}
-	spreadBrutoBps := bps(spreadBruto, precioMedio)
-	spreadNetoBps := bps(spreadNetoUnidad, precioMedio)
+	diferencialBrutoBps := bps(diferencialBruto, precioMedio)
+	diferencialNetoBps := bps(diferencialNetoUnidad, precioMedio)
 
 	razon := "rentable"
 	ejecutable := true
@@ -79,7 +79,7 @@ func (a *Analizador) calcularOportunidad(compra Cotizacion, venta Cotizacion, ca
 	} else if utilidad < a.costos.MinUtilidadUSD {
 		ejecutable = false
 		razon = "utilidad menor al mínimo configurado"
-	} else if spreadNetoBps < a.costos.MinSpreadNetoBps {
+	} else if diferencialNetoBps < a.costos.MinDiferencialNetoBps {
 		ejecutable = false
 		razon = "diferencial neto bajo después de costos"
 	} else if latenciaMax > a.costos.StaleMs {
@@ -88,23 +88,23 @@ func (a *Analizador) calcularOportunidad(compra Cotizacion, venta Cotizacion, ca
 	}
 
 	return Oportunidad{
-		ID:             fmt.Sprintf("%s-%s-%d", compra.Exchange, venta.Exchange, ahora.UnixNano()),
-		CompraEn:       compra.Exchange,
-		VentaEn:        venta.Exchange,
-		Ask:            ask,
-		Bid:            bid,
-		SpreadBrutoUSD: spreadBruto,
-		SpreadBrutoBps: spreadBrutoBps,
-		SpreadNetoUSD:  spreadNetoUnidad,
-		SpreadNetoBps:  spreadNetoBps,
-		CantidadBTC:    cantidad,
-		UtilidadUSD:    utilidad,
-		Costos:         costos,
-		LatenciaMaxMs:  latenciaMax,
-		DetectadaEn:    ahora,
-		Razon:          razon,
-		Ejecutable:     ejecutable,
-		Parcial:        cantidad > 0 && cantidad < cantidadDeseada*0.999,
+		ID:                  fmt.Sprintf("%s-%s-%d", compra.Exchange, venta.Exchange, ahora.UnixNano()),
+		CompraEn:            compra.Exchange,
+		VentaEn:             venta.Exchange,
+		Ask:                 ask,
+		Bid:                 bid,
+		DiferencialBrutoUSD: diferencialBruto,
+		DiferencialBrutoBps: diferencialBrutoBps,
+		DiferencialNetoUSD:  diferencialNetoUnidad,
+		DiferencialNetoBps:  diferencialNetoBps,
+		CantidadBTC:         cantidad,
+		UtilidadUSD:         utilidad,
+		Costos:              costos,
+		LatenciaMaxMs:       latenciaMax,
+		DetectadaEn:         ahora,
+		Razon:               razon,
+		Ejecutable:          ejecutable,
+		Parcial:             cantidad > 0 && cantidad < cantidadDeseada*0.999,
 	}
 }
 
@@ -116,17 +116,17 @@ func (a *Analizador) calcularCostos(cantidad float64, ask float64, bid float64, 
 	feeCompraUSD := cantidad * ask * a.configExchange(compraEn).FeeTaker
 	feeVentaUSD := cantidad * bid * a.configExchange(ventaEn).FeeTaker
 	precioMedio := (ask + bid) / 2
-	slippageUSD := cantidad * precioMedio * a.costos.SlippageBps / 10000
+	deslizamientoUSD := cantidad * precioMedio * a.costos.DeslizamientoBps / 10000
 	volumenRebalance := max(a.costos.MaxOperacionBTC*20, 1)
 	retiroFijoBTC := a.configExchange(compraEn).RetiroBTC + a.configExchange(ventaEn).RetiroBTC
 	retiroAmortUSD := cantidad*precioMedio*a.costos.RetiroAmortizadoBps/10000 + precioMedio*retiroFijoBTC*cantidad/volumenRebalance
 	latenciaRiesgoUSD := cantidad * precioMedio * a.costos.LatenciaRiesgoBps * float64(max(latenciaMs, 1)) / 10000 / 100
-	total := feeCompraUSD + feeVentaUSD + slippageUSD + retiroAmortUSD + latenciaRiesgoUSD
+	total := feeCompraUSD + feeVentaUSD + deslizamientoUSD + retiroAmortUSD + latenciaRiesgoUSD
 
 	return CostosOperacion{
 		FeeCompraUSD:      feeCompraUSD,
 		FeeVentaUSD:       feeVentaUSD,
-		SlippageUSD:       slippageUSD,
+		DeslizamientoUSD:  deslizamientoUSD,
 		RetiroAmortUSD:    retiroAmortUSD,
 		LatenciaRiesgoUSD: latenciaRiesgoUSD,
 		TotalUSD:          total,

@@ -27,30 +27,30 @@ type ExchangeConfig struct {
 type CostosOperacion struct {
 	FeeCompraUSD      float64 `json:"feeCompraUsd"`
 	FeeVentaUSD       float64 `json:"feeVentaUsd"`
-	SlippageUSD       float64 `json:"slippageUsd"`
+	DeslizamientoUSD  float64 `json:"deslizamientoUsd"`
 	RetiroAmortUSD    float64 `json:"retiroAmortUsd"`
 	LatenciaRiesgoUSD float64 `json:"latenciaRiesgoUsd"`
 	TotalUSD          float64 `json:"totalUsd"`
 }
 
 type Oportunidad struct {
-	ID             string          `json:"id"`
-	CompraEn       string          `json:"compraEn"`
-	VentaEn        string          `json:"ventaEn"`
-	Ask            float64         `json:"ask"`
-	Bid            float64         `json:"bid"`
-	SpreadBrutoUSD float64         `json:"spreadBrutoUsd"`
-	SpreadBrutoBps float64         `json:"spreadBrutoBps"`
-	SpreadNetoUSD  float64         `json:"spreadNetoUsd"`
-	SpreadNetoBps  float64         `json:"spreadNetoBps"`
-	CantidadBTC    float64         `json:"cantidadBtc"`
-	UtilidadUSD    float64         `json:"utilidadUsd"`
-	Costos         CostosOperacion `json:"costos"`
-	LatenciaMaxMs  int64           `json:"latenciaMaxMs"`
-	DetectadaEn    time.Time       `json:"detectadaEn"`
-	Razon          string          `json:"razon"`
-	Ejecutable     bool            `json:"ejecutable"`
-	Parcial        bool            `json:"parcial"`
+	ID                  string          `json:"id"`
+	CompraEn            string          `json:"compraEn"`
+	VentaEn             string          `json:"ventaEn"`
+	Ask                 float64         `json:"ask"`
+	Bid                 float64         `json:"bid"`
+	DiferencialBrutoUSD float64         `json:"diferencialBrutoUsd"`
+	DiferencialBrutoBps float64         `json:"diferencialBrutoBps"`
+	DiferencialNetoUSD  float64         `json:"diferencialNetoUsd"`
+	DiferencialNetoBps  float64         `json:"diferencialNetoBps"`
+	CantidadBTC         float64         `json:"cantidadBtc"`
+	UtilidadUSD         float64         `json:"utilidadUsd"`
+	Costos              CostosOperacion `json:"costos"`
+	LatenciaMaxMs       int64           `json:"latenciaMaxMs"`
+	DetectadaEn         time.Time       `json:"detectadaEn"`
+	Razon               string          `json:"razon"`
+	Ejecutable          bool            `json:"ejecutable"`
+	Parcial             bool            `json:"parcial"`
 }
 
 type Operacion struct {
@@ -93,25 +93,25 @@ type Metricas struct {
 }
 
 type EstadoPublico struct {
-	GeneradoEn    time.Time     `json:"generadoEn"`
-	Cotizaciones  []Cotizacion  `json:"cotizaciones"`
-	Oportunidades []Oportunidad `json:"oportunidades"`
-	Operaciones   []Operacion   `json:"operaciones"`
-	Balances      []Balance     `json:"balances"`
-	SeriePnL      []PuntoSerie  `json:"seriePnl"`
-	SerieSpread   []PuntoSerie  `json:"serieSpread"`
-	Metricas      Metricas      `json:"metricas"`
-	Configuracion MapaCostos    `json:"configuracion"`
+	GeneradoEn       time.Time     `json:"generadoEn"`
+	Cotizaciones     []Cotizacion  `json:"cotizaciones"`
+	Oportunidades    []Oportunidad `json:"oportunidades"`
+	Operaciones      []Operacion   `json:"operaciones"`
+	Balances         []Balance     `json:"balances"`
+	SeriePnL         []PuntoSerie  `json:"seriePnl"`
+	SerieDiferencial []PuntoSerie  `json:"serieDiferencial"`
+	Metricas         Metricas      `json:"metricas"`
+	Configuracion    MapaCostos    `json:"configuracion"`
 }
 
 type MapaCostos struct {
-	MaxOperacionBTC     float64                   `json:"maxOperacionBtc"`
-	MinUtilidadUSD      float64                   `json:"minUtilidadUsd"`
-	MinSpreadNetoBps    float64                   `json:"minSpreadNetoBps"`
-	SlippageBps         float64                   `json:"slippageBps"`
-	LatenciaRiesgoBps   float64                   `json:"latenciaRiesgoBps"`
-	RetiroAmortizadoBps float64                   `json:"retiroAmortizadoBps"`
-	StaleMs             int64                     `json:"staleMs"`
-	CooldownMs          int64                     `json:"cooldownMs"`
-	Exchanges           map[string]ExchangeConfig `json:"exchanges"`
+	MaxOperacionBTC       float64                   `json:"maxOperacionBtc"`
+	MinUtilidadUSD        float64                   `json:"minUtilidadUsd"`
+	MinDiferencialNetoBps float64                   `json:"minDiferencialNetoBps"`
+	DeslizamientoBps      float64                   `json:"deslizamientoBps"`
+	LatenciaRiesgoBps     float64                   `json:"latenciaRiesgoBps"`
+	RetiroAmortizadoBps   float64                   `json:"retiroAmortizadoBps"`
+	StaleMs               int64                     `json:"staleMs"`
+	EnfriamientoMs        int64                     `json:"enfriamientoMs"`
+	Exchanges             map[string]ExchangeConfig `json:"exchanges"`
 }

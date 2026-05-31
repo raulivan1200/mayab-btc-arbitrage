@@ -9,13 +9,22 @@ type Carteras struct {
 }
 
 func NuevaCarteras(exchanges []string, usdInicial float64, btcInicial float64) *Carteras {
+	if len(exchanges) == 0 {
+		return &Carteras{
+			balances: map[string]*Balance{},
+			inicial:  map[string]Balance{},
+		}
+	}
+
 	balances := make(map[string]*Balance, len(exchanges))
 	inicial := make(map[string]Balance, len(exchanges))
+	usdPorExchange := usdInicial / float64(len(exchanges))
+	btcPorExchange := btcInicial / float64(len(exchanges))
 	for _, exchange := range exchanges {
 		balance := Balance{
 			Exchange: exchange,
-			USD:      usdInicial / float64(len(exchanges)),
-			BTC:      btcInicial,
+			USD:      usdPorExchange,
+			BTC:      btcPorExchange,
 		}
 		copia := balance
 		balances[exchange] = &copia
@@ -46,6 +55,10 @@ func (c *Carteras) Balance(exchange string) Balance {
 }
 
 func (c *Carteras) AplicarOperacion(op Operacion) {
+	if op.CantidadBTC <= 0 || op.PrecioCompra <= 0 || op.PrecioVenta <= 0 {
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -55,7 +68,12 @@ func (c *Carteras) AplicarOperacion(op Operacion) {
 		return
 	}
 
-	costoCompra := op.CantidadBTC*op.PrecioCompra + op.Costos.FeeCompraUSD
+	costosExtra := op.Costos.TotalUSD - op.Costos.FeeCompraUSD - op.Costos.FeeVentaUSD
+	if costosExtra < 0 {
+		costosExtra = 0
+	}
+
+	costoCompra := op.CantidadBTC*op.PrecioCompra + op.Costos.FeeCompraUSD + costosExtra
 	ingresoVenta := op.CantidadBTC*op.PrecioVenta - op.Costos.FeeVentaUSD
 
 	compra.USD -= costoCompra

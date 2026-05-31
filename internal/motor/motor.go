@@ -15,40 +15,40 @@ type FuenteMercado interface {
 }
 
 type Motor struct {
-	costos        MapaCostos
-	analizador    *Analizador
-	carteras      *Carteras
-	fuentes       []FuenteMercado
-	inicio        time.Time
-	mu            sync.RWMutex
-	cotizaciones  map[string]Cotizacion
-	oportunidades []Oportunidad
-	operaciones   []Operacion
-	seriePnL      []PuntoSerie
-	serieSpread   []PuntoSerie
-	enfriamiento  map[string]time.Time
-	utilidad      float64
-	eventos       atomic.Uint64
-	opsDetectadas atomic.Uint64
-	opsEjecutadas atomic.Uint64
-	latenciaEWMA  float64
-	logger        *slog.Logger
+	costos           MapaCostos
+	analizador       *Analizador
+	carteras         *Carteras
+	fuentes          []FuenteMercado
+	inicio           time.Time
+	mu               sync.RWMutex
+	cotizaciones     map[string]Cotizacion
+	oportunidades    []Oportunidad
+	operaciones      []Operacion
+	seriePnL         []PuntoSerie
+	serieDiferencial []PuntoSerie
+	enfriamiento     map[string]time.Time
+	utilidad         float64
+	eventos          atomic.Uint64
+	opsDetectadas    atomic.Uint64
+	opsEjecutadas    atomic.Uint64
+	latenciaEWMA     float64
+	logger           *slog.Logger
 }
 
 func Nuevo(costos MapaCostos, carteras *Carteras, fuentes []FuenteMercado, logger *slog.Logger) *Motor {
 	return &Motor{
-		costos:        costos,
-		analizador:    NuevoAnalizador(costos),
-		carteras:      carteras,
-		fuentes:       fuentes,
-		inicio:        time.Now(),
-		cotizaciones:  make(map[string]Cotizacion),
-		oportunidades: make([]Oportunidad, 0, 128),
-		operaciones:   make([]Operacion, 0, 128),
-		seriePnL:      make([]PuntoSerie, 0, 256),
-		serieSpread:   make([]PuntoSerie, 0, 256),
-		enfriamiento:  make(map[string]time.Time),
-		logger:        logger,
+		costos:           costos,
+		analizador:       NuevoAnalizador(costos),
+		carteras:         carteras,
+		fuentes:          fuentes,
+		inicio:           time.Now(),
+		cotizaciones:     make(map[string]Cotizacion),
+		oportunidades:    make([]Oportunidad, 0, 128),
+		operaciones:      make([]Operacion, 0, 128),
+		seriePnL:         make([]PuntoSerie, 0, 256),
+		serieDiferencial: make([]PuntoSerie, 0, 256),
+		enfriamiento:     make(map[string]time.Time),
+		logger:           logger,
 	}
 }
 
@@ -104,17 +104,17 @@ func (m *Motor) analizar(ahora time.Time) {
 	}
 
 	m.opsDetectadas.Add(uint64(len(oportunidades)))
-	mejorSpread := oportunidades[0].SpreadNetoBps
+	mejorDiferencial := oportunidades[0].DiferencialNetoBps
 	for _, oportunidad := range oportunidades {
-		if oportunidad.SpreadNetoBps > mejorSpread {
-			mejorSpread = oportunidad.SpreadNetoBps
+		if oportunidad.DiferencialNetoBps > mejorDiferencial {
+			mejorDiferencial = oportunidad.DiferencialNetoBps
 		}
 	}
 
 	m.mu.Lock()
 	m.oportunidades = append(oportunidades, m.oportunidades...)
 	m.oportunidades = limitar(m.oportunidades, 80)
-	m.serieSpread = limitarUltimos(append(m.serieSpread, PuntoSerie{Tiempo: ahora, Valor: mejorSpread}), 240)
+	m.serieDiferencial = limitarUltimos(append(m.serieDiferencial, PuntoSerie{Tiempo: ahora, Valor: mejorDiferencial}), 240)
 	m.mu.Unlock()
 
 	for _, oportunidad := range oportunidades {
@@ -130,7 +130,7 @@ func (m *Motor) puedeEjecutar(o Oportunidad, ahora time.Time) bool {
 	m.mu.RLock()
 	ultima := m.enfriamiento[ruta]
 	m.mu.RUnlock()
-	return ahora.Sub(ultima).Milliseconds() >= m.costos.CooldownMs
+	return ahora.Sub(ultima).Milliseconds() >= m.costos.EnfriamientoMs
 }
 
 func (m *Motor) ejecutar(o Oportunidad, ahora time.Time) {
@@ -181,13 +181,13 @@ func (m *Motor) Estado() EstadoPublico {
 	}
 
 	return EstadoPublico{
-		GeneradoEn:    time.Now(),
-		Cotizaciones:  cotizaciones,
-		Oportunidades: append([]Oportunidad{}, m.oportunidades...),
-		Operaciones:   append([]Operacion{}, m.operaciones...),
-		Balances:      m.carteras.Snapshot(),
-		SeriePnL:      append([]PuntoSerie{}, m.seriePnL...),
-		SerieSpread:   append([]PuntoSerie{}, m.serieSpread...),
+		GeneradoEn:       time.Now(),
+		Cotizaciones:     cotizaciones,
+		Oportunidades:    append([]Oportunidad{}, m.oportunidades...),
+		Operaciones:      append([]Operacion{}, m.operaciones...),
+		Balances:         m.carteras.Snapshot(),
+		SeriePnL:         append([]PuntoSerie{}, m.seriePnL...),
+		SerieDiferencial: append([]PuntoSerie{}, m.serieDiferencial...),
 		Metricas: Metricas{
 			UptimeSegundos:       int64(time.Since(m.inicio).Seconds()),
 			EventosMercado:       m.eventos.Load(),

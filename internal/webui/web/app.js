@@ -53,7 +53,7 @@ function renderizar(datos) {
   $("latencia").textContent = `${formato(datos.metricas.latenciaPromedioMs, 0)} ms`;
   $("riesgo").textContent = datos.metricas.estadoRiesgo;
   $("trabajadores").textContent = `${datos.metricas.trabajadores} trabajadores`;
-  $("mejorSpread").textContent = mejorSpread(datos);
+  $("mejorDiferencial").textContent = mejorDiferencial(datos);
 
   renderMercado(datos);
   renderBalances(datos);
@@ -65,12 +65,12 @@ function renderizar(datos) {
 }
 
 function renderMercado(datos) {
-  const spreads = datos.cotizaciones.map((c) => c.ask - c.bid).filter((s) => s > 0);
-  const maxSpread = Math.max(...spreads, 1);
+  const diferenciales = datos.cotizaciones.map((c) => c.ask - c.bid).filter((s) => s > 0);
+  const maxDiferencial = Math.max(...diferenciales, 1);
   $("exchangeLista").innerHTML = datos.cotizaciones
     .map((c) => {
-      const spread = Math.max(c.ask - c.bid, 0);
-      const ancho = Math.min(100, (spread / maxSpread) * 100);
+      const diferencial = Math.max(c.ask - c.bid, 0);
+      const ancho = Math.min(100, (diferencial / maxDiferencial) * 100);
       return `
         <article class="exchange">
           <header>
@@ -81,7 +81,7 @@ function renderMercado(datos) {
             <div class="precio bid"><span>Compra</span><strong>${dinero.format(c.bid)}</strong></div>
             <div class="precio ask"><span>Venta</span><strong>${dinero.format(c.ask)}</strong></div>
           </div>
-          <div class="barra-spread" aria-label="Diferencial">
+          <div class="barra-diferencial" aria-label="Diferencial">
             <div style="width:${ancho}%"></div>
           </div>
         </article>
@@ -108,9 +108,9 @@ function renderConfig(datos) {
   const c = datos.configuracion;
   $("configGrid").innerHTML = `
     <div><span>Máx. operación</span><strong>${btc.format(c.maxOperacionBtc)} BTC</strong></div>
-    <div><span>Diferencial mínimo</span><strong>${formato(c.minSpreadNetoBps, 2)} bps</strong></div>
-    <div><span>Deslizamiento</span><strong>${formato(c.slippageBps, 2)} bps</strong></div>
-    <div><span>Enfriamiento</span><strong>${c.cooldownMs} ms</strong></div>
+    <div><span>Diferencial mínimo</span><strong>${formato(c.minDiferencialNetoBps, 2)} bps</strong></div>
+    <div><span>Deslizamiento</span><strong>${formato(c.deslizamientoBps, 2)} bps</strong></div>
+    <div><span>Enfriamiento</span><strong>${c.enfriamientoMs} ms</strong></div>
   `;
 }
 
@@ -121,7 +121,7 @@ function renderOportunidades(datos) {
       (o) => `
       <tr>
         <td>${o.compraEn} -> ${o.ventaEn}</td>
-        <td class="${o.spreadNetoBps >= 0 ? "positivo" : "negativo"}">${formato(o.spreadNetoBps, 2)} bps</td>
+        <td class="${o.diferencialNetoBps >= 0 ? "positivo" : "negativo"}">${formato(o.diferencialNetoBps, 2)} bps</td>
         <td>${btc.format(o.cantidadBtc)}</td>
         <td>${dinero.format(o.utilidadUsd)}</td>
         <td><span class="${o.ejecutable ? "chip-ok" : "chip-no"}">${o.ejecutable ? "ejecutable" : o.razon}</span></td>
@@ -175,7 +175,7 @@ function dibujarMapa(datos) {
     const a = posiciones.get(o.compraEn);
     const b = posiciones.get(o.ventaEn);
     if (!a || !b) return;
-    const fuerza = Math.max(0.18, Math.min(1, o.spreadNetoBps / 8));
+    const fuerza = Math.max(0.18, Math.min(1, o.diferencialNetoBps / 8));
     ctx.strokeStyle = o.ejecutable ? `rgba(24,119,78,${0.22 + fuerza * 0.55})` : `rgba(185,63,44,${0.12 + fuerza * 0.26})`;
     ctx.lineWidth = o.ejecutable ? 2.4 + fuerza * 5 : 1.2;
     ctx.beginPath();
@@ -222,7 +222,7 @@ function dibujarSeries(datos) {
   ctx.clearRect(0, 0, w, h);
   fondoArquitectonico(ctx, w, h);
   dibujarLinea(ctx, datos.seriePnl.map((p) => p.valor), "#18774e", w, h, 0.58);
-  dibujarLinea(ctx, datos.serieSpread.map((p) => p.valor), "#315f93", w, h, 0.34);
+  dibujarLinea(ctx, datos.serieDiferencial.map((p) => p.valor), "#315f93", w, h, 0.34);
 
   ctx.fillStyle = "#171915";
   ctx.font = "800 15px Archivo, sans-serif";
@@ -285,8 +285,8 @@ function prepararCanvas(canvas) {
   return ctx;
 }
 
-function mejorSpread(datos) {
-  const mejor = datos.oportunidades.reduce((acc, o) => Math.max(acc, o.spreadNetoBps), 0);
+function mejorDiferencial(datos) {
+  const mejor = datos.oportunidades.reduce((acc, o) => Math.max(acc, o.diferencialNetoBps), 0);
   return `${formato(mejor, 2)} bps`;
 }
 

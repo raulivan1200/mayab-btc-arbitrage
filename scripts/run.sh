@@ -20,5 +20,5 @@ if command -v go >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "Instala Docker o Go para ejecutar Mayab BTC Arbitrage." >&2
+echo "Instala Docker o Go para ejecutar Mayab Arbitraje BTC." >&2
 exit 1

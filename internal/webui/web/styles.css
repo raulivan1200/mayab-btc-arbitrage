@@ -266,14 +266,14 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.barra-spread {
+.barra-diferencial {
   height: 8px;
   background: var(--panel-2);
   border: 1px solid var(--linea);
   overflow: hidden;
 }
 
-.barra-spread div {
+.barra-diferencial div {
   width: 0;
   height: 100%;
   background: var(--azul);

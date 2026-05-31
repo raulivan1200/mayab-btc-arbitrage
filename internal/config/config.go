@@ -25,14 +25,14 @@ func Cargar() Config {
 
 func CargarConLogger(logger *slog.Logger) Config {
 	costos := motor.MapaCostos{
-		MaxOperacionBTC:      envFloat(logger, "MAX_OPERACION_BTC", 0.18),
-		MinUtilidadUSD:       envFloat(logger, "MIN_UTILIDAD_USD", 1.25),
-		MinSpreadNetoBps:     envFloat(logger, "MIN_SPREAD_NETO_BPS", 0.65),
-		SlippageBps:          envFloat(logger, "SLIPPAGE_BPS", 0.35),
-		LatenciaRiesgoBps:    envFloat(logger, "LATENCIA_RIESGO_BPS", 0.08),
-		RetiroAmortizadoBps:  envFloat(logger, "RETIRO_AMORTIZADO_BPS", 0.12),
-		StaleMs:              envInt64(logger, "STALE_MS", 4500),
-		CooldownMs:           envInt64(logger, "COOLDOWN_MS", 1400),
+		MaxOperacionBTC:       envFloat(logger, "MAX_OPERACION_BTC", 0.18),
+		MinUtilidadUSD:        envFloat(logger, "MIN_UTILIDAD_USD", 1.25),
+		MinDiferencialNetoBps: envFloatAlias(logger, 0.65, "MIN_DIFERENCIAL_NETO_BPS", "MIN_SPREAD_NETO_BPS"),
+		DeslizamientoBps:      envFloatAlias(logger, 0.35, "DESLIZAMIENTO_BPS", "SLIPPAGE_BPS"),
+		LatenciaRiesgoBps:     envFloat(logger, "LATENCIA_RIESGO_BPS", 0.08),
+		RetiroAmortizadoBps:   envFloat(logger, "RETIRO_AMORTIZADO_BPS", 0.12),
+		StaleMs:               envInt64(logger, "STALE_MS", 4500),
+		EnfriamientoMs:        envInt64Alias(logger, 1400, "ENFRIAMIENTO_MS", "COOLDOWN_MS"),
 		Exchanges: map[string]motor.ExchangeConfig{
 			"Binance": {
 				Nombre:        "Binance",
@@ -86,29 +86,43 @@ func env(clave string, fallback string) string {
 }
 
 func envFloat(logger *slog.Logger, clave string, fallback float64) float64 {
-	valor := strings.TrimSpace(os.Getenv(clave))
-	if valor == "" {
-		return fallback
+	return envFloatAlias(logger, fallback, clave)
+}
+
+func envFloatAlias(logger *slog.Logger, fallback float64, claves ...string) float64 {
+	for _, clave := range claves {
+		valor := strings.TrimSpace(os.Getenv(clave))
+		if valor == "" {
+			continue
+		}
+		numero, err := strconv.ParseFloat(valor, 64)
+		if err != nil {
+			advertirFallback(logger, clave, valor, fallback, err)
+			return fallback
+		}
+		return numero
 	}
-	numero, err := strconv.ParseFloat(valor, 64)
-	if err != nil {
-		advertirFallback(logger, clave, valor, fallback, err)
-		return fallback
-	}
-	return numero
+	return fallback
 }
 
 func envInt64(logger *slog.Logger, clave string, fallback int64) int64 {
-	valor := strings.TrimSpace(os.Getenv(clave))
-	if valor == "" {
-		return fallback
+	return envInt64Alias(logger, fallback, clave)
+}
+
+func envInt64Alias(logger *slog.Logger, fallback int64, claves ...string) int64 {
+	for _, clave := range claves {
+		valor := strings.TrimSpace(os.Getenv(clave))
+		if valor == "" {
+			continue
+		}
+		numero, err := strconv.ParseInt(valor, 10, 64)
+		if err != nil {
+			advertirFallback(logger, clave, valor, fallback, err)
+			return fallback
+		}
+		return numero
 	}
-	numero, err := strconv.ParseInt(valor, 10, 64)
-	if err != nil {
-		advertirFallback(logger, clave, valor, fallback, err)
-		return fallback
-	}
-	return numero
+	return fallback
 }
 
 func advertirFallback(logger *slog.Logger, clave string, valor string, fallback any, err error) {
