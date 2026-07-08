@@ -1,15 +1,19 @@
 APP=mayab-arbitrage
 
-.PHONY: run test build docker
+.PHONY: run test check build docker
 
 run:
-	go run ./cmd/$(APP)
+	cargo run
 
 test:
-	go test ./...
+	cargo test
+
+check:
+	cargo check --all-targets
 
 build:
-	go build -trimpath -ldflags="-s -w" -o $(APP) ./cmd/$(APP)
+	cargo build --release
+	cp target/release/$(APP) ./$(APP)
 
 docker:
 	docker compose up --build

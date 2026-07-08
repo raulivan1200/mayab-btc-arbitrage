@@ -1,41 +1,132 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mayab Arbitraje BTC</title>
+    <meta name="description" content="Mayab Arbitraje BTC — Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2245%22 fill=%22%237c5cfc%22/><text x=%2250%22 y=%2268%22 font-size=%2255%22 font-weight=%22bold%22 font-family=%22sans-serif%22 fill=%22%23fff%22 text-anchor=%22middle%22>₿</text></svg>" />
+    <meta property="og:title" content="Mayab Arbitraje BTC" />
+    <meta property="og:description" content="Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#0c0e14" id="themeMetaColor" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <noscript>
+      <div style="background-color: #ff6b6b; color: white; padding: 15px; text-align: center; font-weight: bold; font-family: sans-serif;">
+        Este sistema requiere JavaScript para conectarse al feed de datos WebSocket en tiempo real. Por favor, actívalo en tu navegador.
+      </div>
+    </noscript>
+
     <main class="pantalla">
       <header class="barra-superior">
-        <div>
-          <p class="ceja">Mayab Arbitraje BTC</p>
-          <h1>Motor de arbitraje BTC en tiempo real</h1>
+        <div class="brand-block">
+          <div class="topline">
+            <p class="ceja">Mayab Arbitraje BTC</p>
+            <span id="modoOperacionBadge" class="modo-operacion-badge">LIVE WS</span>
+            <span id="modoConservadorBadge" class="modo-conservador-badge" hidden>MODO CONSERVADOR</span>
+          </div>
+          <div>
+            <h1>Motor de arbitraje BTC en tiempo real</h1>
+          </div>
         </div>
-        <div class="estado-live" id="estadoSocket">
-          <span class="pulso"></span>
-          conectando
+        <div class="toolbar">
+          <button id="themeToggle" class="tema-toggle" aria-label="Cambiar tema">
+            <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;display:none;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+            <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          </button>
+          <div class="estado-live" id="estadoSocket">
+            <span class="pulso"></span>
+            conectando
+          </div>
         </div>
       </header>
 
-      <section class="metricas" aria-label="Métricas principales">
+      <div id="circuitBreakerBanner" class="circuit-breaker-banner" hidden>
+        ⚠️ CIRCUIT BREAKER ACTIVO: Se han pausado las ejecuciones simuladas debido a pérdidas acumuladas.
+      </div>
+
+      <section class="llm-strip" aria-label="Resumen operativo para humanos y LLMs">
+        <div>
+          <p class="ceja">Lectura rápida</p>
+          <h2>Qué está pasando ahora</h2>
+        </div>
+        <p id="resumenLlm">
+          Esperando datos del motor. Este resumen se actualiza con PnL, riesgo, mejor ruta, estado GA y última acción observable.
+        </p>
+        <div class="strip-actions" aria-label="Exportar auditoría">
+          <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Paquete jurado</a>
+          <a class="btn-link" href="/api/export/json" download>Exportar JSON</a>
+          <a class="btn-link" href="/api/export/csv" download>Exportar CSV</a>
+        </div>
+      </section>
+
+      <section class="metricas metricas-principales" aria-label="Métricas principales">
         <article>
           <span>Ganancia/pérdida simulada</span>
           <strong id="pnl">$0.00</strong>
+          <p id="pnlDetalle">Resultado acumulado de operaciones simuladas después de costos.</p>
         </article>
         <article>
           <span>Retorno</span>
           <strong id="retorno">0.00 bps</strong>
+          <p>Rendimiento acumulado en puntos base; 100 bps equivale a 1%.</p>
         </article>
         <article>
           <span>Eventos</span>
           <strong id="eventos">0</strong>
+          <p>Cotizaciones procesadas por el motor en tiempo real.</p>
         </article>
         <article>
           <span>Latencia promedio</span>
           <strong id="latencia">0 ms</strong>
+          <p>Tiempo medio de llegada de datos; menor es mejor.</p>
         </article>
+      </section>
+
+      <section class="metricas metricas-secundarias" aria-label="Métricas de riesgo y desempeño">
+        <article>
+          <span>Sharpe Ratio</span>
+          <strong id="sharpe">0.00</strong>
+          <p>Calidad riesgo-retorno de la simulación.</p>
+        </article>
+        <article>
+          <span>Win Rate</span>
+          <strong id="winRate">0.0%</strong>
+          <p>Porcentaje de operaciones con utilidad positiva.</p>
+        </article>
+        <article>
+          <span>Max Drawdown</span>
+          <strong id="maxDrawdown">$0.00</strong>
+          <p>Peor caída acumulada desde un máximo de PnL.</p>
+        </article>
+        <article>
+          <span>Trades Ejecutados</span>
+          <strong id="operacionesTotales">0</strong>
+          <p>Operaciones simuladas aceptadas por el motor.</p>
+        </article>
+        <article>
+          <span>Fallos</span>
+          <strong id="operacionesFallidas">0</strong>
+          <p>Rechazos o fallas adversas simuladas.</p>
+        </article>
+        <article>
+          <span>Rebalanceos</span>
+          <strong id="rebalanceosTotales">0</strong>
+          <p>Movimientos internos para mantener capital por exchange.</p>
+        </article>
+      </section>
+
+      <section class="panel judge-panel" aria-label="Checklist de jurado">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Jurado</p>
+            <h2>Readiness</h2>
+          </div>
+          <a class="btn-link btn-link-destacado" href="/api/preflight" target="_blank" rel="noopener">Preflight</a>
+        </div>
+        <div id="judgeReadiness" class="judge-readiness">Calculando readiness del jurado...</div>
       </section>
 
       <section class="tablero">
@@ -47,7 +138,15 @@
             </div>
             <span id="riesgo">esperando mercado</span>
           </div>
+          <p class="panel-ayuda">Cada tarjeta muestra bid/ask y latencia por exchange. Si una fuente se apaga, el motor deja de usarla para rutas nuevas.</p>
           <div class="exchange-lista" id="exchangeLista"></div>
+          <div class="latencia-ranking" aria-label="Ranking de latencia por exchange">
+            <div class="mini-tabla-titulo">
+              <span>Latencia por feed</span>
+              <small>EWMA / región</small>
+            </div>
+            <div id="latenciaRanking" class="mini-tabla"></div>
+          </div>
         </section>
 
         <section class="panel mapa">
@@ -58,6 +157,7 @@
             </div>
             <span id="mejorDiferencial">0.00 bps</span>
           </div>
+          <p class="panel-ayuda">Las líneas conectan compra y venta entre exchanges. Verde indica rutas ejecutables; rojo indica rutas descartadas por costos, riesgo o balance.</p>
           <canvas id="canvasMapa" width="960" height="620"></canvas>
         </section>
 
@@ -69,9 +169,99 @@
             </div>
             <span id="trabajadores">0 trabajadores</span>
           </div>
+          <p class="panel-ayuda">Capital simulado disponible por exchange y parámetros activos. En despliegues protegidos, los cambios requieren token admin.</p>
           <div id="balances" class="balances"></div>
           <div class="config-grid" id="configGrid"></div>
+          
+          <div class="config-controles">
+            <h3 class="ceja form-title">Ajustar parámetros POST</h3>
+            <div class="preset-grid" aria-label="Presets de simulación">
+              <button type="button" class="preset-btn activo" data-preset="balanceado">Balanceado</button>
+              <button type="button" class="preset-btn" data-preset="agresivo">Agresivo</button>
+              <button type="button" class="preset-btn" data-preset="seguro">Seguro</button>
+              <button type="button" class="preset-btn" data-preset="estres">Estrés</button>
+            </div>
+            <div class="control-fila">
+              <label for="inputMaxBtc">Max Operación BTC:</label>
+              <input type="number" id="inputMaxBtc" step="0.01" min="0.01" max="10" />
+            </div>
+            <div class="control-fila">
+              <label for="inputMinBps">Min Spread Neto (bps):</label>
+              <input type="number" id="inputMinBps" step="0.1" min="0.1" max="100" />
+            </div>
+            <div class="control-fila">
+              <label for="inputDeslizamiento">Slippage (bps):</label>
+              <input type="number" id="inputDeslizamiento" step="0.1" min="0" max="50" />
+            </div>
+            <div class="control-fila">
+              <label for="inputCooldown">Enfriamiento (ms):</label>
+              <input type="number" id="inputCooldown" step="100" min="0" max="10000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputMinUtilidad">Min utilidad USD:</label>
+              <input type="number" id="inputMinUtilidad" step="0.25" min="0" max="1000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputStaleMs">Stale quote (ms):</label>
+              <input type="number" id="inputStaleMs" step="100" min="100" max="30000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputLatenciaRiesgo">Riesgo latencia (bps):</label>
+              <input type="number" id="inputLatenciaRiesgo" step="0.01" min="0" max="20" />
+            </div>
+            <div class="control-fila">
+              <label for="inputCircuitBreaker">Circuit breaker USD:</label>
+              <input type="number" id="inputCircuitBreaker" step="25" min="0" max="100000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputVolatilidad">Volatilidad umbral (bps):</label>
+              <input type="number" id="inputVolatilidad" step="1" min="0" max="1000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputProbFallo">Prob. fallo orden:</label>
+              <input type="number" id="inputProbFallo" step="0.005" min="0" max="1" />
+            </div>
+            <div class="control-fila">
+              <label for="inputProbMovimiento">Prob. mercado movido:</label>
+              <input type="number" id="inputProbMovimiento" step="0.005" min="0" max="1" />
+            </div>
+            <div class="control-fila">
+              <label for="inputMovimientoBps">Shock mercado (bps):</label>
+              <input type="number" id="inputMovimientoBps" step="0.5" min="0" max="100" />
+            </div>
+            <div class="control-fila">
+              <label for="inputRebalanceUmbral">Umbral rebalanceo (%):</label>
+              <input type="number" id="inputRebalanceUmbral" step="1" min="1" max="100" />
+            </div>
+            <div class="control-fila">
+              <label for="inputRebalanceTransfer">Transfer max (%):</label>
+              <input type="number" id="inputRebalanceTransfer" step="1" min="1" max="100" />
+            </div>
+            <button id="btnAplicarConfig" class="btn-primario">Aplicar Parámetros</button>
+            <span id="configFeedback" class="config-feedback"></span>
+          </div>
         </section>
+      </section>
+
+      <section class="panel demo-panel">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Demo controlada</p>
+            <h2>Escenarios adversos</h2>
+          </div>
+          <span id="demoEstado">listo</span>
+        </div>
+        <p class="panel-ayuda">Dispara eventos visibles para demostrar robustez o un mercado rentable sin depender del azar del mercado real.</p>
+        <div class="demo-actions">
+          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Demo rentable + GA</button>
+          <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
+          <button type="button" class="btn-secundario" data-demo="mercado_movido">Shock de mercado</button>
+          <button type="button" class="btn-secundario" data-demo="fill_parcial">Fill parcial</button>
+          <button type="button" class="btn-secundario" data-demo="liquidez_insuficiente">Liquidez insuficiente</button>
+          <button type="button" class="btn-secundario" data-demo="circuit_breaker">Circuit breaker</button>
+          <button type="button" class="btn-secundario" data-demo="rebalanceo">Forzar rebalanceo</button>
+        </div>
+        <span id="demoFeedback" class="feedback"></span>
       </section>
 
       <section class="inferior">
@@ -82,6 +272,7 @@
               <h2>Ganancia/pérdida y diferencial neto</h2>
             </div>
           </div>
+          <p class="panel-ayuda">Compara la utilidad acumulada contra el mejor spread neto detectado. Sirve para ver si el mercado trae oportunidades reales o solo ruido.</p>
           <canvas id="canvasSeries" width="1200" height="360"></canvas>
         </section>
 
@@ -92,12 +283,15 @@
               <h2>Oportunidades</h2>
             </div>
           </div>
+          <p class="panel-ayuda">Ranking de rutas candidatas. Selecciona una fila para ver por qué se ejecuta o se descarta.</p>
           <div class="tabla-scroll">
             <table>
               <thead>
                 <tr>
                   <th>Ruta</th>
                   <th>Neto</th>
+                  <th>Z-Score</th>
+                  <th>Score</th>
                   <th>BTC</th>
                   <th>Utilidad</th>
                   <th>Estado</th>
@@ -105,6 +299,11 @@
               </thead>
               <tbody id="oportunidades"></tbody>
             </table>
+          </div>
+          <div class="detalle-oportunidad" id="detalleOportunidad">
+            <span class="ceja">Forense</span>
+            <strong>Esperando oportunidad</strong>
+            <p>Cuando el motor detecte una ruta, aquí aparecerá el desglose neto de costos, liquidez, latencia y decisión.</p>
           </div>
         </section>
 
@@ -115,6 +314,7 @@
               <h2>Operaciones</h2>
             </div>
           </div>
+          <p class="panel-ayuda">Historial de trades simulados que sí pasaron filtros de spread, balance, latencia y costos.</p>
           <div class="tabla-scroll">
             <table>
               <thead>
@@ -130,7 +330,229 @@
             </table>
           </div>
         </section>
+
+        <section class="panel tabla">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Robustez</p>
+              <h2>Timeline operativo</h2>
+            </div>
+          </div>
+          <p class="panel-ayuda">Bitácora adversa: fallos de orden, mercado movido, fills parciales o eventos que afectan robustez.</p>
+          <div class="tabla-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tipo</th>
+                  <th>Ruta</th>
+                  <th>Detalle</th>
+                  <th>G/P</th>
+                </tr>
+              </thead>
+              <tbody id="eventosEjecucion"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tabla">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Wallets</p>
+              <h2>Rebalanceos</h2>
+            </div>
+          </div>
+          <p class="panel-ayuda">Transferencias simuladas entre carteras para no quedar sin USD o BTC en un exchange específico.</p>
+          <div class="tabla-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Activo</th>
+                  <th>Desde</th>
+                  <th>Hacia</th>
+                  <th>Cantidad</th>
+                  <th>Costo</th>
+                </tr>
+              </thead>
+              <tbody id="rebalanceos"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tabla auditoria-panel">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Auditoría</p>
+              <h2>Decisiones</h2>
+            </div>
+          </div>
+          <p class="panel-ayuda">Registro de por qué el motor aceptó o descartó rutas: score, pesos GA, costos, balances y latencia.</p>
+          <div class="tabla-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ruta</th>
+                  <th>Decisión</th>
+                  <th>Código</th>
+                  <th>Score</th>
+                  <th>Costo</th>
+                  <th>Razón</th>
+                </tr>
+              </thead>
+              <tbody id="auditoriaDecisiones"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
+
+      <section class="panel tabla replay-panel">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Replay</p>
+            <h2>Backtest reproducible</h2>
+          </div>
+          <button id="btnBacktest" class="btn-primario btn-inline">Ejecutar</button>
+        </div>
+        <p class="panel-ayuda">Corre el mismo set sintético con estrategia base vs estrategia optimizada para comparar PnL, drawdown, win rate y spread.</p>
+        <div class="tabla-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Estrategia</th>
+                <th>Trades</th>
+                <th>PnL</th>
+                <th>Win Rate</th>
+                <th>Drawdown</th>
+                <th>Spread Neto</th>
+              </tr>
+            </thead>
+            <tbody id="backtestResultados"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel ga-panel" aria-label="Laboratorio GA en tiempo real">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">GA Lab</p>
+            <h2>Optimización híbrida en tiempo real</h2>
+          </div>
+          <span id="gaGeneracion">Gen 0</span>
+        </div>
+
+        <div class="ga-hero">
+          <div>
+            <span class="ga-status" id="gaEstado">Listo para evolucionar</span>
+            <p>El GA prueba combinaciones de estrategia, conserva las mejores y muta otras para mejorar la selección de rutas.</p>
+            <dl class="ga-explica">
+              <div><dt>Fitness</dt><dd>Puntaje total de qué tan buena salió una estrategia.</dd></div>
+              <div><dt>Diversidad</dt><dd>Qué tan distintas son las estrategias de la población.</dd></div>
+              <div><dt>Convergencia</dt><dd>Si sube mucho, la población se está pareciendo demasiado.</dd></div>
+            </dl>
+          </div>
+          <div class="ga-kpis">
+            <article>
+              <span>Muestras</span>
+              <strong id="gaMuestras">0 ops · 0 fallos</strong>
+            </article>
+            <article>
+              <span>Umbral</span>
+              <strong id="gaUmbral">0.65 bps</strong>
+            </article>
+            <article>
+              <span>Max BTC</span>
+              <strong id="gaMaxBtc">0.180 BTC</strong>
+            </article>
+            <article>
+              <span>Latencia</span>
+              <strong id="gaLatencia">4,500 ms</strong>
+            </article>
+            <article>
+              <span>Mejora Gen</span>
+              <strong id="gaMejora">+0.00</strong>
+            </article>
+            <article>
+              <span>Annealing T</span>
+              <strong id="gaTemperatura">1.00</strong>
+            </article>
+            <article>
+              <span>Inyecciones</span>
+              <strong id="gaInyecciones">0 DE</strong>
+            </article>
+            <article>
+              <span>Híbridas</span>
+              <strong id="gaMetaheuristicas">2</strong>
+            </article>
+          </div>
+        </div>
+
+        <div class="ga-progress">
+          <div>
+            <span class="ceja">Auto GA</span>
+            <p class="panel-ayuda">Evoluciona con historial real; si no hay trades, usa replay sintético para mantener la demo explicable. La línea ámbar es el campeón; la rosa es el retador; la cian es el promedio.</p>
+            <strong id="gaDuelo" class="ga-duelo">Campeón 0.00 vs Retador 0.00</strong>
+          </div>
+          <canvas id="canvasGa" width="1200" height="300"></canvas>
+        </div>
+
+        <div class="ga-metricas">
+          <article>
+            <span>Mejor Fitness</span>
+            <strong id="gaMejorFitness">0.00</strong>
+          </article>
+          <article>
+            <span>Fitness Promedio</span>
+            <strong id="gaFitnessPromedio">0.00</strong>
+          </article>
+          <article>
+            <span>Diversidad</span>
+            <strong id="gaDiversidad">100.0%</strong>
+          </article>
+          <article>
+            <span>Mutación</span>
+            <strong id="gaTasaMutacion">15.0%</strong>
+          </article>
+          <article>
+            <span>Convergencia</span>
+            <strong id="gaConvergencia">0.0%</strong>
+          </article>
+        </div>
+
+        <div class="ga-layout">
+          <div class="ga-card ga-pesos-card">
+            <span class="ceja">Pesos de Scoring</span>
+            <p class="panel-ayuda">Estos pesos dicen qué prefiere el motor al ordenar oportunidades: utilidad, frescura, liquidez, confiabilidad y z-score.</p>
+            <div id="gaPesos" class="ga-pesos"></div>
+          </div>
+          <div class="ga-card">
+            <span class="ceja">Parámetros GA</span>
+            <p class="panel-ayuda">Población es cuántas estrategias compiten. Mutación cambia genes al azar. Cruce mezcla dos estrategias ganadoras.</p>
+            <div class="control-fila">
+              <label for="inputGaPoblacion">Población:</label>
+              <input type="number" id="inputGaPoblacion" step="1" min="10" max="300" />
+            </div>
+            <div class="control-fila">
+              <label for="inputGaMutacion">Mutación:</label>
+              <input type="number" id="inputGaMutacion" step="0.01" min="0" max="0.8" />
+            </div>
+            <div class="control-fila">
+              <label for="inputGaCruce">Cruce:</label>
+              <input type="number" id="inputGaCruce" step="0.01" min="0" max="1" />
+            </div>
+            <div class="ga-actions">
+              <button id="btnAplicarGa" class="btn-primario">Aplicar GA</button>
+              <button id="btnEvolucionarGa" class="btn-secundario">Evolucionar Ahora</button>
+            </div>
+            <span id="gaFeedback" class="feedback"></span>
+          </div>
+          <div class="ga-card">
+            <span class="ceja">Controles de Exchanges</span>
+            <p class="panel-ayuda">Activa o apaga fuentes de mercado. El cambio afecta rutas nuevas inmediatamente.</p>
+            <div id="exchangeToggles" class="exchange-toggles"></div>
+          </div>
+        </div>
+      </section>
+
+      <div id="notificaciones" class="notificaciones-container"></div>
     </main>
     <script src="/app.js" type="module"></script>
   </body>

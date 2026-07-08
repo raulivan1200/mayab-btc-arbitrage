@@ -2,8 +2,21 @@
 .env
 
 /mayab-arbitrage
+/target/
 /bin/
 /dist/
 /tmp/
 
 *.test
+*.aux
+*.log
+*.out
+
+/.opencode/
+/.gcloudignore
+/_preview_p1.png
+/backtest.py
+/correo_comite.txt
+/task.md
+/respuestas_comite_*.pdf
+/respuestas_comite_*.tex

@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+set -eu
+
+SERVICE="${SERVICE:-mayab-btc-arbitrage}"
+REGION="${REGION:-us-central1}"
+MIN_INSTANCES="${MIN_INSTANCES:-0}"
+MAX_INSTANCES="${MAX_INSTANCES:-2}"
+MEMORY="${MEMORY:-512Mi}"
+CPU="${CPU:-1}"
+CONCURRENCY="${CONCURRENCY:-20}"
+TIMEOUT="${TIMEOUT:-3600}"
+
+gcloud run deploy "$SERVICE" \
+  --source . \
+  --region "$REGION" \
+  --allow-unauthenticated \
+  --memory "$MEMORY" \
+  --cpu "$CPU" \
+  --port 8080 \
+  --concurrency "$CONCURRENCY" \
+  --timeout "$TIMEOUT" \
+  --min-instances "$MIN_INSTANCES" \
+  --max-instances "$MAX_INSTANCES" \
+  --execution-environment gen2 \
+  --cpu-boost \
+  --set-env-vars "RUST_LOG=error,FEE_BINANCE=0.0010,FEE_KRAKEN=0.0026,FEE_COINBASE=0.0060,FEE_OKX=0.0010,FEE_BYBIT=0.0010,RETIRO_BTC_BINANCE=0.00010,RETIRO_BTC_KRAKEN=0.00020,RETIRO_BTC_COINBASE=0.00012,RETIRO_BTC_OKX=0.00010,RETIRO_BTC_BYBIT=0.00010"

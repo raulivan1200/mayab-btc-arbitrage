@@ -5,3 +5,26 @@ services:
     plan: free
     healthCheckPath: /healthz
     autoDeploy: true
+    envVars:
+      - key: RUST_LOG
+        value: "error"
+      - key: FEE_BINANCE
+        value: "0.0010"
+      - key: FEE_KRAKEN
+        value: "0.0026"
+      - key: FEE_COINBASE
+        value: "0.0060"
+      - key: FEE_OKX
+        value: "0.0010"
+      - key: FEE_BYBIT
+        value: "0.0010"
+      - key: RETIRO_BTC_BINANCE
+        value: "0.00010"
+      - key: RETIRO_BTC_KRAKEN
+        value: "0.00020"
+      - key: RETIRO_BTC_COINBASE
+        value: "0.00012"
+      - key: RETIRO_BTC_OKX
+        value: "0.00010"
+      - key: RETIRO_BTC_BYBIT
+        value: "0.00010"

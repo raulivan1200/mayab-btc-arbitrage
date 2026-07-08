@@ -15,10 +15,10 @@ if command -v docker >/dev/null 2>&1; then
   exit 0
 fi
 
-if command -v go >/dev/null 2>&1; then
-  PORT="${PORT:-8080}" go run ./cmd/mayab-arbitrage
+if command -v cargo >/dev/null 2>&1; then
+  PORT="${PORT:-8080}" cargo run
   exit 0
 fi
 
-echo "Instala Docker o Go para ejecutar Mayab Arbitraje BTC." >&2
+echo "Instala Docker o Rust/Cargo para ejecutar Mayab Arbitraje BTC." >&2
 exit 1
