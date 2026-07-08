@@ -43,6 +43,12 @@ make check
 make smoke
 ```
 
+Con binario release temporal:
+
+```bash
+make release-check
+```
+
 Contra URL pública después de deploy:
 
 ```bash
@@ -91,10 +97,8 @@ Tiene un camino completo de evaluación: motor Rust, WebSocket-first con REST fa
 
 1. `make check`
 2. `cargo build --release --locked`
-3. Levantar servidor local.
-4. `make smoke`
-5. Deploy Cloud Run.
-6. `BASE_URL=https://url-publica ./scripts/smoke-demo.sh`
-7. Abrir dashboard público y revisar mobile/desktop.
-8. Actualizar envío con repo y URL pública.
-
+3. `make release-check`
+4. Deploy Cloud Run.
+5. `BASE_URL=https://url-publica ./scripts/smoke-demo.sh`
+6. Abrir dashboard público y revisar mobile/desktop.
+7. Actualizar envío con repo y URL pública.

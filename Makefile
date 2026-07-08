@@ -1,6 +1,6 @@
 APP=mayab-arbitrage
 
-.PHONY: run test check smoke build docker
+.PHONY: run test check smoke release-check build docker
 
 run:
 	cargo run
@@ -16,6 +16,9 @@ check:
 
 smoke:
 	./scripts/smoke-demo.sh
+
+release-check:
+	./scripts/release-check.sh
 
 build:
 	cargo build --release

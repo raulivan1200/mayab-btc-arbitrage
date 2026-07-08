@@ -282,6 +282,12 @@ make smoke
 BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
 ```
 
+Para simular la entrega completa sin depender de un servidor ya levantado:
+
+```bash
+make release-check
+```
+
 Compilación:
 
 ```bash
