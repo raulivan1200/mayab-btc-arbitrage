@@ -211,6 +211,8 @@ Flujo recomendado para evaluar la aplicación en vivo:
 8. Ejecutar el backtest reproducible para comparar estrategia base vs estrategia optimizada con los costos vigentes.
 9. Forzar una evolución genética y observar fuente de entrenamiento, muestras, fitness, diversidad y pesos de scoring.
 
+Guion detallado para revisión o videollamada: [docs/defensa-comite.md](docs/defensa-comite.md).
+
 ## Judge checklist
 
 - Real-time order book monitoring: sí, WebSocket-first en 5 exchanges con REST fallback público.
