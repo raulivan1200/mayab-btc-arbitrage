@@ -253,6 +253,14 @@ Pruebas:
 
 ```bash
 cargo test
+make check
+```
+
+Con el servidor activo, el smoke de demo valida salud, preflight, GA, demo rentable, rebalanceo, paquete de evaluación, resumen LLM, PnL positivo, rúbrica oficial completa y recomendación final lista:
+
+```bash
+make smoke
+BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
 ```
 
 Compilación:
@@ -401,6 +409,12 @@ curl http://localhost:8080/api/paquete-evaluacion
 ```
 
 El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, explicabilidad, GA, riesgo, persistencia durable y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
+
+Para convertir ese scorecard en una prueba repetible:
+
+```bash
+./scripts/smoke-demo.sh
+```
 
 ### Ejemplo de escenario adverso controlado
 
