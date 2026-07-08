@@ -6,6 +6,23 @@ Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo 
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
+## Jurado en 60 segundos
+
+1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA.
+2. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, 9/9 checks y la rúbrica oficial de 5 criterios.
+3. Pulsa **Demo rentable + GA**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, eventos `demo_rentable`, auditoría y evolución genética.
+4. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
+5. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
+
+Validación automática equivalente:
+
+```bash
+./scripts/smoke-demo.sh
+BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+```
+
+Lo importante: el proyecto no intenta impresionar con spreads brutos. Cada ruta pasa por costos, profundidad, inventario, latencia, riesgo, auditoría y estrategia GA; si el mercado real está plano, la demo rentable queda marcada como sintética para probar el flujo sin fingir profit live.
+
 ## Alcance seguro del MVP
 
 Este proyecto está diseñado como MVP demostrable y seguro para evaluación técnica:

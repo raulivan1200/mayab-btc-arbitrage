@@ -57,13 +57,20 @@ body {
 
 body {
   margin: 0;
-  background:
-    linear-gradient(135deg, rgba(247, 147, 26, 0.08), transparent 26%),
-    radial-gradient(circle at 80% 0%, rgba(34, 211, 238, 0.10), transparent 30%),
-    var(--fondo);
+  background: transparent;
   color: var(--tinta);
   font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
   font-size: 16px;
+}
+
+#bg-shader {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  pointer-events: none;
 }
 
 button,
@@ -337,7 +344,8 @@ h2 {
 .panel,
 .ga-panel {
   border: 2px solid var(--linea);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+  backdrop-filter: blur(8px);
   box-shadow: var(--sombra-suave);
 }
 
@@ -1332,6 +1340,30 @@ tbody tr:hover,
     outline: 3px solid transparent;
     outline-offset: 8px;
   }
+}
+
+@media (max-width: 600px) {
+  .metricas-principales {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes flash-green {
+  0% { background-color: color-mix(in srgb, var(--verde) 60%, transparent); }
+  100% { background-color: transparent; }
+}
+
+@keyframes flash-red {
+  0% { background-color: color-mix(in srgb, var(--rojo) 60%, transparent); }
+  100% { background-color: transparent; }
+}
+
+.pulse-verde {
+  animation: flash-green 1s ease-out;
+}
+
+.pulse-rojo {
+  animation: flash-red 1s ease-out;
 }
 
 @media (max-width: 1100px) {
