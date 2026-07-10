@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mayab Arbitraje BTC</title>
     <meta name="description" content="Mayab Arbitraje BTC — Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange" />
-    <link rel="icon" type="image/svg+xml" href="/icons/currency_bitcoin.svg" />
+    <link id="favicon" rel="icon" type="image/svg+xml" href="/icons/currency_bitcoin.svg" />
     <meta property="og:title" content="Mayab Arbitraje BTC" />
     <meta property="og:description" content="Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange." />
     <meta property="og:type" content="website" />
@@ -26,7 +26,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260710-landing-cards" />
+    <link rel="stylesheet" href="/styles.css?v=20260710-scrollbar-edge" />
   </head>
   <body>
     <noscript>
@@ -182,22 +182,22 @@
       <section class="metricas metricas-principales" aria-label="Métricas principales">
         <article>
           <span>Utilidad neta demo</span>
-          <strong id="pnl">$0.00</strong>
+          <strong id="pnl" class="metric-value" data-fit-metric><span class="metric-amount">$0.00</span></strong>
           <p id="pnlDetalle">Corrida rentable precargada: PnL simulado después de costos, fill parcial y rebalanceo.</p>
         </article>
         <article>
           <span>Retorno</span>
-          <strong id="retorno">0.00 bps</strong>
+          <strong id="retorno" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">bps</small></strong>
           <p>Rendimiento acumulado en puntos base; 100 bps equivale a 1%.</p>
         </article>
         <article>
           <span>Eventos</span>
-          <strong id="eventos">0</strong>
+          <strong id="eventos" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
           <p>Cotizaciones procesadas por el motor en tiempo real.</p>
         </article>
         <article>
           <span>Latencia promedio</span>
-          <strong id="latencia">0 ms</strong>
+          <strong id="latencia" class="metric-value" data-fit-metric><span class="metric-amount">0</span><small class="metric-unit">ms</small></strong>
           <p>Tiempo medio de llegada de datos; menor es mejor.</p>
         </article>
       </section>
@@ -205,32 +205,32 @@
       <section class="metricas metricas-secundarias" aria-label="Métricas de riesgo y desempeño">
         <article>
           <span>Sharpe Ratio</span>
-          <strong id="sharpe">0.00</strong>
+          <strong id="sharpe" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
           <p>Calidad riesgo-retorno de la simulación.</p>
         </article>
         <article>
           <span>Win Rate</span>
-          <strong id="winRate">0.0%</strong>
+          <strong id="winRate" class="metric-value" data-fit-metric><span class="metric-amount">0.0</span><small class="metric-unit">%</small></strong>
           <p>Porcentaje de operaciones con utilidad positiva.</p>
         </article>
         <article>
           <span>Max Drawdown</span>
-          <strong id="maxDrawdown" class="metric-money"><span class="metric-amount">0.00</span><small class="metric-unit">USD</small></strong>
+          <strong id="maxDrawdown" class="metric-value metric-money" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">USD</small></strong>
           <p>Peor caída acumulada desde un máximo de PnL.</p>
         </article>
         <article>
           <span>Trades Ejecutados</span>
-          <strong id="operacionesTotales">0</strong>
+          <strong id="operacionesTotales" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
           <p>Trades simulados que pasaron filtros de utilidad, balance y riesgo.</p>
         </article>
         <article>
           <span>Fallos</span>
-          <strong id="operacionesFallidas">0</strong>
+          <strong id="operacionesFallidas" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
           <p>Fallas controladas para demostrar robustez bajo estrés.</p>
         </article>
         <article>
           <span>Rebalanceos</span>
-          <strong id="rebalanceosTotales">0</strong>
+          <strong id="rebalanceosTotales" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
           <p>Movimientos internos para mantener capital por exchange.</p>
         </article>
       </section>
@@ -548,7 +548,7 @@
           </div>
         </section>
 
-        <section class="panel tabla">
+        <section class="panel tabla operaciones-panel">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Ejecución</p>
@@ -572,7 +572,7 @@
           </div>
         </section>
 
-        <section class="panel tabla">
+        <section class="panel tabla adversidad-panel">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Robustez</p>
@@ -595,7 +595,7 @@
           </div>
         </section>
 
-        <section class="panel tabla">
+        <section class="panel tabla rebalanceos-panel">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Wallets</p>
@@ -829,7 +829,7 @@
             </div>
             <span id="gaFeedback" class="feedback"></span>
           </div>
-          <div class="ga-card">
+          <div class="ga-card ga-exchanges-card">
             <span class="ceja">Controles de Exchanges</span>
             <p class="panel-ayuda">Activa o apaga fuentes de mercado. El cambio afecta rutas nuevas inmediatamente.</p>
             <div id="exchangeToggles" class="exchange-toggles"></div>
@@ -842,6 +842,7 @@
       <div id="notificaciones" class="notificaciones-container"></div>
     </main>
     <div id="paper-texture-overlay" aria-hidden="true" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; mix-blend-mode: multiply; z-index: 9999;"></div>
+    <script src="/favicon.js?v=20260710-fav" type="module"></script>
     <script src="/cursor.js?v=20260710-ui-fixes" type="module"></script>
     <script src="/shader.js?v=20260709-landing1" type="module"></script>
     <script src="/app.js?v=20260710-ui-fixes" type="module"></script>

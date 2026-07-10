@@ -241,6 +241,7 @@ function cambiarSocket(texto, ok) {
   el.classList.toggle("ok", ok === true);
   el.classList.toggle("error", ok === false);
   el.lastChild.nodeValue = ` ${texto}`;
+  window.dispatchEvent(new CustomEvent("mayab:socket", { detail: { texto, ok } }));
 }
 
 function iniciarTema() {
@@ -318,38 +319,88 @@ function renderDineroMetrica(el, valor) {
   amount.textContent = dineroMetrica.format(valor);
 }
 
+function renderCantidadMetrica(el, valor) {
+  if (!el) return;
+  const amount = el.querySelector(".metric-amount");
+  if (amount) amount.textContent = valor;
+  else el.textContent = valor;
+}
+
+let ajusteMetricasPendiente = false;
+
+function ajustarTamanioMetrica(el) {
+  if (!el || el.clientWidth <= 0) return;
+
+  const minimo = 16;
+  const maximo = 84;
+  let bajo = minimo;
+  let alto = maximo;
+
+  // Búsqueda binaria: usa el mayor tamaño que cabe en una sola línea.
+  for (let i = 0; i < 8; i += 1) {
+    const candidato = (bajo + alto) / 2;
+    el.style.setProperty("--metric-font-size", `${candidato}px`);
+    if (el.scrollWidth <= el.clientWidth + 0.5) bajo = candidato;
+    else alto = candidato;
+  }
+
+  el.style.setProperty("--metric-font-size", `${Math.floor(bajo * 10) / 10}px`);
+}
+
+function ajustarMetricasVisibles() {
+  ajusteMetricasPendiente = false;
+  document.querySelectorAll("[data-fit-metric]").forEach(ajustarTamanioMetrica);
+}
+
+function programarAjusteMetricas() {
+  if (ajusteMetricasPendiente) return;
+  ajusteMetricasPendiente = true;
+  requestAnimationFrame(ajustarMetricasVisibles);
+}
+
+function iniciarAjusteMetricas() {
+  programarAjusteMetricas();
+  if (!("ResizeObserver" in window)) {
+    window.addEventListener("resize", programarAjusteMetricas, { passive: true });
+    return;
+  }
+
+  const observer = new ResizeObserver(programarAjusteMetricas);
+  document.querySelectorAll(".metricas article").forEach((card) => observer.observe(card));
+}
+
 function renderizar(datos) {
   // Métricas principales
   const pnlVal = datos.metricas.utilidadAcumuladaUsd;
   const pnlEl = $("pnl");
-  pnlEl.textContent = dinero.format(pnlVal);
+  renderCantidadMetrica(pnlEl, dinero.format(pnlVal));
   aplicarAnimacionCambio(pnlEl, pnlVal, "pnl");
   actualizarDetallePnl(datos);
 
   const retornoVal = datos.metricas.retornoBps;
   const retornoEl = $("retorno");
-  retornoEl.textContent = `${formato(retornoVal, 2)} bps`;
+  renderCantidadMetrica(retornoEl, formato(retornoVal, 2));
   aplicarAnimacionCambio(retornoEl, retornoVal, "retorno");
 
   const eventosVal = datos.metricas.eventosMercado;
   const eventosEl = $("eventos");
-  eventosEl.textContent = numero.format(eventosVal);
+  renderCantidadMetrica(eventosEl, numero.format(eventosVal));
   aplicarAnimacionCambio(eventosEl, eventosVal, "eventos");
 
   const latenciaVal = datos.metricas.latenciaPromedioMs;
   const latenciaEl = $("latencia");
-  latenciaEl.textContent = `${formato(latenciaVal, 0)} ms`;
+  renderCantidadMetrica(latenciaEl, formato(latenciaVal, 0));
   aplicarAnimacionCambio(latenciaEl, latenciaVal, "latencia");
 
   // Métricas secundarias
   const sharpeVal = datos.metricas.sharpeRatio;
   const sharpeEl = $("sharpe");
-  sharpeEl.textContent = formato(sharpeVal, 2);
+  renderCantidadMetrica(sharpeEl, formato(sharpeVal, 2));
   aplicarAnimacionCambio(sharpeEl, sharpeVal, "sharpe");
 
   const winRateVal = datos.metricas.winRate;
   const winRateEl = $("winRate");
-  winRateEl.textContent = `${formato(winRateVal * 100, 1)}%`;
+  renderCantidadMetrica(winRateEl, formato(winRateVal * 100, 1));
   aplicarAnimacionCambio(winRateEl, winRateVal, "winRate");
 
   const drawdownVal = datos.metricas.maxDrawdownUsd;
@@ -359,20 +410,20 @@ function renderizar(datos) {
 
   const opsTotalesVal = datos.metricas.operacionesTotales;
   const opsTotalesEl = $("operacionesTotales");
-  opsTotalesEl.textContent = numero.format(opsTotalesVal);
+  renderCantidadMetrica(opsTotalesEl, numero.format(opsTotalesVal));
   aplicarAnimacionCambio(opsTotalesEl, opsTotalesVal, "operacionesTotales");
 
   const opsFallidasVal = datos.metricas.operacionesFallidas || 0;
   const opsFallidasEl = $("operacionesFallidas");
   if (opsFallidasEl) {
-    opsFallidasEl.textContent = numero.format(opsFallidasVal);
+    renderCantidadMetrica(opsFallidasEl, numero.format(opsFallidasVal));
     aplicarAnimacionCambio(opsFallidasEl, opsFallidasVal, "operacionesFallidas");
   }
 
   const rebalanceosVal = datos.metricas.rebalanceosTotales || 0;
   const rebalanceosEl = $("rebalanceosTotales");
   if (rebalanceosEl) {
-    rebalanceosEl.textContent = numero.format(rebalanceosVal);
+    renderCantidadMetrica(rebalanceosEl, numero.format(rebalanceosVal));
     aplicarAnimacionCambio(rebalanceosEl, rebalanceosVal, "rebalanceosTotales");
   }
 
@@ -380,6 +431,7 @@ function renderizar(datos) {
   $("riesgo").textContent = datos.metricas.estadoRiesgo;
   $("trabajadores").textContent = `${datos.metricas.trabajadores} trabajadores`;
   actualizarMejorDiferencial(datos);
+  programarAjusteMetricas();
 
   // Banners y Badges
   const cbBanner = $("circuitBreakerBanner");
@@ -2037,6 +2089,7 @@ function detectarNotificaciones(datos) {
 }
 
 function lanzarNotificacion(o) {
+  window.dispatchEvent(new CustomEvent("mayab:arbitraje", { detail: o }));
   const container = $("notificaciones");
   if (!container) return;
 
@@ -2417,6 +2470,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const overview = document.getElementById("tab-overview");
   const pantalla = document.querySelector(".pantalla");
   iniciarLanding();
+  iniciarAjusteMetricas();
 
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -2432,6 +2486,9 @@ document.addEventListener("DOMContentLoaded", () => {
       if (targetContent) {
         targetContent.classList.add("activo");
 
+        // Guardar pestaña activa para que persista al recargar
+        localStorage.setItem("mayabActiveTab", targetId);
+
         if (pantalla) {
           pantalla.scrollTop = scrollActual;
         }
@@ -2445,6 +2502,15 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   });
+
+  // Restaurar pestaña activa guardada en localStorage
+  const savedTab = localStorage.getItem("mayabActiveTab");
+  if (savedTab) {
+    const tabBtn = document.querySelector(`.tab-btn[data-tab="${savedTab}"]`);
+    if (tabBtn) {
+      tabBtn.click();
+    }
+  }
 
   if (overview) {
     overview.addEventListener("scroll", actualizarHeaderColapsable, { passive: true });
@@ -2506,13 +2572,15 @@ function iniciarLanding() {
 
 function irAlDashboard(suave = true) {
   const pantalla = document.querySelector(".pantalla");
-  const target = document.getElementById("dashboard");
-  const overviewBtn = document.querySelector('.tab-btn[data-tab="tab-overview"]');
-  if (!pantalla || !target) return;
+  const tabsNav = document.querySelector(".tabs-nav");
+  const header = document.querySelector(".barra-superior");
+  if (!pantalla) return;
 
-  if (overviewBtn && !overviewBtn.classList.contains("activo")) {
-    overviewBtn.click();
-  }
+  const activo = document.querySelector(".tab-content.activo");
+  const esOverview = !activo || activo.id === "tab-overview";
+  const target = esOverview ? header : tabsNav;
+  if (!target) return;
+
   actualizarHeaderColapsable();
   pantalla.scrollTo({
     top: Math.max(0, target.offsetTop - 18),

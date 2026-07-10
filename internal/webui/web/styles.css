@@ -2186,19 +2186,22 @@ tbody tr:hover,
 }
 
 .btn-cerrar-notif {
-  position: absolute;
+  position: absolute !important;
   top: 8px;
   right: 8px;
+  width: 24px;
+  height: 24px;
   background: transparent;
   border: none;
-  font-size: 1.2rem;
+  font-size: 1rem;
   line-height: 1;
   color: var(--tinta);
   opacity: 0.5;
   cursor: pointer;
-  padding: 4px;
-  display: grid;
-  place-items: center;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--r-sm);
   transition: opacity 0.2s, background-color 0.2s;
 }
@@ -2666,6 +2669,11 @@ h2 {
     0 6px 16px rgba(17, 17, 17, 0.06);
 }
 
+[data-theme="dark"] .latencia-chip.buena {
+  background: rgba(0, 114, 227, 0.2);
+  border-color: rgba(0, 114, 227, 0.4);
+}
+
 .tab-btn {
   border-color: transparent;
   background: transparent;
@@ -3120,6 +3128,15 @@ h2 {
   --linea-suave: rgba(244, 233, 225, 0.24);
 }
 
+[data-theme="dark"] .precio {
+  background: transparent;
+}
+
+[data-theme="dark"] .precio span {
+  color: currentColor;
+  opacity: 0.7;
+}
+
 body {
   opacity: 1;
   background: var(--fondo);
@@ -3167,8 +3184,7 @@ body::after {
   color: #000000;
 }
 
-.metricas-principales article:nth-child(4n + 3),
-.edge-panel {
+.metricas-principales article:nth-child(4n + 3) {
   background: var(--purple);
   color: #000000;
 }
@@ -3920,6 +3936,43 @@ textarea {
   background: #000000;
 }
 
+[data-theme="dark"] .peso-track,
+[data-theme="dark"] .ml-feature-track {
+  background: var(--panel);
+}
+
+[data-theme="dark"] .peso-bar-fill,
+[data-theme="dark"] .ml-feature-track div,
+[data-theme="dark"] .barra-diferencial div {
+  background: var(--azul);
+}
+
+/* La barra de cada exchange conserva el color de su propia tarjeta. */
+.exchange-lista .exchange:nth-child(4n + 1) {
+  --diferencial-card-color: var(--purple);
+}
+
+.exchange-lista .exchange:nth-child(4n + 2) {
+  --diferencial-card-color: #ff8e0a;
+}
+
+.exchange-lista .exchange:nth-child(4n + 3) {
+  --diferencial-card-color: #ffdb08;
+}
+
+.exchange-lista .exchange:nth-child(4n + 4) {
+  --diferencial-card-color: #ffffff;
+}
+
+.exchange-lista .exchange .barra-diferencial {
+  border-color: rgba(0, 0, 0, 0.32);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.exchange-lista .exchange .barra-diferencial div.fill {
+  background: var(--diferencial-card-color);
+}
+
 .lab-panel h2,
 .lab-panel .ceja,
 .lab-panel .panel-ayuda {
@@ -4607,7 +4660,7 @@ body::after {
 
 /* Hover de botones: un barrido vertical simple inspirado en el ejemplo. */
 :is(
-  button,
+  button:not(.btn-cerrar-notif),
   .btn-link,
   .tab-btn,
   .btn-primario,
@@ -4723,7 +4776,7 @@ body::after {
 }
 
 :is(
-  button,
+  button:not(.btn-cerrar-notif),
   .btn-link,
   .tab-btn,
   .btn-primario,
@@ -4742,7 +4795,7 @@ body::after {
 }
 
 :is(
-  button,
+  button:not(.btn-cerrar-notif),
   .btn-link,
   .tab-btn,
   .btn-primario,
@@ -4764,7 +4817,7 @@ body::after {
 
 @media (prefers-reduced-motion: reduce) {
   :is(
-    button,
+    button:not(.btn-cerrar-notif),
     .btn-link,
     .tab-btn,
     .btn-primario,
@@ -5028,7 +5081,7 @@ body::after {
 
 [data-theme="dark"] .tema-toggle {
   border-color: #f4e9e1;
-  color: #f4e9e1;
+  color: #d97706; /* Dorado cálido para el sol que resalta sobre el botón claro */
 }
 
 /* Custom Cursor styles */
@@ -5204,31 +5257,37 @@ body::after {
   color: #111111 !important;
 }
 
-#maxDrawdown.metric-money {
+strong.metric-value {
   min-width: 0;
+  width: 100%;
   max-width: 100%;
   display: flex;
   align-items: flex-end;
-  gap: 0.28em;
-  font-size: clamp(1.55rem, 16cqi, 3rem);
+  gap: 0.18em;
+  font-size: var(--metric-font-size, clamp(2rem, 16cqi, 5.25rem));
   line-height: 0.9;
   white-space: nowrap;
   word-break: normal;
+  overflow: visible;
 }
 
-.metric-money .metric-amount {
+.metric-value .metric-amount {
   min-width: 0;
+  flex: 0 0 auto;
   font: inherit;
+  color: inherit;
+  text-transform: none;
 }
 
-.metric-money .metric-unit {
+.metric-value .metric-unit {
   flex: 0 0 auto;
-  margin-bottom: 0.08em;
+  margin-bottom: 0.12em;
   font-family: var(--font-ui);
-  font-size: clamp(0.6rem, 0.3em, 0.78rem);
+  font-size: clamp(0.62rem, 0.22em, 0.82rem);
   font-weight: 900;
   letter-spacing: 0.06em;
   line-height: 1;
+  color: inherit;
 }
 
 .reveal-card {
@@ -5316,5 +5375,303 @@ a,
     opacity: 1 !important;
     transform: none !important;
     transition: none !important;
+  }
+}
+
+/* Keep the page scrollbar on the viewport edge while the dashboard stays centered. */
+.pantalla {
+  width: 100%;
+  margin: 0;
+  padding-right: max(20px, calc((100vw - 1680px) / 2));
+  padding-left: max(20px, calc((100vw - 1680px) / 2));
+}
+
+@media (max-width: 820px) {
+  .pantalla {
+    width: 100%;
+    padding-right: 9px;
+    padding-left: 9px;
+  }
+}
+
+/* High-contrast main scrollbar for the dark canvas. */
+[data-theme="dark"] .pantalla {
+  scrollbar-color: #ffd43b #171922;
+}
+
+[data-theme="dark"] .pantalla::-webkit-scrollbar-track {
+  border-color: #343846;
+  background: #171922;
+}
+
+[data-theme="dark"] .pantalla::-webkit-scrollbar-thumb {
+  border-color: #171922;
+  background: #ffd43b;
+}
+
+[data-theme="dark"] .pantalla::-webkit-scrollbar-thumb:hover {
+  background: #ff9f1c;
+}
+
+[data-theme="dark"] .pantalla::-webkit-scrollbar-corner {
+  background: #171922;
+}
+
+/* Paleta por modulo: cada card padre tiene identidad y los datos dejan de ser grises. */
+.judge-panel {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.edge-panel {
+  background: var(--purple);
+  color: #000000;
+}
+
+.mercado {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.mapa {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.cartera {
+  background: var(--orange);
+  color: #000000;
+}
+
+.demo-panel {
+  background: var(--purple);
+  color: #000000;
+}
+
+.grafica {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.route-decisions-panel,
+.replay-panel {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.auditoria-panel {
+  background: var(--purple);
+  color: #000000;
+}
+
+.operaciones-panel {
+  background: var(--orange);
+  color: #000000;
+}
+
+.adversidad-panel {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.rebalanceos-panel {
+  background: var(--purple);
+  color: #000000;
+}
+
+.ga-panel {
+  background: var(--purple);
+  color: #000000;
+}
+
+.judge-panel :is(h2, .ceja, .panel-ayuda, .judge-readiness),
+.edge-panel :is(h2, .ceja, .panel-ayuda),
+.mercado :is(h2, .ceja, .panel-ayuda),
+.cartera :is(h2, .ceja, .panel-ayuda),
+.demo-panel :is(h2, .ceja, .panel-ayuda),
+.grafica :is(h2, .ceja, .panel-ayuda),
+.auditoria-panel :is(h2, .ceja, .panel-ayuda),
+.operaciones-panel :is(h2, .ceja, .panel-ayuda),
+.adversidad-panel :is(h2, .ceja, .panel-ayuda),
+.rebalanceos-panel :is(h2, .ceja, .panel-ayuda),
+.ga-panel > .panel-titulo :is(h2, .ceja) {
+  color: #000000;
+}
+
+.mapa :is(h2, .ceja, .panel-ayuda),
+.route-decisions-panel :is(h2, .ceja, .panel-ayuda),
+.replay-panel :is(h2, .ceja, .panel-ayuda) {
+  color: #ffffff;
+}
+
+/* Ayudas editoriales sobre color, sin vidrio ni gris neutro. */
+.judge-panel .panel-ayuda,
+.edge-panel .panel-ayuda,
+.mercado .panel-ayuda,
+.cartera .panel-ayuda,
+.demo-panel .panel-ayuda,
+.grafica .panel-ayuda,
+.auditoria-panel .panel-ayuda,
+.operaciones-panel .panel-ayuda,
+.adversidad-panel .panel-ayuda,
+.rebalanceos-panel .panel-ayuda,
+.ga-panel .panel-ayuda {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+/* Los estados también pertenecen a la paleta; nada de pills gris genérico. */
+.judge-panel .panel-titulo > span,
+.mercado .panel-titulo > span,
+.cartera .panel-titulo > span,
+.grafica .panel-titulo > span,
+.adversidad-panel .panel-titulo > span,
+.ga-panel > .panel-titulo > span {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.edge-panel .panel-titulo > span,
+.demo-panel .panel-titulo > span,
+.auditoria-panel .panel-titulo > span,
+.rebalanceos-panel .panel-titulo > span {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.mapa .panel-titulo > span,
+.route-decisions-panel .panel-titulo > span,
+.replay-panel .panel-titulo > span {
+  background: var(--orange);
+  color: #000000;
+  border-color: #ffffff;
+}
+
+.operaciones-panel .panel-titulo > span {
+  background: var(--purple);
+  color: #000000;
+}
+
+.mapa .panel-ayuda,
+.route-decisions-panel .panel-ayuda,
+.replay-panel .panel-ayuda {
+  background: rgba(0, 0, 0, 0.22);
+  border-color: #ffffff;
+}
+
+/* La leyenda Edge funciona como una mini paleta, no como cinco cajas grises. */
+.edge-plane-legend div:nth-child(5n + 1) {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.edge-plane-legend div:nth-child(5n + 2) {
+  background: var(--orange);
+  color: #000000;
+}
+
+.edge-plane-legend div:nth-child(5n + 3) {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.edge-plane-legend div:nth-child(5n + 4) {
+  background: var(--purple);
+  color: #000000;
+}
+
+.edge-plane-legend div:nth-child(5n + 5) {
+  background: #ffdb08;
+  color: #000000;
+}
+
+.edge-plane-legend div,
+.edge-plane-legend span,
+.edge-plane-legend strong {
+  color: currentColor;
+}
+
+/* Datos internos: acentos alternados para evitar card gris dentro de card de color. */
+.balances .balance:nth-child(4n + 1),
+.config-grid div:nth-child(4n + 1),
+.cost-stack div:nth-child(4n + 1),
+.ml-edge-kpis div:nth-child(4n + 1),
+.judge-card:nth-child(4n + 1),
+.ga-card:nth-child(4n + 1) {
+  background: var(--yellow);
+  color: #000000;
+}
+
+.balances .balance:nth-child(4n + 2),
+.config-grid div:nth-child(4n + 2),
+.cost-stack div:nth-child(4n + 2),
+.ml-edge-kpis div:nth-child(4n + 2),
+.judge-card:nth-child(4n + 2),
+.ga-card:nth-child(4n + 2) {
+  background: var(--purple);
+  color: #000000;
+}
+
+.balances .balance:nth-child(4n + 3),
+.config-grid div:nth-child(4n + 3),
+.cost-stack div:nth-child(4n + 3),
+.ml-edge-kpis div:nth-child(4n + 3),
+.judge-card:nth-child(4n + 3),
+.ga-card:nth-child(4n + 3) {
+  background: #ff8e0a;
+  color: #000000;
+}
+
+.balances .balance:nth-child(4n + 4),
+.config-grid div:nth-child(4n + 4),
+.cost-stack div:nth-child(4n + 4),
+.ml-edge-kpis div:nth-child(4n + 4),
+.judge-card:nth-child(4n + 4),
+.ga-card:nth-child(4n + 4) {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.balances .balance :is(span, small, strong),
+.config-grid div :is(span, small, strong, label),
+.cost-stack div :is(span, small, strong),
+.ml-edge-kpis div :is(span, small, strong),
+.judge-card :is(p, span, small, strong, a),
+.ga-card :is(h3, p, span, small, strong, label) {
+  color: currentColor;
+}
+
+/* En tema claro, los controles sobre la tarjeta azul usan tinta negra. */
+[data-theme="light"] .ga-exchanges-card,
+[data-theme="light"] .ga-exchanges-card :is(.ceja, .panel-ayuda, .toggle-exc, label, .switch-btn) {
+  color: #000000;
+}
+
+/* Tablas dentro de cards de color: encabezado tinta y filas con papel cálido. */
+.cartera .tabla-scroll,
+.route-decisions-panel .tabla-scroll,
+.operaciones-panel .tabla-scroll,
+.adversidad-panel .tabla-scroll,
+.rebalanceos-panel .tabla-scroll,
+.auditoria-panel .tabla-scroll,
+.replay-panel .tabla-scroll {
+  background: #f4e9e1;
+}
+
+.cartera td,
+.route-decisions-panel td,
+.operaciones-panel td,
+.adversidad-panel td,
+.rebalanceos-panel td,
+.auditoria-panel td,
+.replay-panel td {
+  background: #f4e9e1;
+  color: #000000;
+}
+
+@media (prefers-contrast: more) {
+  .mapa .panel-ayuda,
+  .route-decisions-panel .panel-ayuda,
+  .replay-panel .panel-ayuda {
+    background: #000000;
   }
 }
