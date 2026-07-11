@@ -61,6 +61,8 @@ json_get "/api/export/csv" "$TMP_DIR/export.csv"
 json_post "/api/demo" '{"escenario":"liquidez_insuficiente"}' "$TMP_DIR/demo-liquidez.json"
 json_post "/api/demo" '{"escenario":"circuit_breaker"}' "$TMP_DIR/demo-circuit.json"
 json_get "/api/estado" "$TMP_DIR/estado-adverso.json"
+json_post "/api/demo/final" '{}' "$TMP_DIR/demo-restaurada.json"
+json_get "/api/preflight" "$TMP_DIR/preflight-final.json"
 
 python3 - "$TMP_DIR" <<'PY'
 import json
@@ -91,6 +93,8 @@ export_json = load("export.json")
 demo_liquidez = load("demo-liquidez.json")
 demo_circuit = load("demo-circuit.json")
 estado_adverso = load("estado-adverso.json")
+demo_restaurada = load("demo-restaurada.json")
+preflight_final = load("preflight-final.json")
 export_csv = (tmp / "export.csv").read_text()
 
 errors = []
@@ -216,6 +220,16 @@ if "circuit_breaker" not in tipos_adversos:
 if not estado_adverso.get("metricas", {}).get("circuitBreakerActivo"):
     errors.append("circuit_breaker demo no activo metrica de riesgo")
 
+if demo_restaurada.get("ok") is not True:
+    errors.append("/api/demo/final no restauro el sistema despues de probar adversidad")
+readiness_final = preflight_final.get("judgeReadiness") or {}
+if readiness_final.get("status") != "ready":
+    errors.append("el smoke no dejo judgeReadiness=ready al terminar")
+if not preflight_final.get("listo"):
+    errors.append("el smoke no dejo preflight listo=true al terminar")
+if any(check.get("ok") is not True for check in readiness_final.get("checks") or []):
+    errors.append("el smoke dejo checks de readiness incompletos al terminar")
+
 if errors:
     print("Smoke fallido:")
     for error in errors:
@@ -229,4 +243,5 @@ print(f"- GA generacion: {genetico.get('generacion')} | activo: {genetico.get('a
 print(f"- rebalanceos: {metricas.get('rebalanceosTotales')}")
 print(f"- paquete: {paquete.get('puntajeTotal'):.2f} | huella: {paquete.get('huellaAuditoria')}")
 print(f"- lab ganador: {lab.get('ganador')} | export CSV bytes: {len(export_csv)}")
+print(f"- estado final: {readiness_final.get('status')} ({readiness_final.get('passed')}/{readiness_final.get('total')})")
 PY
