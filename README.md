@@ -8,10 +8,10 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 
 ## Jurado en 60 segundos
 
-1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA.
+1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. Pulsa **Preparar recorrido completo**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética.
+4. Desplázate hasta **Demo controlada**: al entrar el panel en pantalla, el sistema prepara automáticamente el recorrido completo e inyecta una dislocación sintética etiquetada, operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética. El botón queda disponible para repetir la corrida.
 5. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
@@ -80,14 +80,14 @@ Contrato HTTP:
 - **Circuit Breaker y Modo Conservador** por volatilidad: se duplica el umbral mínimo de spread cuando el mercado es volátil.
 - **Z-Score con ventana histórica** de 100 muestras: scoring estadístico de cada ruta.
 - **Rebalanceo inteligente de carteras simuladas** cada 100 ciclos con movimientos internos USD/BTC, umbrales configurables y bitácora de movimientos.
-- **Backtest reproducible integrado** vía API/UI para comparar estrategia base vs estrategia optimizada con los costos activos.
+- **Backtest reproducible multisemilla** vía API/UI: compara baseline contra el campeón GA publicado en 24 semillas comunes y muestra mediana, P05–P95 e intervalo de confianza.
 - **Preflight operacional** (`/api/preflight`) con salud de feeds, configuración, riesgo, GA, archivos del dashboard y endpoints de auditoría.
 - **Jury Mode** (`/api/jurado`) como superficie única de evaluación: rúbrica oficial, scorecard, cobertura contra benchmark finalista, checks, evidencia clave y enlaces verificables.
 - **Endpoint compatible con LLMs y revisores automáticos** (`/api/resumen-llm`) con resumen narrativo, Markdown y métricas clave sin tener que interpretar HTML.
 - **Paquete de evaluación para jurado** (`/api/paquete-evaluacion`) con scorecard, guion de demo, evidencia auditable, backtest reproducible y huella de corrida.
 - **Tablero operativo en tiempo real** con mapa de rutas, panel forense de oportunidades, score EV, modo LIVE/DEMO/REST, timeline operativo, presets de estrategia, panel genético (fitness, diversidad, pesos, convergencia), ganancia/pérdida, latencia, oportunidades y ejecuciones.
 - **Auditoría de decisiones** por ruta: score final, razón de aceptación/descarte, pesos GA usados, costo total, latencia, Z-Score y balances relevantes antes de ejecutar.
-- **Auditoría durable en SQLite**: operaciones, oportunidades, eventos, rebalanceos y decisiones se guardan localmente para revisión posterior y exportación.
+- **Auditoría local en SQLite**: operaciones, oportunidades, eventos, rebalanceos y decisiones se guardan para revisión y exportación. En Cloud Run, `/tmp` es efímero; retención permanente requiere volumen o backend externo.
 - **Ranking de latencia por exchange** con EWMA, min/max, feed degradado y sugerencia de región operativa.
 - **Modo demo adverso controlado** desde la UI/API para forzar fallo de orden, shock de mercado, liquidez insuficiente, circuit breaker y rebalanceo sin depender del azar.
 - **Modo demo rentable + GA** para inyectar operaciones sintéticas auditables, generar P&L visible y entrenar el GA cuando el mercado real no ofrece spread neto ejecutable.
@@ -171,7 +171,7 @@ graph TD
     Conectores -->|Cotizaciones BBO| Tokio
     Tokio -->|Ticker 70ms| Motor
     Motor -->|Buscar oportunidades| Analizador
-    Analizador -->|Ajuste USD/USDT y Costos| Motor
+    Analizador -->|Basis USD/USDT dentro de costos| Motor
     Motor -->|Ejecutar simulación| Carteras
     Motor -->|Métricas de operaciones| GA
     GA -->|Pesos optimizados| Estrategia
@@ -210,7 +210,7 @@ Flujo recomendado para evaluar la aplicación en vivo:
    - **Estrés**: aumenta probabilidad de fallo, movimiento brusco y activa una gestión más conservadora.
 4. Desactivar un exchange y confirmar que el motor recalcula rutas y mantiene el estado activo/inactivo visible.
 5. Usar “Demo controlada” para forzar fallo de orden, shock de mercado, fill parcial, liquidez insuficiente, circuit breaker o rebalanceo; confirmar que aparecen en operaciones, eventos y auditoría.
-6. Usar **Preparar recorrido completo** si el mercado real está plano; confirma operaciones, P&L, oportunidades verdes, fill parcial, rebalanceo, auditoría y GA activo. **Repetir escenario rentable** permite volver a inyectar sólo la dislocación rentable.
+6. Llegar a **Demo controlada** si el mercado real está plano; el recorrido completo se prepara automáticamente al aparecer el panel y confirma operaciones, P&L, oportunidades verdes, fill parcial, rebalanceo, auditoría y GA activo. **Preparar recorrido completo** repite toda la corrida y **Repetir escenario rentable** vuelve a inyectar sólo la dislocación rentable.
 7. Exportar JSON/CSV para revisar trazabilidad fuera del dashboard.
 8. Ejecutar el backtest reproducible para comparar estrategia base vs estrategia optimizada con los costos vigentes.
 9. Forzar una evolución genética y observar fuente de entrenamiento, muestras, fitness, diversidad y pesos de scoring.
@@ -459,8 +459,8 @@ fly deploy
 
 ```text
 GET  /                     tablero web embebido
-GET  /healthz              verificación de salud
-GET  /api/healthz          verificación de salud compatible con Cloud Run
+GET  /healthz              verificación de salud para ejecución local
+GET  /api/healthz          verificación de salud canónica para Cloud Run y monitores externos
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
 GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación
@@ -475,6 +475,7 @@ GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
 POST /api/config           actualizar parámetros de simulación
 POST /api/demo             disparar escenario adverso o demo rentable controlada
+POST /api/demo/reset       reiniciar balances, PnL, riesgo y GA conservando feeds/configuración
 POST /api/demo/final       prepara demo final: GA, mercado rentable, fill parcial y rebalanceo
 GET  /api/ga/estado        estado detallado del motor genético
 GET  /api/ga/config        configuración actual del GA
@@ -533,17 +534,18 @@ El bridge expone herramientas read-only (`preflight`, `jury_mode`, `summarize_fo
 curl http://localhost:8080/api/paquete-evaluacion
 ```
 
-El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, explicabilidad, GA, ML Edge, riesgo, persistencia durable, Research Lab y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
+El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, scoring evolutivo explicable, GA, riesgo, auditoría SQLite local, Research Lab y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
 
 Para convertir ese scorecard en una prueba repetible:
 
 ```bash
+curl -X POST http://localhost:8080/api/demo/reset
 curl -X POST http://localhost:8080/api/demo/final
 curl http://localhost:8080/api/lab/sweep
 curl http://localhost:8080/api/paquete-evaluacion
 ```
 
-`/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay determinístico y reporta PnL, drawdown, win rate, score e intervalo de confianza.
+`/api/demo/reset` crea una corrida limpia sin tumbar los feeds públicos. `/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay y valida robustez en 24 semillas comunes. El campeón puede perder: el reporte conserva el resultado para evitar cherry-picking.
 
 También puedes correr el smoke completo:
 

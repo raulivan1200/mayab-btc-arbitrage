@@ -8,10 +8,8 @@ function initCursor() {
   cursor.setAttribute('aria-hidden', 'true');
   cursor.hidden = true;
 
-  const cursorIcon = document.createElement('img');
-  cursorIcon.src = '/icons/currency_bitcoin.svg';
-  cursorIcon.alt = '';
-  cursorIcon.draggable = false;
+  const cursorIcon = document.createElement('div');
+  cursorIcon.className = 'cursor-icon';
   cursor.appendChild(cursorIcon);
   document.body.appendChild(cursor);
 
@@ -24,10 +22,11 @@ function initCursor() {
     if (e.pointerType === 'touch') return;
     mouseX = e.clientX;
     mouseY = e.clientY;
-    if (!hasMoved) {
-      hasMoved = true;
+    if (cursor.hidden) {
       cursor.hidden = false;
     }
+    hasMoved = true;
+    syncHoverState();
     if (!animationFrame) animationFrame = requestAnimationFrame(updateCursor);
   }, { passive: true });
 
@@ -45,14 +44,25 @@ function initCursor() {
 
   document.addEventListener('pointerover', (event) => {
     if (event.pointerType === 'touch') return;
-    cursor.classList.toggle('is-clickable', Boolean(event.target.closest?.(interactiveSelector)));
+    syncHoverState(event.target);
+  }, { passive: true });
+
+  // Un clic puede abrir una capa nueva bajo un puntero inmóvil (el diccionario,
+  // por ejemplo). Recalcular después del clic evita conservar el hover del
+  // elemento que quedó detrás de esa capa.
+  document.addEventListener('click', () => {
+    queueMicrotask(() => syncHoverState());
   }, { passive: true });
 
   document.addEventListener('pointerdown', (event) => {
     if (event.pointerType !== 'touch') cursor.classList.add('is-pressed');
   }, { passive: true });
   document.addEventListener('pointerup', () => cursor.classList.remove('is-pressed'), { passive: true });
+  document.addEventListener('pointercancel', () => cursor.classList.remove('is-pressed'), { passive: true });
   window.addEventListener('blur', hideCursor);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hideCursor();
+  });
 
   // Handle visibility transitions
   document.addEventListener('mouseleave', hideCursor);
@@ -63,8 +73,15 @@ function initCursor() {
   }
 
   document.addEventListener('mouseenter', () => {
-    if (hasMoved) cursor.hidden = false;
+    if (hasMoved) {
+      cursor.hidden = false;
+      syncHoverState();
+    }
   });
+
+  function syncHoverState(target = document.elementFromPoint(mouseX, mouseY)) {
+    cursor.classList.toggle('is-clickable', Boolean(target?.closest?.(interactiveSelector)));
+  }
 
   function updateCursor() {
     animationFrame = 0;

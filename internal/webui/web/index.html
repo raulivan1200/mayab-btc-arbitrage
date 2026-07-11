@@ -26,7 +26,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260710-final-interactions" />
+    <link rel="stylesheet" href="/styles.css?v=20260710-native-cursor" />
   </head>
   <body>
     <noscript>
@@ -99,7 +99,7 @@
             <span>04</span>
             <h2>Optimización explicable</h2>
             <ul>
-              <li>Mayab Edge Tensor con variables legibles</li>
+              <li>Scoring evolutivo con variables legibles</li>
               <li>Pesos GA, fitness y diversidad por generación</li>
               <li>JSON/CSV para auditar fuera del dashboard</li>
             </ul>
@@ -175,7 +175,7 @@
           <li><span>Mejor ruta</span><strong id="llm-ruta">Cargando...</strong></li>
           <li><span>Decisión</span><strong id="llm-decision">Cargando...</strong></li>
           <li><span>GA</span><strong id="llm-ga">Cargando...</strong></li>
-          <li><span>ML Edge</span><strong id="llm-ml">Cargando...</strong></li>
+          <li><span>Score evolutivo</span><strong id="llm-ml">Cargando...</strong></li>
           <li><span>Sistema</span><strong id="llm-sistema">Cargando...</strong></li>
           <li><span>Latencia</span><strong id="llm-latencia">Cargando...</strong></li>
         </ul>
@@ -213,9 +213,9 @@
 
       <section class="metricas metricas-secundarias" aria-label="Métricas de riesgo y desempeño">
         <article>
-          <span>Sharpe Ratio</span>
+          <span>Sharpe por operación</span>
           <strong id="sharpe" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
-          <p>Calidad riesgo-retorno de la simulación.</p>
+          <p>Retorno medio dividido por su variabilidad entre trades; no anualizado.</p>
         </article>
         <article>
           <span>Win Rate</span>
@@ -268,16 +268,16 @@
         <div id="benchmarkCobertura" class="benchmark-grid">Calculando cobertura contra la rúbrica...</div>
       </section>
 
-      <section class="panel edge-panel" aria-label="Mayab Edge Tensor">
+      <section class="panel edge-panel" aria-label="Scoring evolutivo explicable">
         <div class="panel-titulo">
           <div>
             <p class="ceja">IA / Evidencia</p>
-            <h2>Mayab Edge Tensor</h2>
+            <h2>Scoring evolutivo</h2>
           </div>
           <span id="edgeEstado" class="edge-status">esperando señal explicable</span>
         </div>
         <p id="edgeExplicacion" class="panel-ayuda">El motor calcula valor esperado con utilidad neta, frescura del book, liquidez, confiabilidad histórica y z-score del spread.</p>
-        <div class="edge-plane" aria-label="Plano cartesiano ML Edge">
+        <div class="edge-plane" aria-label="Plano cartesiano del score evolutivo">
           <svg id="edgePlane" viewBox="0 0 360 240" role="img" aria-label="Plano de probabilidad contra impacto">
             <defs>
               <pattern id="edgeGridPattern" width="26" height="26" patternUnits="userSpaceOnUse">
@@ -497,10 +497,11 @@
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda">Ejecuta escenarios reproducibles para observar cómo responde el motor ante utilidad, fallos de orden, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
+        <p class="panel-ayuda">Al llegar a esta sección se prepara automáticamente el recorrido rentable completo. También puedes repetirlo o ejecutar escenarios reproducibles de fallos, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
         <div class="demo-actions">
-          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final">Preparar recorrido completo</button>
-          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Repetir escenario rentable</button>
+          <button type="button" id="btnResetDemo" class="btn-secundario">Reiniciar corrida de jurado</button>
+          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final btc-icon-button">Preparar recorrido completo</button>
+          <button type="button" class="btn-secundario demo-primary btc-icon-button" data-demo="mercado_rentable">Repetir escenario rentable</button>
           <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
           <button type="button" class="btn-secundario" data-demo="mercado_movido">Shock de mercado</button>
           <button type="button" class="btn-secundario" data-demo="fill_parcial">Fill parcial</button>
@@ -660,7 +661,7 @@
             <p class="ceja">Replay</p>
             <h2>Backtest que se puede repetir</h2>
           </div>
-          <button id="btnBacktest" class="btn-primario btn-inline">Ejecutar</button>
+          <button id="btnBacktest" class="btn-primario btn-inline btc-icon-button">Ejecutar</button>
         </div>
         <p class="panel-ayuda">Corre el mismo set sintético con estrategia base vs estrategia optimizada para comparar PnL, drawdown, win rate y spread.</p>
         <div class="tabla-scroll">
@@ -678,6 +679,9 @@
             </thead>
             <tbody id="backtestResultados"></tbody>
           </table>
+        </div>
+        <div id="backtestEvidencia" class="evidence-summary" aria-live="polite">
+          Calculando validación multisemilla…
         </div>
       </section>
 
@@ -706,6 +710,9 @@
             </thead>
             <tbody id="labSweepResultados"></tbody>
           </table>
+        </div>
+        <div id="labEvidencia" class="evidence-summary" aria-live="polite">
+          Comparando robustez en 24 semillas comunes…
         </div>
       </section>
 
@@ -806,8 +813,8 @@
             <div id="gaPesos" class="ga-pesos"></div>
           </div>
           <div class="ga-card ga-ml-card">
-            <span class="ceja">ML Edge</span>
-            <p class="panel-ayuda">Explica la decisión con valor esperado, probabilidad de fill/supervivencia y contribución por variable.</p>
+            <span class="ceja">Scoring evolutivo</span>
+            <p class="panel-ayuda">Score heurístico cuyos pesos ajusta el GA. Explica valor esperado, probabilidad simulada de fill/supervivencia y contribución por variable; no se presenta como una red neuronal.</p>
             <div class="ml-edge-kpis">
               <div><span>EV</span><strong id="mlEv">$0.00</strong></div>
               <div><span>Confianza</span><strong id="mlConfianza">0.0%</strong></div>
@@ -851,6 +858,10 @@
       <div id="notificaciones" class="notificaciones-container"></div>
     </main>
 
+    <button id="tutorialToggle" class="dictionary-fab tutorial-fab" type="button" aria-haspopup="dialog" aria-controls="tutorialPanel">
+      <i style="font-size: 20px; line-height: 1; font-style: normal;">⏱️</i>
+      <span>Recorrido 2 min</span>
+    </button>
     <button id="dictionaryToggle" class="dictionary-fab" type="button" aria-label="Abrir diccionario de conceptos" aria-controls="dictionaryPanel" aria-expanded="false">
       <img src="/icons/dictionary.svg" alt="" aria-hidden="true" />
       <span>Diccionario</span>
@@ -895,7 +906,7 @@
               <tr><th scope="row">Score</th><td>Puntuación que ordena rutas usando utilidad, frescura, liquidez, confianza y z-score.</td></tr>
               <tr><th scope="row">Z-score</th><td>Indica qué tan inusual es el spread frente a su comportamiento reciente.</td></tr>
               <tr><th scope="row">Win rate</th><td>Porcentaje de operaciones simuladas que terminaron con utilidad positiva.</td></tr>
-              <tr><th scope="row">Sharpe ratio</th><td>Relación entre retorno y variabilidad; ayuda a comparar calidad, no solo ganancia.</td></tr>
+              <tr><th scope="row">Sharpe por operación</th><td>Relación no anualizada entre retorno y variabilidad por trade; evita asumir una frecuencia de ejecución inexistente.</td></tr>
               <tr><th scope="row">Drawdown</th><td>Mayor caída del PnL desde un máximo anterior.</td></tr>
               <tr><th scope="row">Circuit breaker</th><td>Protección que pausa ejecuciones cuando las pérdidas superan un límite.</td></tr>
               <tr><th scope="row">GA</th><td>Algoritmo genético que prueba, mezcla y muta estrategias para buscar mejores parámetros.</td></tr>
@@ -919,10 +930,26 @@
         </footer>
       </div>
     </aside>
+
+    <div id="tutorialBackdrop" class="tutorial-backdrop" hidden></div>
+    <aside id="tutorialPanel" class="tutorial-panel" role="dialog" aria-modal="true" aria-labelledby="tutorialTitle" hidden>
+      <div class="tutorial-progress" aria-hidden="true"><span id="tutorialProgressBar"></span></div>
+      <div class="tutorial-meta">
+        <span id="tutorialStepLabel">Paso 1 de 6</span>
+        <button id="tutorialClose" type="button" aria-label="Cerrar recorrido">×</button>
+      </div>
+      <p class="ceja">Recorrido para jurado</p>
+      <h2 id="tutorialTitle">Mercado público en vivo</h2>
+      <p id="tutorialText">Cinco adaptadores normalizan order books y conservan la fuente visible.</p>
+      <p id="tutorialProof" class="tutorial-proof"></p>
+      <div class="tutorial-actions">
+        <button id="tutorialPrev" class="btn-secundario" type="button">Anterior</button>
+        <button id="tutorialNext" class="btn-primario" type="button">Siguiente</button>
+      </div>
+    </aside>
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
-    <script src="/cursor.js?v=20260710-dictionary-layer" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260710-tab-scroll-memory" type="module"></script>
+    <script src="/app.js?v=20260710-table-tools" type="module"></script>
   </body>
 </html>

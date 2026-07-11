@@ -187,9 +187,9 @@ impl EstadoGa {
             return;
         }
 
-        let base = evaluar_ventana(operaciones, fallos);
         for genoma in &mut self.poblacion {
-            genoma.fitness = fitness_genoma(genoma, &base);
+            let ventana = evaluar_genoma(genoma, operaciones, fallos);
+            genoma.fitness = fitness_genoma(genoma, &ventana);
         }
         self.poblacion
             .sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
@@ -230,8 +230,8 @@ impl EstadoGa {
             siguiente.push(hijo);
         }
 
-        self.aplicar_recocido_simulado(&base, &mut siguiente, elite);
-        self.inyectar_evolucion_diferencial(&base, &mut siguiente, elite);
+        self.aplicar_recocido_simulado(operaciones, fallos, &mut siguiente, elite);
+        self.inyectar_evolucion_diferencial(operaciones, fallos, &mut siguiente, elite);
 
         if self.diversidad < 0.04 {
             for genoma in siguiente.iter_mut().skip(elite).step_by(3) {
@@ -240,7 +240,8 @@ impl EstadoGa {
         }
 
         for genoma in &mut siguiente {
-            genoma.fitness = fitness_genoma(genoma, &base);
+            let ventana = evaluar_genoma(genoma, operaciones, fallos);
+            genoma.fitness = fitness_genoma(genoma, &ventana);
         }
         siguiente.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
         let mejor_hibrido = siguiente[0].clone();
@@ -400,7 +401,8 @@ impl EstadoGa {
 
     fn aplicar_recocido_simulado(
         &mut self,
-        base: &VentanaFitness,
+        operaciones: &[Operacion],
+        fallos: usize,
         poblacion: &mut [Genoma],
         elite: usize,
     ) {
@@ -410,10 +412,12 @@ impl EstadoGa {
         self.temperatura_annealing = (1.25 / (1.0 + self.generacion as f64 * 0.045)).max(0.05);
         let limite = poblacion.len().min((elite + 8).max(8));
         for genoma in poblacion.iter_mut().take(limite).skip(1) {
-            genoma.fitness = fitness_genoma(genoma, base);
+            let ventana = evaluar_genoma(genoma, operaciones, fallos);
+            genoma.fitness = fitness_genoma(genoma, &ventana);
             let mut vecino = genoma.clone();
             self.mutar_fino(&mut vecino, self.temperatura_annealing);
-            vecino.fitness = fitness_genoma(&vecino, base);
+            let ventana_vecino = evaluar_genoma(&vecino, operaciones, fallos);
+            vecino.fitness = fitness_genoma(&vecino, &ventana_vecino);
             let delta = vecino.fitness - genoma.fitness;
             let prob = if delta >= 0.0 {
                 1.0
@@ -431,7 +435,8 @@ impl EstadoGa {
 
     fn inyectar_evolucion_diferencial(
         &mut self,
-        base: &VentanaFitness,
+        operaciones: &[Operacion],
+        fallos: usize,
         poblacion: &mut [Genoma],
         elite: usize,
     ) {
@@ -464,7 +469,8 @@ impl EstadoGa {
                     * (poblacion[b].tolerancia_latencia_ms - poblacion[c].tolerancia_latencia_ms)
                         as f64) as i64;
             candidato.normalizar();
-            candidato.fitness = fitness_genoma(&candidato, base);
+            let ventana = evaluar_genoma(&candidato, operaciones, fallos);
+            candidato.fitness = fitness_genoma(&candidato, &ventana);
             if candidato.fitness > poblacion[destino].fitness {
                 poblacion[destino] = candidato;
             }
@@ -555,6 +561,38 @@ fn evaluar_ventana(operaciones: &[Operacion], fallos: usize) -> VentanaFitness {
         n,
         fallos,
     }
+}
+
+fn evaluar_genoma(g: &Genoma, operaciones: &[Operacion], fallos: usize) -> VentanaFitness {
+    let seleccionadas = operaciones
+        .iter()
+        .filter_map(|op| {
+            let capital = op.precio_compra * op.cantidad_btc;
+            if capital <= 0.0 || op.cantidad_btc <= 0.0 {
+                return None;
+            }
+            let neto_bps = op.utilidad_usd / capital * 10_000.0;
+            if neto_bps < g.umbral_min_spread_bps || op.latencia_max_ms > g.tolerancia_latencia_ms {
+                return None;
+            }
+            let cantidad = op.cantidad_btc.min(g.max_operacion_btc);
+            if cantidad <= 0.0 {
+                return None;
+            }
+            let escala = cantidad / op.cantidad_btc;
+            let mut candidato = op.clone();
+            candidato.cantidad_btc = cantidad;
+            candidato.utilidad_usd *= escala;
+            candidato.costos.fee_compra_usd *= escala;
+            candidato.costos.fee_venta_usd *= escala;
+            candidato.costos.deslizamiento_usd *= escala;
+            candidato.costos.retiro_amort_usd *= escala;
+            candidato.costos.latencia_riesgo_usd *= escala;
+            candidato.costos.total_usd *= escala;
+            Some(candidato)
+        })
+        .collect::<Vec<_>>();
+    evaluar_ventana(&seleccionadas, fallos)
 }
 
 fn fitness_genoma(g: &Genoma, base: &VentanaFitness) -> f64 {
@@ -656,5 +694,23 @@ mod tests {
         assert_eq!(estado.fallos_evaluados, 1);
         assert_eq!(estado.mejores_pesos.len(), 5);
         assert!(estado.umbral_optimizado >= 0.1);
+    }
+
+    #[test]
+    fn fitness_evalua_limites_propios_de_cada_genoma() {
+        let operaciones = vec![op(20.0, false), op(8.0, false)];
+        let amplio = Genoma::base();
+        let mut estricto = Genoma::base();
+        estricto.umbral_min_spread_bps = 50.0;
+        let mut pequeno = Genoma::base();
+        pequeno.max_operacion_btc = 0.05;
+
+        let ventana_amplia = evaluar_genoma(&amplio, &operaciones, 0);
+        let ventana_estricta = evaluar_genoma(&estricto, &operaciones, 0);
+        let ventana_pequena = evaluar_genoma(&pequeno, &operaciones, 0);
+
+        assert_eq!(ventana_amplia.n, 2);
+        assert_eq!(ventana_estricta.pnl_total, 0.0);
+        assert!(ventana_pequena.pnl_total < ventana_amplia.pnl_total);
     }
 }

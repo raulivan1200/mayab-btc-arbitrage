@@ -2,12 +2,18 @@
 
 Este documento detalla el paso a paso para probar todas las funcionalidades principales, mecanismos de robustez y algoritmos del motor.
 
+## Recorrido opcional de 2 minutos
+
+- **Acción:** En el encabezado del dashboard, pulse **Recorrido de 2 min**.
+- **Expectativa:** La guía cambia de pestaña y resalta, en orden, lectura ejecutiva, feeds, cálculo neto, escenarios adversos, validación multisemilla y campeón GA.
+- **Atajo reproducible:** En "Demo controlada", use **Reiniciar corrida de jurado** antes de **Preparar recorrido completo**. El reset conserva feeds públicos y configuración, pero limpia balances, PnL, riesgo y estado GA.
+
 ## 1. Validación de Readiness Inicial
 - **Acción:** Al cargar el dashboard (http://127.0.0.1:8080), observe la sección central **"Readiness"** (Modo Jurado).
 - **Expectativa:** 5 tarjetas deben mostrar "Ok" validando la parametrización, robustez, soporte multi-wallet, métricas de latencia y documentación.
 
 ## 2. Inyectar Oportunidad (Demo Rentable)
-- **Acción:** En la sección "Demo controlada", presione **"Preparar recorrido completo"**.
+- **Acción:** Desplácese hasta la sección "Demo controlada". El recorrido completo se prepara automáticamente cuando el panel entra en pantalla; **"Preparar recorrido completo"** permite repetirlo si se desea.
 - **Expectativa:** 
   1. El PnL debe incrementar.
   2. En "Ejecución -> Operaciones" debe aparecer una transacción rentable en verde.

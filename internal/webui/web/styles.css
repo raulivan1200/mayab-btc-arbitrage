@@ -286,16 +286,55 @@ button {
   cursor: pointer;
   box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
   transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  isolation: isolate;
+  overflow: hidden;
 }
 
-.dictionary-fab img { width: 24px; height: 24px; filter: brightness(0); }
+.dictionary-fab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--blue);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 420ms cubic-bezier(.16, 1, .3, 1);
+}
+.dictionary-fab img,
+.dictionary-fab span { position: relative; z-index: 1; }
+.dictionary-fab img { width: 24px; height: 24px; filter: brightness(0); transition: filter 220ms ease, transform 420ms cubic-bezier(.16, 1, .3, 1); }
+.dictionary-fab[aria-expanded="true"] { color: #fff; }
+.dictionary-fab[aria-expanded="true"]::before { transform: scaleX(1); }
+.dictionary-fab[aria-expanded="true"] img { filter: brightness(0) invert(1); transform: rotate(-8deg) scale(1.08); }
 .dictionary-fab:is(:hover, :focus-visible) {
   transform: translateY(-5px) scale(1.02);
-  background: color-mix(in srgb, var(--yellow) 84%, white);
   box-shadow: 0 18px 38px rgba(0, 0, 0, .34);
 }
-.dictionary-fab:active { transform: translateY(-1px) scale(.98); }
-.dictionary-backdrop { position: fixed; inset: 0; z-index: 2147483011; background: rgba(0, 0, 0, .62); backdrop-filter: blur(4px); }
+.dictionary-fab:is(:hover, :focus-visible) img { filter: brightness(0) invert(1); }
+.dictionary-fab:active {
+  transform: translateY(-1px) scale(.98);
+}
+.dictionary-fab:active img { filter: brightness(0) invert(1); }
+.tutorial-fab {
+  top: calc(90vh - 114px);
+  top: calc(90dvh - 114px);
+  background: var(--blue);
+  color: #fff;
+}
+.tutorial-fab::before {
+  background: var(--yellow);
+}
+.tutorial-fab:is(:hover, :focus-visible) {
+  background: var(--yellow);
+  color: #111;
+}
+.tutorial-fab:is(:hover, :focus-visible) span {
+  filter: none;
+}
+.tutorial-fab[aria-expanded="true"] { color: #111; }
+.tutorial-fab[aria-expanded="true"]::before { transform: scaleX(1); }
+.dictionary-backdrop { position: fixed; inset: 0; z-index: 2147483011; background: rgba(0, 0, 0, .62); backdrop-filter: blur(4px); opacity: 0; transition: opacity 260ms ease; }
+.dictionary-backdrop.is-open { opacity: 1; }
 .dictionary-panel {
   position: fixed;
   inset: 16px 16px 16px auto;
@@ -307,7 +346,11 @@ button {
   background: var(--paper);
   color: var(--ink);
   box-shadow: -18px 0 60px rgba(0, 0, 0, .35);
+  opacity: 0;
+  transform: translateX(calc(100% + 32px));
+  transition: transform 420ms cubic-bezier(.16, 1, .3, 1), opacity 220ms ease;
 }
+.dictionary-panel.is-open { opacity: 1; transform: translateX(0); }
 .dictionary-header { display: flex; align-items: center; justify-content: space-between; padding: 22px 24px; border-bottom: var(--border-soft); background: var(--blue); color: #fff; }
 .dictionary-header .ceja { color: rgba(255,255,255,.72); margin: 0 0 4px; }
 .dictionary-header h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.8rem, 4vw, 3rem); }
@@ -325,7 +368,8 @@ button {
 .dictionary-table th, .dictionary-table td { padding: 13px 14px; border-bottom: var(--border-soft); vertical-align: top; line-height: 1.45; }
 .dictionary-table thead th { position: sticky; top: 0; background: var(--ink); color: var(--bg); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
 .dictionary-table tbody th { width: 30%; color: var(--blue); }
-.dictionary-table tbody tr { transition: background-color 150ms ease, box-shadow 150ms ease; }
+.dictionary-table tbody tr { opacity: 0; transform: translateX(18px); transition: background-color 150ms ease, box-shadow 150ms ease, opacity 300ms ease, transform 360ms cubic-bezier(.16, 1, .3, 1); }
+.dictionary-panel.is-open .dictionary-table tbody tr { opacity: 1; transform: translateX(0); transition-delay: calc(90ms + (var(--dictionary-index, 0) * 18ms)); }
 .dictionary-table tbody tr:is(:hover, :focus-within) {
   background: color-mix(in srgb, var(--blue) 9%, var(--paper));
   box-shadow: inset 4px 0 0 var(--blue);
@@ -1769,6 +1813,151 @@ h2 {
   max-height: 328px;
   overflow: auto;
   border: 2px solid var(--linea-suave);
+}
+
+.tabla-herramientas {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: 10px 0 7px;
+}
+
+.tabla-filtro {
+  display: flex;
+  align-items: center;
+  flex: 1 1 240px;
+  min-width: 0;
+  gap: 8px;
+}
+
+.tabla-filtro[hidden] {
+  display: none;
+}
+
+.tabla-filtro-input {
+  width: min(100%, 380px);
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 11px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+}
+
+.tabla-filtro-input:focus-visible,
+.tabla-accion:focus-visible {
+  outline: 3px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+.tabla-filtro-estado {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.tabla-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.tabla-accion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.tabla-accion:hover,
+.tabla-accion.activo {
+  border-color: var(--yellow);
+  background: var(--yellow);
+  color: #111;
+}
+
+.panel:fullscreen,
+.panel.tabla-pantalla-completa {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  overflow: auto;
+  padding: clamp(16px, 3vw, 36px);
+  background: var(--panel);
+}
+
+.panel:fullscreen > .tabla-scroll,
+.panel.tabla-pantalla-completa > .tabla-scroll {
+  height: calc(100vh - 210px);
+  max-height: none;
+}
+
+.panel.tabla-pantalla-completa {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+}
+
+body.tabla-fullscreen-activa {
+  overflow: hidden;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .tabla-herramientas {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .tabla-filtro {
+    flex-basis: auto;
+  }
+
+  .tabla-filtro-input {
+    width: 100%;
+  }
+
+  .tabla-acciones {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tabla-accion {
+    padding-inline: 6px;
+  }
+
+  .tabla-accion span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 table {
@@ -5005,7 +5194,7 @@ body::after {
 
 /* Hover de botones: un barrido vertical simple inspirado en el ejemplo. */
 :is(
-  button:not(.btn-cerrar-notif):not(.dictionary-fab),
+  button:not(.btn-cerrar-notif),
   .btn-link,
   .tab-btn,
   .btn-primario,
@@ -5044,6 +5233,18 @@ body::after {
 
 .btn-secundario {
   --button-rest-bg: transparent;
+}
+
+.dictionary-fab {
+  --button-rest-bg: var(--yellow);
+  --button-hover-fill: var(--blue);
+  --button-hover-ink: #fff;
+}
+
+.tutorial-fab {
+  --button-rest-bg: var(--blue);
+  --button-hover-fill: var(--yellow);
+  --button-hover-ink: #111;
 }
 
 .preset-btn {
@@ -5427,71 +5628,21 @@ body::after {
   color: #d97706; /* Dorado cálido para el sol que resalta sobre el botón claro */
 }
 
-/* Custom Cursor styles */
-@media (pointer: fine) {
-  body, html, a, button, [role="button"], input, select, textarea, .tab-btn, .btn-link, .scroll-indicator, .tema-toggle, .landing-cta, .landing-nav-link, .landing-brand {
-    cursor: none !important;
-  }
+/* El puntero permanece nativo; Bitcoin aparece solo en acciones destacadas. */
+.btc-icon-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
 
-  .custom-cursor {
-    position: fixed;
-    top: 0;
-    left: 0;
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    margin-left: -17px;
-    margin-top: -17px;
-    border: 2px solid transparent;
-    border-radius: 50%;
-    background: transparent;
-    pointer-events: none;
-    /* Debe permanecer encima de overlays que ocultan el cursor nativo. */
-    z-index: 2147483647;
-    will-change: transform;
-    backface-visibility: hidden;
-    user-select: none;
-    transition:
-      width 160ms ease,
-      height 160ms ease,
-      margin 160ms ease,
-      background-color 160ms ease,
-      border-color 160ms ease;
-  }
-
-  .custom-cursor img {
-    width: 28px;
-    height: 28px;
-    filter: brightness(0) invert(1);
-    mix-blend-mode: difference;
-    transition: transform 160ms ease;
-  }
-
-  .custom-cursor.is-clickable {
-    width: 42px;
-    height: 42px;
-    margin-left: -21px;
-    margin-top: -21px;
-    border-color: rgba(17, 17, 15, 0.85);
-    background-color: var(--yellow);
-    box-shadow: 0 4px 14px rgba(17, 17, 15, 0.24);
-  }
-
-  .custom-cursor.is-clickable img {
-    transform: scale(0.82);
-  }
-
-  .custom-cursor.is-pressed img {
-    transform: scale(0.68);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .custom-cursor,
-    .custom-cursor img {
-      transition: none;
-    }
-  }
+.btc-icon-button::before {
+  content: "";
+  width: 1.05em;
+  height: 1.05em;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  mask: url('/icons/currency_bitcoin.svg') center / contain no-repeat;
+  -webkit-mask: url('/icons/currency_bitcoin.svg') center / contain no-repeat;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5500,6 +5651,9 @@ body::after {
   .dictionary-table tbody tr {
     transition: none;
   }
+  .dictionary-panel,
+  .dictionary-backdrop,
+  .dictionary-fab::before { transition: none; }
 }
 
 /* UI polish: stable theme paint, responsive money, staggered reveals and clipped hovers. */
@@ -5716,6 +5870,161 @@ a,
 
 [data-theme="dark"] .pantalla::-webkit-scrollbar-thumb:hover {
   background: #ff9f1c;
+}
+
+/* Recorrido opcional para que el jurado vea la evidencia en el orden correcto. */
+.tutorial-trigger {
+  min-height: 42px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 72%, var(--ink));
+  border-radius: 999px;
+  padding: 0 16px;
+  background: var(--yellow);
+  color: #111;
+  font-family: var(--font-ui);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.tutorial-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8500;
+  background: rgba(4, 5, 8, 0.7);
+  backdrop-filter: blur(2px);
+}
+
+.tutorial-panel {
+  position: fixed;
+  right: clamp(14px, 3vw, 42px);
+  bottom: clamp(14px, 3vw, 42px);
+  z-index: 8700;
+  width: min(430px, calc(100vw - 28px));
+  overflow: hidden;
+  border: 2px solid var(--yellow);
+  border-radius: 20px;
+  padding: 24px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+}
+
+.tutorial-panel[hidden],
+.tutorial-backdrop[hidden] {
+  display: none;
+}
+
+.tutorial-progress {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+.tutorial-progress span {
+  display: block;
+  width: 16.66%;
+  height: 100%;
+  background: var(--yellow);
+  transition: width 220ms ease;
+}
+
+.tutorial-meta,
+.tutorial-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tutorial-meta {
+  margin-bottom: 18px;
+  color: var(--muted);
+  font: 800 0.72rem/1 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tutorial-meta button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 1.35rem;
+}
+
+.tutorial-panel h2 {
+  margin: 8px 0 10px;
+  font-size: clamp(1.55rem, 5vw, 2.25rem);
+  line-height: 1;
+  text-wrap: balance;
+}
+
+.tutorial-panel > p:not(.ceja) {
+  line-height: 1.5;
+}
+
+.tutorial-proof {
+  margin: 16px 0 20px;
+  border-left: 4px solid var(--yellow);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  font-weight: 800;
+}
+
+.tutorial-highlight {
+  position: relative;
+  z-index: 8600 !important;
+  outline: 4px solid var(--yellow);
+  outline-offset: 6px;
+  box-shadow: 0 0 0 9999px rgba(4, 5, 8, 0.08), 0 18px 64px rgba(0, 0, 0, 0.35) !important;
+}
+
+.evidence-summary {
+  display: grid;
+  gap: 5px;
+  margin-top: 16px;
+  border: 1px solid var(--linea);
+  border-left: 5px solid var(--orange);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--orange));
+}
+
+.evidence-summary.evidence-positive {
+  border-left-color: var(--green);
+}
+
+.evidence-summary strong,
+.evidence-summary span,
+.evidence-summary small {
+  display: block;
+}
+
+.evidence-summary small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+@media (max-width: 700px) {
+  .tutorial-trigger {
+    min-height: 38px;
+    padding-inline: 11px;
+    font-size: 0.66rem;
+  }
+
+  .tutorial-panel {
+    right: 9px;
+    bottom: 9px;
+    width: calc(100vw - 18px);
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tutorial-progress span {
+    transition: none;
+  }
 }
 
 [data-theme="dark"] .pantalla::-webkit-scrollbar-corner {
@@ -6080,4 +6389,15 @@ a,
     height: 168px;
     min-height: 168px;
   }
+}
+
+/* Debe quedar después de las alturas especializadas de cada tabla para que el
+   modo expandido aproveche realmente todo el viewport. */
+.panel:fullscreen > .tabla-scroll,
+.panel.tabla-pantalla-completa > .tabla-scroll,
+.panel:fullscreen > .route-table-scroll,
+.panel.tabla-pantalla-completa > .route-table-scroll {
+  height: calc(100vh - 210px);
+  min-height: 320px;
+  max-height: none;
 }

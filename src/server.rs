@@ -86,6 +86,7 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/config", post(actualizar_config_http))
         .route("/api/demo", post(demo_escenario))
         .route("/api/demo/final", post(demo_final_http))
+        .route("/api/demo/reset", post(reset_demo_http))
         .route("/api/ga/estado", get(ga_estado))
         .route("/api/ga/config", get(obtener_config_ga).post(actualizar_config_ga_http))
         .route("/api/ga/evolucionar", post(evolucionar_ga_http))
@@ -187,12 +188,12 @@ async fn mcp_call(
         "backtest" => json!({
             "ok": true,
             "tool": tool,
-            "result": backtest_reproducible(&estado.configuracion)
+            "result": backtest_reproducible(&estado)
         }),
         "research_lab_sweep" => json!({
             "ok": true,
             "tool": tool,
-            "result": lab_sweep_reproducible(&estado.configuracion)
+            "result": lab_sweep_reproducible(&estado)
         }),
         "prepare_demo_final" => {
             let ga = app.motor.evolucionar_ga(true, 96).await;
@@ -308,12 +309,12 @@ async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
 
 async fn backtest(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
-    Json(backtest_reproducible(&estado.configuracion))
+    Json(backtest_reproducible(&estado))
 }
 
 async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
-    Json(lab_sweep_reproducible(&estado.configuracion))
+    Json(lab_sweep_reproducible(&estado))
 }
 
 async fn exportar_json(State(app): State<EstadoApp>) -> Response {
@@ -606,6 +607,24 @@ async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Re
             "Abrir /api/paquete-evaluacion",
             "Exportar /api/export/json o /api/export/csv"
         ]
+    }))
+    .into_response()
+}
+
+async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+
+    let corrida_id = format!("jury-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+    app.motor.reiniciar_demo_jurado().await;
+    Json(json!({
+        "ok": true,
+        "modo": "jury_reset",
+        "corridaId": corrida_id,
+        "seedBacktest": 42,
+        "detalle": "Estado simulado restablecido; feeds publicos y configuracion operativa permanecen activos.",
+        "siguiente": "POST /api/demo/final"
     }))
     .into_response()
 }
@@ -1320,7 +1339,7 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
             "adverseSelectionBps": m.adverse_selection_bps,
             "features": m.features,
             "explicacion": m.explicacion,
-            "nota": "Capa ML/GA explicable para ranking de oportunidades simuladas; no ejecuta ordenes reales."
+            "nota": "Scoring heuristico explicable con pesos ajustados por GA; no es una red neuronal ni ejecuta ordenes reales."
         })),
         "persistencia": persistencia.map(|p| json!({
             "activa": p.activa,
@@ -1668,8 +1687,8 @@ fn snapshot_websocket_fresco(estado: &EstadoPublico, cotizacion: &Cotizacion) ->
 fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let preflight = construir_preflight(estado);
     let resumen = construir_resumen_llm(estado);
-    let backtest = backtest_reproducible(&estado.configuracion);
-    let lab_sweep = lab_sweep_reproducible(&estado.configuracion);
+    let backtest = backtest_reproducible(estado);
+    let lab_sweep = lab_sweep_reproducible(estado);
     let mejor_oportunidad = estado
         .oportunidades
         .iter()
@@ -1808,7 +1827,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "Incluye backtest deterministico, Research Lab sweep y exportaciones JSON/CSV de auditoria.",
         ),
         criterio(
-            "persistencia_durable",
+            "persistencia_sqlite_local",
             persistencia.map(|p| p.activa).unwrap_or(false),
             persistencia
                 .map(|p| {
@@ -1850,10 +1869,10 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "enfoque": "Diferenciar por evidencia verificable, no por promesas: cada fortaleza apunta a endpoint, metrica o evento auditable.",
             "ventajasDefendibles": [
                 "demo rentable etiquetada para no depender del mercado real",
-                "Mayab Edge Tensor con EV, supervivencia, fill probability, adverse selection y contribuciones por feature",
+                "scoring evolutivo con EV, supervivencia, fill probability, adverse selection y contribuciones por variable",
                 "decision inspector con costos, pesos GA y balances previos",
                 "preflight y paquete de evaluacion para revisar sin navegar toda la UI",
-                "auditoria durable SQLite y exports JSON/CSV",
+                "auditoria SQLite local y exports JSON/CSV; retencion externa explicitada para Cloud Run",
                 "seguridad explicita: sin API keys, custodia ni ordenes reales"
             ],
             "riesgosDeOtrosProyectosQueEvitamos": [
@@ -1891,6 +1910,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
         "scriptDemo": [
             "GET /healthz",
             "GET /api/preflight",
+            "POST /api/demo/reset",
             "POST /api/demo/final",
             "POST /api/ga/evolucionar {\"usarReplaySiVacio\":true,\"muestras\":96}",
             "POST /api/demo {\"escenario\":\"mercado_rentable\"}",
@@ -1902,11 +1922,11 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "Rust single-binary con WebSockets publicos, API Axum y dashboard sin build frontend.",
             "WebSocket-first con REST fallback publico cuando un feed queda stale o desconectado.",
             "GA real con elitismo, torneo, cruce, mutacion, annealing e inyeccion diferencial.",
-            "ML Edge explicable: score EV, probabilidades de supervivencia/fill, adverse selection y contribuciones por feature.",
-            "Research Lab sweep: conservador, balanceado, agresivo y GA Edge sobre el mismo replay deterministico.",
+            "Scoring evolutivo explicable: EV, probabilidades simuladas de supervivencia/fill, adverse selection y contribuciones por variable.",
+            "Research Lab: campeon GA contra baseline y presets sobre 24 semillas comunes, sin ocultar derrotas.",
             "Auditoria por decision: score, costos, z-score, latencia, pesos GA y balances previos.",
             "Demo rentable controlada para probar valor aunque el mercado real este plano.",
-            "SQLite local para auditoria durable de operaciones, oportunidades y eventos.",
+            "SQLite local para auditoria durante la vida de la instancia, con exports para retencion externa.",
             "Limites explicitos de seguridad: no API keys, no custodia, no ordenes reales."
         ],
         "endpoints": {
@@ -1917,6 +1937,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "paqueteEvaluacion": "/api/paquete-evaluacion",
             "backtest": "/api/backtest",
             "labSweep": "/api/lab/sweep",
+            "demoReset": "/api/demo/reset",
             "demoFinal": "/api/demo/final",
             "exportJson": "/api/export/json",
             "exportCsv": "/api/export/csv",
@@ -2121,7 +2142,7 @@ fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
                 estado.oportunidades.len(),
                 estado.metricas.operaciones
             ),
-            "Dashboard, panel Readiness, Mayab Edge Tensor, mapa, timeline y auditoria.",
+            "Dashboard, panel Readiness, scoring evolutivo, mapa, timeline y auditoria.",
         ),
         cobertura_item(
             "metricas_latency_replay",
@@ -2139,7 +2160,7 @@ fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
             "README, scripts/release-check.sh y scripts/smoke-demo.sh.",
         ),
         cobertura_item(
-            "auditoria_durable_exports",
+            "auditoria_local_exports",
             exports && persistencia.map(|p| p.activa).unwrap_or(false),
             persistencia
                 .map(|p| {
@@ -2157,15 +2178,15 @@ fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
             ml_edge
                 .map(|m| {
                     format!(
-                        "GA activo={}, ML Edge {} con {} features, EV {:.2} USD.",
+                        "GA activo={}, scoring {} con {} variables, EV {:.2} USD.",
                         ga_activo,
                         m.version,
                         m.features.len(),
                         m.expected_value_usd
                     )
                 })
-                .unwrap_or_else(|| format!("GA activo={}, ML Edge pendiente de auditoria.", ga_activo)),
-            "Panel GA Lab, Mayab Edge Tensor, /api/ga/estado y /api/resumen-llm.",
+                .unwrap_or_else(|| format!("GA activo={}, scoring pendiente de auditoria.", ga_activo)),
+            "Panel GA Lab, scoring evolutivo, /api/ga/estado y /api/resumen-llm.",
         ),
     ];
 
@@ -2244,7 +2265,7 @@ fn recomendaciones_ganadoras(estado: &EstadoPublico) -> Vec<&'static str> {
         .map(|p| !p.activa)
         .unwrap_or(true)
     {
-        recomendaciones.push("Revisar AUDITORIA_DB_PATH y permisos de SQLite; la persistencia durable suma defensa tecnica.");
+        recomendaciones.push("Revisar AUDITORIA_DB_PATH y permisos de SQLite; documentar export o backend externo para retencion entre instancias.");
     }
     if estado
         .genetico
@@ -2323,43 +2344,85 @@ fn csv_cell(valor: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
-fn backtest_reproducible(cfg: &MapaCostos) -> serde_json::Value {
-    let base = simular_backtest(cfg, 0.65, cfg.max_operacion_btc, 42);
-    let optimizada = simular_backtest(
-        cfg,
-        (cfg.min_diferencial_neto_bps * 0.65).clamp(0.20, 1.25),
-        (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
-        42,
-    );
+fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
+    let cfg = &estado.configuracion;
+    let (umbral_ga, max_btc_ga, fuente_ga) = estado
+        .genetico
+        .as_ref()
+        .map(|ga| {
+            (
+                ga.umbral_optimizado,
+                ga.max_operacion_optimizada_btc,
+                "campeon_ga_publicado",
+            )
+        })
+        .unwrap_or((
+            (cfg.min_diferencial_neto_bps * 0.65).clamp(0.20, 1.25),
+            (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
+            "fallback_parametrico",
+        ));
+    let umbral_base = 1.20;
+    let max_btc_base = cfg.max_operacion_btc.min(0.12);
+    let base = simular_backtest(cfg, umbral_base, max_btc_base, 42);
+    let optimizada = simular_backtest(cfg, umbral_ga, max_btc_ga, 42);
     let delta_pnl = optimizada.pnl_usd - base.pnl_usd;
     let delta_drawdown = base.max_drawdown_usd - optimizada.max_drawdown_usd;
+    let semillas = (101_u64..=124).collect::<Vec<_>>();
+    let validacion_base = resumen_multisemilla(cfg, umbral_base, max_btc_base, &semillas);
+    let validacion_ga = resumen_multisemilla(cfg, umbral_ga, max_btc_ga, &semillas);
+    let base_mediana = validacion_base["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
+    let ga_mediana = validacion_ga["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     json!({
         "ticks": 1200,
+        "seedPrincipal": 42,
+        "fuenteOptimizada": fuente_ga,
+        "parametrosOptimizados": {
+            "umbralBps": umbral_ga,
+            "maxOperacionBtc": max_btc_ga,
+        },
+        "parametrosBaseline": {
+            "umbralBps": umbral_base,
+            "maxOperacionBtc": max_btc_base,
+            "definicion": "Referencia estatica conservadora, fijada antes de observar las semillas de validacion."
+        },
         "rutasEvaluadas": base.rutas_evaluadas,
         "base": base,
         "optimizada": optimizada,
+        "validacionMultisemilla": {
+            "semillas": semillas,
+            "base": validacion_base,
+            "optimizada": validacion_ga,
+            "deltaPnlMedianoUsd": ga_mediana - base_mediana,
+            "ganadorMediana": if ga_mediana >= base_mediana { "optimizada" } else { "base" },
+            "lectura": "La mediana de 24 corridas reduce la dependencia de una semilla favorable; el resultado se reporta aunque el GA no gane."
+        },
         "comparacion": {
             "deltaPnlUsd": delta_pnl,
             "deltaDrawdownUsd": delta_drawdown,
             "ganador": if delta_pnl >= 0.0 { "optimizada" } else { "base" },
-            "criterio": "Mismo seed y costos vigentes; cambia umbral/tamano para comparar seleccion de rutas."
+            "criterio": "Mismo seed y costos vigentes; baseline estatico predefinido contra el campeon GA publicado."
         },
-        "nota": "Monte Carlo deterministico sobre BTC con costos actuales, cinco exchanges y shocks de dispersion entre libros."
+        "nota": "Replay Monte Carlo sintetico y deterministico sobre BTC con costos actuales, cinco exchanges, dispersion entre libros y movimiento adverso posterior a la decision; no demuestra rentabilidad real."
     })
 }
 
-fn lab_sweep_reproducible(cfg: &MapaCostos) -> serde_json::Value {
+fn lab_sweep_reproducible(estado: &EstadoPublico) -> serde_json::Value {
+    let cfg = &estado.configuracion;
+    let (umbral_ga, max_btc_ga) = estado
+        .genetico
+        .as_ref()
+        .map(|ga| (ga.umbral_optimizado, ga.max_operacion_optimizada_btc))
+        .unwrap_or((
+            (cfg.min_diferencial_neto_bps * 0.65).clamp(0.20, 1.25),
+            (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
+        ));
     let presets = [
         ("conservador", 1.60, 0.08, 11_u64),
         ("balanceado", 0.65, 0.18, 11_u64),
         ("agresivo", 0.25, 0.35, 11_u64),
-        (
-            "ga_edge",
-            (cfg.min_diferencial_neto_bps * 0.65).clamp(0.20, 1.25),
-            (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
-            11_u64,
-        ),
+        ("ga_edge", umbral_ga, max_btc_ga, 11_u64),
     ];
+    let semillas = (201_u64..=224).collect::<Vec<_>>();
     let resultados = presets
         .into_iter()
         .map(|(nombre, umbral, max_btc, seed)| {
@@ -2370,6 +2433,7 @@ fn lab_sweep_reproducible(cfg: &MapaCostos) -> serde_json::Value {
                 "maxOperacionBtc": max_btc,
                 "resultado": resultado,
                 "scoreLab": score_lab(&resultado),
+                "validacion": resumen_multisemilla(cfg, umbral, max_btc, &semillas),
             })
         })
         .collect::<Vec<_>>();
@@ -2390,14 +2454,15 @@ fn lab_sweep_reproducible(cfg: &MapaCostos) -> serde_json::Value {
         "tipo": "research_lab_sweep",
         "ticks": 1200,
         "seed": 11,
+        "semillasValidacion": semillas,
         "ganador": ganador,
         "resultados": resultados,
-        "lectura": "Sweep reproducible: todos los presets usan el mismo mercado sintetico y costos vigentes para comparar PnL, drawdown, win rate e intervalo de confianza.",
+        "lectura": "Sweep reproducible: el resultado principal usa la misma semilla y la robustez usa 24 semillas comunes. GA Edge consume el campeon publicado, no parametros inventados para el reporte.",
         "limitacion": "No prueba rentabilidad real; prueba sensibilidad del motor y parametros bajo un replay deterministico."
     })
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct ResultadoBacktest {
     #[serde(rename = "rutasEvaluadas")]
     rutas_evaluadas: u64,
@@ -2423,6 +2488,52 @@ struct ResultadoBacktest {
     intervalo_confianza_95_usd: f64,
     #[serde(rename = "profitFactor")]
     profit_factor: f64,
+}
+
+fn resumen_multisemilla(
+    cfg: &MapaCostos,
+    umbral_bps: f64,
+    max_btc: f64,
+    semillas: &[u64],
+) -> serde_json::Value {
+    let resultados = semillas
+        .iter()
+        .map(|seed| simular_backtest(cfg, umbral_bps, max_btc, *seed))
+        .collect::<Vec<_>>();
+    let mut pnls = resultados.iter().map(|r| r.pnl_usd).collect::<Vec<_>>();
+    let mut drawdowns = resultados
+        .iter()
+        .map(|r| r.max_drawdown_usd)
+        .collect::<Vec<_>>();
+    let mut trades = resultados
+        .iter()
+        .map(|r| r.trades_ejecutados as f64)
+        .collect::<Vec<_>>();
+    pnls.sort_by(|a, b| a.total_cmp(b));
+    drawdowns.sort_by(|a, b| a.total_cmp(b));
+    trades.sort_by(|a, b| a.total_cmp(b));
+    let media_pnl = if pnls.is_empty() {
+        0.0
+    } else {
+        pnls.iter().sum::<f64>() / pnls.len() as f64
+    };
+    let desviacion_pnl = desviacion_estandar(&pnls, media_pnl);
+    let ic_95 = if pnls.len() > 1 {
+        1.96 * desviacion_pnl / (pnls.len() as f64).sqrt()
+    } else {
+        0.0
+    };
+    json!({
+        "corridas": resultados.len(),
+        "pnlMedianoUsd": percentil(&pnls, 0.50),
+        "pnlPromedioUsd": media_pnl,
+        "pnlP05Usd": percentil(&pnls, 0.05),
+        "pnlP95Usd": percentil(&pnls, 0.95),
+        "intervaloConfianza95MediaUsd": ic_95,
+        "drawdownMedianoUsd": percentil(&drawdowns, 0.50),
+        "tradesMediana": percentil(&trades, 0.50),
+        "corridasPnlPositivo": resultados.iter().filter(|r| r.pnl_usd > 0.0).count(),
+    })
 }
 
 fn simular_backtest(
@@ -2486,11 +2597,18 @@ fn simular_backtest(
                     0.0
                 };
                 if utilidad >= cfg.min_utilidad_usd && neto_bps >= umbral_bps {
+                    let movimiento_realizado_bps = if rng.gen_bool(0.09) {
+                        -rng.gen_range(3.0..16.0)
+                    } else {
+                        rng.gen_range(-2.0..2.0)
+                    };
+                    let utilidad_realizada =
+                        utilidad + cantidad * medio * movimiento_realizado_bps / 10_000.0;
                     trades += 1;
-                    pnl += utilidad;
-                    utilidades.push(utilidad);
+                    pnl += utilidad_realizada;
+                    utilidades.push(utilidad_realizada);
                     suma_spread += neto_bps;
-                    if utilidad > 0.0 {
+                    if utilidad_realizada > 0.0 {
                         wins += 1;
                     }
                     if pnl > pico {
@@ -2619,9 +2737,9 @@ mod tests {
 
     #[test]
     fn backtest_y_lab_exponen_contratos_qa() {
-        let cfg = cfg_test();
-        let backtest = backtest_reproducible(&cfg);
-        let lab = lab_sweep_reproducible(&cfg);
+        let estado = estado_publico_test(true, true);
+        let backtest = backtest_reproducible(&estado);
+        let lab = lab_sweep_reproducible(&estado);
 
         assert_eq!(backtest["ticks"], 1200);
         assert!(backtest["base"]["rutasEvaluadas"].as_u64().unwrap_or(0) > 0);
@@ -2629,10 +2747,12 @@ mod tests {
             backtest["comparacion"]["ganador"].as_str(),
             Some("base" | "optimizada")
         ));
+        assert_eq!(backtest["validacionMultisemilla"]["base"]["corridas"], 24);
 
         assert_eq!(lab["tipo"], "research_lab_sweep");
         assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));
         assert!(lab["ganador"].as_str().is_some_and(|v| !v.is_empty()));
+        assert_eq!(lab["resultados"][0]["validacion"]["corridas"], 24);
     }
 
     #[test]

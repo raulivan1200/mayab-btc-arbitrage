@@ -611,6 +611,48 @@ impl Motor {
         self.state.write().await.costos = cfg;
     }
 
+    /// Restablece únicamente la simulación para iniciar una corrida de jurado reproducible.
+    /// Conserva feeds, latencias, configuración y conexiones de mercado activas.
+    pub async fn reiniciar_demo_jurado(&self) {
+        let ahora = Utc::now();
+        let mut state = self.state.write().await;
+        state.inicio = ahora;
+        state.carteras.balances = state.carteras.inicial.clone();
+        state.oportunidades.clear();
+        state.operaciones.clear();
+        state.operaciones_riesgo.clear();
+        state.eventos_ejecucion.clear();
+        state.auditoria_decisiones.clear();
+        state.rebalanceos.clear();
+        state.rebalanceos_total = 0;
+        state.costo_rebalanceo_acumulado_usd = 0.0;
+        state.serie_pnl.clear();
+        state.serie_diferencial.clear();
+        state.enfriamiento.clear();
+        state.utilidad = 0.0;
+        state.precios_ref.clear();
+        state.circuit_breaker_activo = false;
+        state.modo_conservador = false;
+        state.historial_rutas.clear();
+        state.historial_spreads.clear();
+        state.ciclos = 0;
+        state.ga = EstadoGa::default();
+        state.demo_forzado = None;
+        self.ops_ejecutadas.store(0, Ordering::SeqCst);
+        self.ops_fallidas.store(0, Ordering::SeqCst);
+        self.ejecucion_en_curso.store(false, Ordering::SeqCst);
+        insertar_evento_sistema(
+            &mut state,
+            "jury_reset",
+            "corrida simulada restablecida; feeds publicos y configuracion conservados",
+            "normal",
+            ahora,
+        );
+        if let Some(evento) = state.eventos_ejecucion.front() {
+            self.persistir_evento(evento);
+        }
+    }
+
     /// Activa o desactiva un exchange para nuevas rutas.
     pub async fn toggle_exchange(&self, nombre: &str, activo: bool) -> bool {
         let mut state = self.state.write().await;
@@ -1167,17 +1209,11 @@ fn calcular_oportunidad(
     costos: &MapaCostos,
     ahora: DateTime<Utc>,
 ) -> Oportunidad {
-    let mut ask_ajustado = dec(compra.ask);
-    let mut bid_ajustado = dec(venta.bid);
-    if es_exchange_usd(&compra.exchange) != es_exchange_usd(&venta.exchange) {
-        let premium = Decimal::ONE + dec(costos.usdt_usd_premium_bps) / dec(10_000.0);
-        if es_exchange_usd(&compra.exchange) {
-            ask_ajustado *= premium;
-        } else {
-            bid_ajustado *= premium;
-        }
-    }
-    let diferencial_bruto = bid_ajustado - ask_ajustado;
+    // El spread bruto siempre representa los precios observados. El riesgo de
+    // conversión USD/USDT se cobra una sola vez dentro de `calcular_costos`.
+    let ask_observado = dec(compra.ask);
+    let bid_observado = dec(venta.bid);
+    let diferencial_bruto = bid_observado - ask_observado;
     let precio_medio = (dec(compra.ask) + dec(venta.bid)) / dec(2.0);
     let latencia_max = compra.latencia_ms.max(venta.latencia_ms);
     let balance_compra = carteras.balance(&compra.exchange);
@@ -1195,7 +1231,7 @@ fn calcular_oportunidad(
     ]);
     let cantidad = dec_to_f64(cantidad_dec);
     let costo = calcular_costos(cantidad, compra, venta, latencia_max, costos);
-    let utilidad_dec = (bid_ajustado - ask_ajustado) * cantidad_dec - dec(costo.total_usd);
+    let utilidad_dec = diferencial_bruto * cantidad_dec - dec(costo.total_usd);
     let utilidad = dec_to_f64(utilidad_dec);
     let diferencial_neto_unidad = if cantidad_dec > Decimal::ZERO {
         utilidad_dec / cantidad_dec
@@ -1599,7 +1635,7 @@ fn construir_ml_edge(state: &State) -> Option<EstadoMlEdge> {
     );
     Some(EstadoMlEdge {
         activo,
-        modelo: "Mayab ML Edge GA/EV".to_string(),
+        modelo: "Mayab Scoring Evolutivo GA/EV".to_string(),
         version: "ml-edge-v1".to_string(),
         decision: auditoria.decision_code.clone(),
         score_actual,
@@ -2138,7 +2174,9 @@ fn sharpe(operaciones: &[Operacion]) -> f64 {
     if desv == 0.0 {
         0.0
     } else {
-        media / desv * (252.0_f64 * 24.0 * 60.0).sqrt()
+        // Sharpe por operación, sin anualizar. No suponemos una frecuencia de
+        // trading constante para una demo donde los fills son event-driven.
+        media / desv
     }
 }
 
@@ -2474,6 +2512,27 @@ mod tests {
     }
 
     #[test]
+    fn sharpe_por_operacion_no_inventa_frecuencia_anual() {
+        let operacion = |id: &str, utilidad_usd: f64| Operacion {
+            id: id.to_string(),
+            compra_en: "A".into(),
+            venta_en: "B".into(),
+            par: "BTC/USD".into(),
+            cantidad_btc: 1.0,
+            precio_compra: 100.0,
+            precio_venta: 101.0,
+            utilidad_usd,
+            costos: CostosOperacion::default(),
+            parcial: false,
+            ejecutada_en: Utc::now(),
+            latencia_max_ms: 1,
+        };
+        let operaciones = [operacion("1", 1.0), operacion("2", 3.0)];
+
+        assert_relative_eq!(sharpe(&operaciones), 2.0_f64.sqrt());
+    }
+
+    #[test]
     fn oportunidad_sin_inventario_explica_rechazo() {
         let exchanges = vec!["A".to_string(), "B".to_string()];
         let mut carteras = Carteras::new(&exchanges, 500_000.0, 2.0);
@@ -2531,6 +2590,41 @@ mod tests {
         assert!(rutas_con_cruce
             .iter()
             .any(|r| quote_lane(&r.compra_en) != quote_lane(&r.venta_en)));
+    }
+
+    #[test]
+    fn cruce_usd_usdt_cobra_premium_una_sola_vez() {
+        let exchanges = vec!["Coinbase".to_string(), "Binance".to_string()];
+        let carteras = Carteras::new(&exchanges, 10_000.0, 2.0);
+        let mut cfg = cfg_test();
+        cfg.usdt_usd_premium_bps = 10.0;
+        cfg.permitir_cruce_usd_usdt = true;
+        cfg.min_utilidad_usd = 0.0;
+        cfg.min_diferencial_neto_bps = 0.0;
+        for exchange in &exchanges {
+            cfg.exchanges.insert(
+                exchange.clone(),
+                ExchangeConfig {
+                    nombre: exchange.clone(),
+                    fee_taker: 0.0,
+                    retiro_btc: 0.0,
+                    confiabilidad: 0.99,
+                },
+            );
+        }
+
+        let oportunidad = calcular_oportunidad(
+            &cot("Coinbase", 100.0, 101.0, 2.0, 2.0),
+            &cot("Binance", 102.0, 103.0, 2.0, 2.0),
+            &carteras,
+            &cfg,
+            Utc::now(),
+        );
+
+        let premium_esperado = 101.5 * 10.0 / 10_000.0;
+        assert_relative_eq!(oportunidad.diferencial_bruto_usd, 1.0);
+        assert_relative_eq!(oportunidad.costos.total_usd, premium_esperado);
+        assert_relative_eq!(oportunidad.utilidad_usd, 1.0 - premium_esperado);
     }
 
     #[test]
@@ -2631,6 +2725,25 @@ mod tests {
         assert!(ml_edge.score_actual.is_finite());
         assert!(ml_edge.expected_value_usd.is_finite());
         assert_eq!(ml_edge.features.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn reset_jurado_limpia_simulacion_y_conserva_configuracion() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        motor
+            .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+            .await;
+        let config_antes = motor.estado().await.configuracion;
+
+        motor.reiniciar_demo_jurado().await;
+        let estado = motor.estado().await;
+
+        assert!(estado.operaciones.is_empty());
+        assert_eq!(estado.metricas.operaciones, 0);
+        assert_eq!(estado.metricas.utilidad_acumulada_usd, 0.0);
+        assert!(!estado.metricas.circuit_breaker_activo);
+        assert_eq!(estado.configuracion, config_antes);
+        assert_eq!(estado.eventos_ejecucion.front().unwrap().tipo, "jury_reset");
     }
 
     #[tokio::test]

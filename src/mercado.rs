@@ -335,8 +335,18 @@ fn parsear_okx(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
     } else {
         libro.par = normalizar_par(par);
     }
-    let bids = niveles_strings(item.get("bids")?.as_array()?, 10);
-    let asks = niveles_strings(item.get("asks")?.as_array()?, 10);
+    // Los deltas pueden modificar un solo lado del libro. Una clave ausente no
+    // invalida el mensaje: equivale a "sin cambios" para ese lado.
+    let bids = item
+        .get("bids")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_strings(niveles, 10))
+        .unwrap_or_default();
+    let asks = item
+        .get("asks")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_strings(niveles, 10))
+        .unwrap_or_default();
     let ts = item
         .get("ts")
         .and_then(Value::as_str)
@@ -359,8 +369,16 @@ fn parsear_bybit(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
     } else {
         libro.par = normalizar_par(par);
     }
-    let bids = niveles_strings(v.pointer("/data/b")?.as_array()?, 10);
-    let asks = niveles_strings(v.pointer("/data/a")?.as_array()?, 10);
+    let bids = v
+        .pointer("/data/b")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_strings(niveles, 10))
+        .unwrap_or_default();
+    let asks = v
+        .pointer("/data/a")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_strings(niveles, 10))
+        .unwrap_or_default();
     libro.actualizar_bids(&bids);
     libro.actualizar_asks(&asks);
     libro.cotizacion(v.get("ts").and_then(Value::as_i64).unwrap_or_default())
@@ -383,8 +401,16 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
     } else {
         libro.par = normalizar_par(par);
     }
-    let bids = niveles_mixtos(item.get("bids")?.as_array()?, 10);
-    let asks = niveles_mixtos(item.get("asks")?.as_array()?, 10);
+    let bids = item
+        .get("bids")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_mixtos(niveles, 10))
+        .unwrap_or_default();
+    let asks = item
+        .get("asks")
+        .and_then(Value::as_array)
+        .map(|niveles| niveles_mixtos(niveles, 10))
+        .unwrap_or_default();
     let ts = item
         .get("timestamp")
         .and_then(Value::as_str)
@@ -657,6 +683,45 @@ mod tests {
         let c = parsear_bybit(msg, &mut libro).unwrap();
         assert_eq!(c.par, "BTC/USD");
         assert_eq!(c.bid, 100.0);
+        assert_eq!(c.ask, 101.0);
+    }
+
+    #[test]
+    fn bybit_conserva_ask_en_delta_solo_bid() {
+        let snapshot = br#"{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1710000000000,"data":{"b":[["100.0","2.0"]],"a":[["101.0","1.5"]]}}"#;
+        let delta = br#"{"topic":"orderbook.50.BTCUSDT","type":"delta","ts":1710000000001,"data":{"b":[["100.5","3.0"]]}}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_bybit(snapshot, &mut libro).unwrap();
+
+        let c = parsear_bybit(delta, &mut libro).unwrap();
+
+        assert_eq!(c.bid, 100.5);
+        assert_eq!(c.ask, 101.0);
+    }
+
+    #[test]
+    fn kraken_conserva_bid_en_delta_solo_ask() {
+        let snapshot = br#"{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":100.0,"qty":2.0}],"asks":[{"price":101.0,"qty":1.5}],"timestamp":"2024-03-09T00:00:00Z"}]}"#;
+        let delta = br#"{"channel":"book","type":"update","data":[{"symbol":"BTC/USD","asks":[{"price":100.8,"qty":1.0}],"timestamp":"2024-03-09T00:00:00.001Z"}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_kraken(snapshot, &mut libro).unwrap();
+
+        let c = parsear_kraken(delta, &mut libro).unwrap();
+
+        assert_eq!(c.bid, 100.0);
+        assert_eq!(c.ask, 100.8);
+    }
+
+    #[test]
+    fn okx_conserva_ask_en_delta_solo_bid() {
+        let snapshot = br#"{"arg":{"channel":"books","instId":"BTC-USDT"},"action":"snapshot","data":[{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"ts":"1710000000000"}]}"#;
+        let delta = br#"{"arg":{"channel":"books","instId":"BTC-USDT"},"action":"update","data":[{"bids":[["100.5","3.0"]],"ts":"1710000000001"}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_okx(snapshot, &mut libro).unwrap();
+
+        let c = parsear_okx(delta, &mut libro).unwrap();
+
+        assert_eq!(c.bid, 100.5);
         assert_eq!(c.ask, 101.0);
     }
 

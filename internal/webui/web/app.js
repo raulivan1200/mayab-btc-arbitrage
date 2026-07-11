@@ -123,6 +123,138 @@ function debugSerialize(valor) {
   return valor;
 }
 
+function textoCeldaTabla(celda) {
+  return (celda?.innerText || celda?.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function escaparCsv(valor) {
+  const texto = String(valor ?? "");
+  return /[",\n\r]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto;
+}
+
+function nombreArchivoTabla(panel, indice) {
+  const titulo = panel?.querySelector("h2")?.textContent?.trim() || `tabla-${indice + 1}`;
+  const base = titulo
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `${base || `tabla-${indice + 1}`}-${new Date().toISOString().slice(0, 10)}.csv`;
+}
+
+function aplicarFiltroTabla(tabla) {
+  const toolbar = tabla.closest(".panel, section")?.querySelector(`.tabla-herramientas[data-tabla-id="${tabla.dataset.tablaId}"]`);
+  const input = toolbar?.querySelector(".tabla-filtro-input");
+  if (!input) return;
+
+  const consulta = input.value.trim().toLocaleLowerCase("es-MX");
+  let visibles = 0;
+  tabla.querySelectorAll("tbody tr").forEach((fila) => {
+    const coincide = !consulta || textoCeldaTabla(fila).toLocaleLowerCase("es-MX").includes(consulta);
+    fila.hidden = !coincide;
+    if (coincide) visibles += 1;
+  });
+
+  const estado = toolbar.querySelector(".tabla-filtro-estado");
+  if (estado) estado.textContent = consulta ? `${visibles} resultado${visibles === 1 ? "" : "s"}` : "";
+}
+
+function aplicarFiltrosTablas() {
+  document.querySelectorAll("#dashboard .tabla-scroll > table[data-tabla-id]").forEach(aplicarFiltroTabla);
+}
+
+function descargarTablaCsv(tabla, panel, indice) {
+  const encabezados = [...tabla.querySelectorAll("thead th")].map(textoCeldaTabla);
+  const filas = [...tabla.querySelectorAll("tbody tr:not([hidden])")].map((fila) =>
+    [...fila.querySelectorAll("th, td")].map(textoCeldaTabla),
+  );
+  const contenido = [encabezados, ...filas]
+    .filter((fila) => fila.length)
+    .map((fila) => fila.map(escaparCsv).join(","))
+    .join("\r\n");
+  const enlace = document.createElement("a");
+  enlace.href = URL.createObjectURL(new Blob(["\ufeff", contenido], { type: "text/csv;charset=utf-8" }));
+  enlace.download = nombreArchivoTabla(panel, indice);
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  URL.revokeObjectURL(enlace.href);
+}
+
+async function alternarPantallaCompleta(panel) {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+    return;
+  }
+  if (panel.requestFullscreen) {
+    await panel.requestFullscreen();
+    return;
+  }
+  panel.classList.toggle("tabla-pantalla-completa");
+  document.body.classList.toggle("tabla-fullscreen-activa", panel.classList.contains("tabla-pantalla-completa"));
+}
+
+function iniciarHerramientasTablas() {
+  const tablas = document.querySelectorAll("#dashboard .tabla-scroll > table");
+  tablas.forEach((tabla, indice) => {
+    if (tabla.dataset.tablaId) return;
+    const scroll = tabla.parentElement;
+    const panel = tabla.closest(".panel, section");
+    if (!scroll || !panel) return;
+
+    const id = `tabla-dashboard-${indice + 1}`;
+    const titulo = panel.querySelector("h2")?.textContent?.trim() || `Tabla ${indice + 1}`;
+    tabla.dataset.tablaId = id;
+    const toolbar = document.createElement("div");
+    toolbar.className = "tabla-herramientas";
+    toolbar.dataset.tablaId = id;
+    toolbar.setAttribute("aria-label", `Herramientas de ${titulo}`);
+    toolbar.innerHTML = `
+      <div class="tabla-filtro" hidden>
+        <label class="sr-only" for="${id}-filtro">Filtrar ${escapeHtml(titulo)}</label>
+        <input id="${id}-filtro" class="tabla-filtro-input" type="search" placeholder="Buscar en la tabla…" autocomplete="off" />
+        <span class="tabla-filtro-estado" aria-live="polite"></span>
+      </div>
+      <div class="tabla-acciones">
+        <button type="button" class="tabla-accion tabla-accion-filtro" aria-expanded="false" aria-controls="${id}-filtro" title="Filtrar filas">⌕ <span>Filtrar</span></button>
+        <button type="button" class="tabla-accion tabla-accion-descarga" title="Descargar filas visibles como CSV">↓ <span>Descargar</span></button>
+        <button type="button" class="tabla-accion tabla-accion-fullscreen" title="Ver tabla en pantalla completa">⛶ <span>Pantalla completa</span></button>
+      </div>`;
+    scroll.before(toolbar);
+
+    const filtro = toolbar.querySelector(".tabla-filtro");
+    const input = toolbar.querySelector(".tabla-filtro-input");
+    const btnFiltro = toolbar.querySelector(".tabla-accion-filtro");
+    btnFiltro.addEventListener("click", () => {
+      const abrir = filtro.hidden;
+      filtro.hidden = !abrir;
+      btnFiltro.setAttribute("aria-expanded", String(abrir));
+      btnFiltro.classList.toggle("activo", abrir);
+      if (abrir) input.focus();
+    });
+    input.addEventListener("input", () => aplicarFiltroTabla(tabla));
+    toolbar.querySelector(".tabla-accion-descarga").addEventListener("click", () => descargarTablaCsv(tabla, panel, indice));
+    toolbar.querySelector(".tabla-accion-fullscreen").addEventListener("click", () => alternarPantallaCompleta(panel));
+  });
+
+  document.addEventListener("fullscreenchange", () => {
+    document.querySelectorAll(".tabla-accion-fullscreen").forEach((boton) => {
+      const activo = Boolean(document.fullscreenElement && document.fullscreenElement.contains(boton));
+      boton.classList.toggle("activo", activo);
+      boton.querySelector("span").textContent = activo ? "Salir" : "Pantalla completa";
+      boton.title = activo ? "Salir de pantalla completa" : "Ver tabla en pantalla completa";
+    });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const panel = document.querySelector(".tabla-pantalla-completa");
+    if (!panel) return;
+    panel.classList.remove("tabla-pantalla-completa");
+    document.body.classList.remove("tabla-fullscreen-activa");
+  });
+}
+
 function iniciarDebug() {
   if (!DEBUG_ACTIVO) return;
   window.mayabDebugMetrics = metricasDebug;
@@ -172,6 +304,7 @@ iniciarPresets();
 iniciarDemo();
 iniciarAutoGa();
 iniciarHeaderColapsable();
+iniciarTutorial();
 setInterval(verificarConexion, 900);
 
 function loopAnimacion(timestamp) {
@@ -473,6 +606,7 @@ function renderizar(datos) {
   renderExchanges(datos);
   dibujarSeries(datos);
   actualizarInputsConfigUnaVez(datos.configuracion);
+  aplicarFiltrosTablas();
 }
 
 function actualizarModoOperacion(datos) {
@@ -858,12 +992,14 @@ function iniciarPresets() {
 
 function iniciarDemo() {
   const btnFinal = $("btnDemoFinal");
+  const btnReset = $("btnResetDemo");
   if (btnFinal) {
     btnFinal.addEventListener("click", prepararDemoFinal);
   }
-  // Trigger demo automatically on load
-  setTimeout(prepararDemoFinal, 1000);
-
+  if (btnReset) {
+    btnReset.addEventListener("click", reiniciarDemoJurado);
+  }
+  iniciarDemoFinalAlHacerScroll();
 
   document.querySelectorAll("[data-demo]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -900,6 +1036,60 @@ function iniciarDemo() {
   });
 }
 
+async function reiniciarDemoJurado() {
+  const btn = $("btnResetDemo");
+  const feedback = $("demoFeedback");
+  if (btn) btn.disabled = true;
+  mostrarFeedback(feedback, "Restableciendo balances, PnL, riesgo y evidencia de la corrida…", true);
+  try {
+    const res = await fetch("/api/demo/reset", {
+      method: "POST",
+      headers: headersMutacion(),
+    });
+    if (!res.ok) {
+      mostrarFeedback(feedback, `No se pudo reiniciar: ${await mensajeErrorApi(res, "error de API")}`, false);
+      return;
+    }
+    const body = await res.json();
+    preflightCache = null;
+    mostrarFeedback(feedback, `Corrida ${body.corridaId || "de jurado"} limpia. Ya puedes preparar el recorrido completo.`, true);
+  } catch (_) {
+    mostrarFeedback(feedback, "Error de red al reiniciar la corrida", false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function iniciarDemoFinalAlHacerScroll() {
+  const panel = document.querySelector(".demo-panel");
+  if (!panel) return;
+
+  const prepararUnaVez = () => {
+    if (panel.dataset.demoAutoPreparada === "true") return;
+    panel.dataset.demoAutoPreparada = "true";
+    prepararDemoFinal();
+  };
+
+  if (!("IntersectionObserver" in window)) {
+    prepararUnaVez();
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      prepararUnaVez();
+    },
+    {
+      root: document.querySelector(".pantalla"),
+      threshold: 0.12,
+      rootMargin: "0px 0px 18% 0px",
+    },
+  );
+  observer.observe(panel);
+}
+
 async function prepararDemoFinal() {
   const btn = $("btnDemoFinal");
   const feedback = $("demoFeedback");
@@ -928,7 +1118,7 @@ async function prepararDemoFinal() {
     const gen = body?.metricas ? body?.ga?.generacion : null;
     mostrarFeedback(
       feedback,
-      `Demo ganadora lista: PnL ${dinero.format(pnl)}, ML Edge ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
+      `Demo ganadora lista: PnL ${dinero.format(pnl)}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
       true,
     );
     try {
@@ -1272,7 +1462,7 @@ function etiquetaCheck(nombre) {
     partialFillSupport: "fill parcial",
     walletAccounting: "carteras",
     decisionInspector: "inspector de decisiones",
-    mlEdgeExplainable: "ML Edge",
+    mlEdgeExplainable: "score evolutivo",
     riskGuards: "guardas de riesgo",
     safeDemoMode: "demo segura",
     exports: "exports",
@@ -1289,6 +1479,7 @@ function etiquetaBenchmark(nombre) {
     metricas_latency_replay: "Métricas y replay",
     documentacion_tests_deploy: "Docs, tests y deploy",
     auditoria_durable_exports: "Auditoría y exports",
+    auditoria_local_exports: "Auditoría y exports",
     ia_explicable_ga: "IA explicable + GA",
   };
   return labels[nombre] || nombre || "Cobertura";
@@ -1493,6 +1684,20 @@ function renderBacktest(datos) {
       });
     tbody.appendChild(tr);
   });
+  const evidencia = $("backtestEvidencia");
+  const validacion = datos?.validacionMultisemilla;
+  if (evidencia && validacion) {
+    const base = validacion.base || {};
+    const optimizada = validacion.optimizada || {};
+    const delta = Number(validacion.deltaPnlMedianoUsd || 0);
+    evidencia.classList.toggle("evidence-positive", delta >= 0);
+    evidencia.innerHTML = `
+      <strong>${escapeHtml(validacion.ganadorMediana === "optimizada" ? "El campeón GA gana por mediana" : "El baseline gana por mediana")}</strong>
+      <span>${numero.format(base.corridas || 0)} semillas · Δ mediano ${dinero.format(delta)} · GA positivo en ${numero.format(optimizada.corridasPnlPositivo || 0)}/${numero.format(optimizada.corridas || 0)} corridas</span>
+      <small>${escapeHtml(validacion.lectura || "Comparación reproducible multisemilla.")}</small>
+    `;
+  }
+  aplicarFiltroTabla(tbody.closest("table"));
 }
 
 function renderLabSweep(datos) {
@@ -1522,6 +1727,19 @@ function renderLabSweep(datos) {
     });
     tbody.appendChild(tr);
   });
+  const evidencia = $("labEvidencia");
+  const filaGa = (datos?.resultados || []).find((row) => row.preset === "ga_edge");
+  const filaBase = (datos?.resultados || []).find((row) => row.preset === "balanceado");
+  if (evidencia && filaGa?.validacion && filaBase?.validacion) {
+    const delta = Number(filaGa.validacion.pnlMedianoUsd || 0) - Number(filaBase.validacion.pnlMedianoUsd || 0);
+    evidencia.classList.toggle("evidence-positive", delta >= 0);
+    evidencia.innerHTML = `
+      <strong>Robustez, no una semilla afortunada</strong>
+      <span>GA vs balanceado: Δ PnL mediano ${dinero.format(delta)} en ${numero.format(filaGa.validacion.corridas || 0)} semillas comunes.</span>
+      <small>P05–P95 GA: ${dinero.format(filaGa.validacion.pnlP05Usd || 0)} a ${dinero.format(filaGa.validacion.pnlP95Usd || 0)}. ${escapeHtml(datos.limitacion || "")}</small>
+    `;
+  }
+  aplicarFiltroTabla(tbody.closest("table"));
 }
 
 function renderBalances(datos) {
@@ -1945,7 +2163,7 @@ function renderMlEdge(ml) {
         </div>
       `;
     } else {
-      expEl.textContent = "Carga la demo ganadora o selecciona una ruta para calcular ML Edge.";
+      expEl.textContent = "Carga la demo ganadora o selecciona una ruta para calcular el score evolutivo.";
     }
   }
   const container = $("mlFeatures");
@@ -2003,7 +2221,7 @@ function renderResumenLlm(datos) {
     ? "Demo rentable auditada: PnL positivo precargado para mostrar el flujo completo; no ejecuta órdenes reales."
     : "Mercado vivo: esperando edge real o una prueba controlada.";
   const ruta = mejor
-    ? `${mejor.compraEn} -> ${mejor.ventaEn} con ${formato(mejor.diferencialNetoBps, 2)} bps netos`
+    ? `${mejor.compraEn} -> ${mejor.ventaEn} · ${formato(mejor.diferencialNetoBps, 2)} bps netos${mejor.ejecutable ? " · candidata" : " · descartada"}`
     : "sin rutas suficientes";
   const accion = ejecutable
     ? `ruta viva aceptable ${ejecutable.compraEn} -> ${ejecutable.ventaEn} por ${dinero.format(ejecutable.utilidadUsd)}`
@@ -2593,6 +2811,7 @@ document.addEventListener("DOMContentLoaded", () => {
   iniciarLanding();
   iniciarAjusteMetricas();
   iniciarDiccionario();
+  iniciarHerramientasTablas();
 
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -2672,19 +2891,33 @@ function iniciarDiccionario() {
   const empty = $("dictionaryEmpty");
   if (!toggle || !panel || !close || !backdrop) return;
 
+  rows.forEach((row, index) => row.style.setProperty("--dictionary-index", index));
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let cierreTimer;
+
   const cerrar = () => {
-    panel.hidden = true;
-    backdrop.hidden = true;
+    window.clearTimeout(cierreTimer);
+    panel.classList.remove("is-open");
+    backdrop.classList.remove("is-open");
     document.body.classList.remove("dictionary-open");
     toggle.setAttribute("aria-expanded", "false");
+    cierreTimer = window.setTimeout(() => {
+      panel.hidden = true;
+      backdrop.hidden = true;
+    }, reduceMotion.matches ? 0 : 430);
     toggle.focus();
   };
   const abrir = () => {
+    window.clearTimeout(cierreTimer);
     panel.hidden = false;
     backdrop.hidden = false;
     document.body.classList.add("dictionary-open");
     toggle.setAttribute("aria-expanded", "true");
-    requestAnimationFrame(() => search?.focus());
+    requestAnimationFrame(() => {
+      panel.classList.add("is-open");
+      backdrop.classList.add("is-open");
+      search?.focus();
+    });
   };
 
   toggle.addEventListener("click", abrir);
@@ -2702,6 +2935,127 @@ function iniciarDiccionario() {
       if (coincide) visibles += 1;
     });
     if (empty) empty.hidden = visibles !== 0;
+  });
+}
+
+function iniciarTutorial() {
+  const trigger = $("tutorialToggle");
+  const panel = $("tutorialPanel");
+  const backdrop = $("tutorialBackdrop");
+  const close = $("tutorialClose");
+  const prev = $("tutorialPrev");
+  const next = $("tutorialNext");
+  if (!trigger || !panel || !backdrop || !close || !prev || !next) return;
+
+  const pasos = [
+    {
+      tab: "tab-overview",
+      selector: ".llm-strip",
+      titulo: "Lectura ejecutiva en 15 segundos",
+      texto: "Empieza aquí: modo de datos, PnL simulado, riesgo, mejor ruta y estado del GA sin interpretar todas las tablas.",
+      prueba: () => `${ultimoEstado?.cotizaciones?.length || 0} feeds utilizables · ${ultimoEstado?.metricas?.operaciones || 0} operaciones simuladas`,
+    },
+    {
+      tab: "tab-mercado",
+      selector: ".mercado",
+      titulo: "Order books públicos en vivo",
+      texto: "Los adaptadores WebSocket normalizan bid, ask, profundidad, timestamp y fuente. El fallback REST queda etiquetado.",
+      prueba: () => `${ultimoEstado?.cotizaciones?.filter((c) => c.conectado).length || 0} WebSockets frescos · ${formato(ultimoEstado?.metricas?.latenciaPromedioMs || 0, 0)} ms promedio`,
+    },
+    {
+      tab: "tab-mercado",
+      selector: ".mapa",
+      titulo: "De spread bruto a utilidad neta",
+      texto: "Cada ruta descuenta fees, slippage, retiro amortizado y riesgo de latencia; después limita el tamaño por profundidad e inventario.",
+      prueba: () => {
+        const ruta = ultimoEstado?.oportunidades?.[0];
+        return ruta ? `${ruta.compraEn} → ${ruta.ventaEn} · ${formato(ruta.diferencialNetoBps || 0, 2)} bps netos` : "Esperando una ruta auditable";
+      },
+    },
+    {
+      tab: "tab-riesgo",
+      selector: ".demo-panel",
+      titulo: "Robustez que se puede provocar",
+      texto: "Ejecuta fill parcial, fallo de orden, shock de mercado, circuit breaker y rebalanceo sin depender de que el mercado coopere.",
+      prueba: () => `${ultimoEstado?.metricas?.operacionesFallidas || 0} fallos · ${ultimoEstado?.metricas?.rebalanceosTotales || 0} rebalanceos auditados`,
+    },
+    {
+      tab: "tab-logs",
+      selector: ".replay-panel",
+      titulo: "Baseline vs campeón GA",
+      texto: "El replay usa el campeón GA publicado y reporta mediana, P05–P95 e intervalo de confianza sobre 24 semillas comunes.",
+      prueba: () => "Mismas condiciones · múltiples semillas · conclusión honesta aunque gane el baseline",
+    },
+    {
+      tab: "tab-galab",
+      selector: ".ga-panel",
+      titulo: "Optimización evolutiva explicable",
+      texto: "El GA ajusta pesos, umbral, tamaño y tolerancia. Es scoring evolutivo auditable; no se presenta como una red neuronal.",
+      prueba: () => `Generación ${ultimoEstado?.genetico?.generacion || 0} · población ${ultimoEstado?.genetico?.poblacion || 0} · diversidad ${formato((ultimoEstado?.genetico?.diversidad || 0) * 100, 1)}%`,
+    },
+  ];
+  let indice = 0;
+  let resaltado = null;
+
+  const limpiarResaltado = () => {
+    resaltado?.classList.remove("tutorial-highlight");
+    resaltado = null;
+  };
+
+  const mostrarPaso = () => {
+    const paso = pasos[indice];
+    document.querySelector(`.tab-btn[data-tab="${paso.tab}"]`)?.click();
+    limpiarResaltado();
+    requestAnimationFrame(() => {
+      resaltado = document.querySelector(`#${paso.tab} ${paso.selector}`) || document.querySelector(paso.selector);
+      resaltado?.classList.add("tutorial-highlight");
+      resaltado?.scrollIntoView({ behavior: reducirMovimiento ? "auto" : "smooth", block: "center" });
+    });
+    setText("tutorialStepLabel", `Paso ${indice + 1} de ${pasos.length}`);
+    setText("tutorialTitle", paso.titulo);
+    setText("tutorialText", paso.texto);
+    setText("tutorialProof", paso.prueba());
+    $("tutorialProgressBar")?.style.setProperty("width", `${((indice + 1) / pasos.length) * 100}%`);
+    prev.disabled = indice === 0;
+    next.textContent = indice === pasos.length - 1 ? "Terminar" : "Siguiente";
+  };
+
+  const cerrar = () => {
+    panel.hidden = true;
+    backdrop.hidden = true;
+    document.body.classList.remove("tutorial-open");
+    limpiarResaltado();
+    trigger.focus();
+  };
+  const abrir = () => {
+    indice = 0;
+    panel.hidden = false;
+    backdrop.hidden = false;
+    document.body.classList.add("tutorial-open");
+    mostrarPaso();
+    requestAnimationFrame(() => next.focus());
+  };
+
+  trigger.addEventListener("click", abrir);
+  close.addEventListener("click", cerrar);
+  backdrop.addEventListener("click", cerrar);
+  prev.addEventListener("click", () => {
+    if (indice > 0) indice -= 1;
+    mostrarPaso();
+  });
+  next.addEventListener("click", () => {
+    if (indice >= pasos.length - 1) {
+      cerrar();
+      return;
+    }
+    indice += 1;
+    mostrarPaso();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (panel.hidden) return;
+    if (event.key === "Escape") cerrar();
+    if (event.key === "ArrowRight") next.click();
+    if (event.key === "ArrowLeft") prev.click();
   });
 }
 

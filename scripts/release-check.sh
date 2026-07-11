@@ -46,19 +46,27 @@ APP_PID=$!
 
 ready=0
 for _ in $(seq 1 60); do
+  if ! kill -0 "$APP_PID" 2>/dev/null; then
+    echo "El binario release terminó antes de quedar listo en ${BASE_URL}" >&2
+    wait "$APP_PID" 2>/dev/null || true
+    exit 1
+  fi
   if curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 \
+    && curl -fsS "${BASE_URL}/api/healthz" >/dev/null 2>&1 \
+    && curl -fsS -X POST "${BASE_URL}/api/demo/reset" -o "${TMP_DIR}/demo-reset.json" 2>/dev/null \
     && curl -fsS -X POST "${BASE_URL}/api/demo/final" -o "${TMP_DIR}/demo-final.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/jurado" -o "${TMP_DIR}/jurado.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/preflight" -o "${TMP_DIR}/preflight.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/paquete-evaluacion" -o "${TMP_DIR}/paquete.json" 2>/dev/null \
-    && python3 - "${TMP_DIR}/demo-final.json" "${TMP_DIR}/jurado.json" "${TMP_DIR}/preflight.json" "${TMP_DIR}/paquete.json" <<'PY'
+    && python3 - "${TMP_DIR}/demo-reset.json" "${TMP_DIR}/demo-final.json" "${TMP_DIR}/jurado.json" "${TMP_DIR}/preflight.json" "${TMP_DIR}/paquete.json" <<'PY'
 import json
 import sys
 
-demo = json.load(open(sys.argv[1]))
-jurado = json.load(open(sys.argv[2]))
-preflight = json.load(open(sys.argv[3]))
-paquete = json.load(open(sys.argv[4]))
+reset = json.load(open(sys.argv[1]))
+demo = json.load(open(sys.argv[2]))
+jurado = json.load(open(sys.argv[3]))
+preflight = json.load(open(sys.argv[4]))
+paquete = json.load(open(sys.argv[5]))
 readiness = preflight.get("judgeReadiness") or {}
 jury_state = jurado.get("estado") or {}
 checks = readiness.get("checks") or []
@@ -75,8 +83,11 @@ rubric_contract_ok = (
 )
 evidence = paquete.get("evidencia") or {}
 metrics = evidence.get("metricas") or {}
+validation = (((paquete.get("evidencia") or {}).get("backtest") or {}).get("validacionMultisemilla") or {})
 ok = (
-    demo.get("ok") is True
+    reset.get("ok") is True
+    and reset.get("corridaId", "").startswith("jury-")
+    and demo.get("ok") is True
     and jurado.get("nombre") == "Mayab Jury Mode"
     and jury_state.get("status") == "ready"
     and readiness.get("status") == "ready"
@@ -88,6 +99,8 @@ ok = (
     and evidence.get("ultimaAuditoria")
     and evidence.get("ga")
     and paquete.get("huellaAuditoria")
+    and (validation.get("base") or {}).get("corridas") == 24
+    and (validation.get("optimizada") or {}).get("corridas") == 24
 )
 sys.exit(0 if ok else 1)
 PY
