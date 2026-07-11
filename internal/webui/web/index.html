@@ -26,7 +26,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260710-native-cursor" />
+    <link rel="stylesheet" href="/styles.css?v=20260711-responsive-dashboard" />
   </head>
   <body>
     <noscript>
@@ -148,13 +148,26 @@
         </div>
       </header>
 
+      <section class="provenance-strip" aria-label="Procedencia de datos, ejecución y corrida">
+        <article><span>Datos</span><strong id="provenanceData">LIVE 0/5</strong><small id="provenanceLatency">esperando feeds</small></article>
+        <article><span>Ejecución</span><strong>100% simulada</strong><small>sin llaves · sin custodia</small></article>
+        <article><span>Corrida</span><strong id="provenanceRun">sin demo</strong><small id="provenanceRunMeta">PnL separado de mercado</small></article>
+      </section>
+
       <div id="circuitBreakerBanner" class="circuit-breaker-banner" hidden>
         <span class="material-icon material-icon-warning" aria-hidden="true"></span>
         <span>CIRCUIT BREAKER ACTIVO: Se han pausado las ejecuciones simuladas debido a pérdidas acumuladas.</span>
       </div>
 
 
-      <nav class="tabs-nav" aria-label="Navegación principal">
+      <button class="mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="dashboard-tabs">
+        <span class="mobile-nav-copy">
+          <small>Sección</small>
+          <strong id="mobileNavLabel">Resumen</strong>
+        </span>
+        <span class="hamburger-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <nav id="dashboard-tabs" class="tabs-nav" aria-label="Navegación principal">
         <button class="tab-btn activo" data-tab="tab-overview">Resumen</button>
         <button class="tab-btn" data-tab="tab-mercado">Mercado y rutas</button>
         <button class="tab-btn" data-tab="tab-riesgo">Riesgo y escenarios</button>
@@ -180,6 +193,7 @@
           <li><span>Latencia</span><strong id="llm-latencia">Cargando...</strong></li>
         </ul>
         <div class="strip-actions" aria-label="Exportar auditoría">
+          <button type="button" id="btnDemoFinalTop" class="btn-link btn-link-destacado" title="Reinicia el estado simulado y prepara una corrida auditable completa">Preparar demo auditada</button>
           <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Abre el resumen JSON de validaciones, score, métricas y estado operativo">Abrir resumen de validación</a>
           <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con criterios, métricas, auditoría y cobertura técnica">Abrir reporte técnico completo</a>
           <a class="btn-link" href="/api/mcp/manifest" target="_blank" rel="noopener" title="Consulta el manifiesto de herramientas disponibles para integraciones MCP">Consultar API para agentes</a>
@@ -348,6 +362,20 @@
             </div>
             <div id="latenciaRanking" class="mini-tabla"></div>
           </div>
+          <div class="pipeline-proof" aria-label="Telemetría del pipeline de decisión">
+            <div class="mini-tabla-titulo">
+              <strong>Wire ≠ compute</strong>
+              <span>Motor Rust</span>
+              <small>p50 / p95 / p99</small>
+            </div>
+            <div class="pipeline-kpis">
+              <article><span>Quote → decisión</span><strong id="pipelineDecision">—</strong><small id="pipelineDecisionTail">p95 — · p99 —</small></article>
+              <article><span>Scan interno</span><strong id="pipelineCompute">—</strong><small id="pipelineComputeTail">p95 — · p99 —</small></article>
+              <article><span>Throughput</span><strong id="pipelineThroughput">—</strong><small id="pipelineRoutes">0 rutas evaluadas</small></article>
+              <article><span>Coalescing</span><strong id="pipelineCoalescing">—</strong><small id="pipelineSamples">0 muestras</small></article>
+            </div>
+            <p class="panel-ayuda pipeline-note">Exchange → ingesta se reporta arriba. Aquí se mide por separado espera de scheduling y cómputo; ticks sin cotización nueva se omiten para no duplicar decisiones ni Z-score.</p>
+          </div>
         </section>
 
         <section class="panel mapa">
@@ -497,12 +525,14 @@
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda">Al llegar a esta sección se prepara automáticamente el recorrido rentable completo. También puedes repetirlo o ejecutar escenarios reproducibles de fallos, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
+        <p class="panel-ayuda">La demo solo se prepara cuando tú lo solicitas y cada recorrido final reinicia primero el estado simulado, evitando PnL acumulado entre visitas. También puedes ejecutar escenarios reproducibles de fallos, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
         <div class="demo-actions">
           <button type="button" id="btnResetDemo" class="btn-secundario">Reiniciar corrida de jurado</button>
           <button type="button" id="btnDemoFinal" class="btn-secundario demo-final btc-icon-button">Preparar recorrido completo</button>
+          <button type="button" id="btnDemoCaos" class="btn-secundario demo-final">Prueba de caos completa</button>
           <button type="button" class="btn-secundario demo-primary btc-icon-button" data-demo="mercado_rentable">Repetir escenario rentable</button>
           <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
+          <button type="button" class="btn-secundario" data-demo="fallo_segunda_pierna">Fallar segunda pierna + unwind</button>
           <button type="button" class="btn-secundario" data-demo="mercado_movido">Shock de mercado</button>
           <button type="button" class="btn-secundario" data-demo="fill_parcial">Fill parcial</button>
           <button type="button" class="btn-secundario" data-demo="liquidez_insuficiente">Liquidez insuficiente</button>
@@ -510,6 +540,32 @@
           <button type="button" class="btn-secundario" data-demo="rebalanceo">Forzar rebalanceo</button>
         </div>
         <span id="demoFeedback" class="feedback"></span>
+      </section>
+
+      <section class="panel tabla fsm-panel">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Leg risk</p>
+            <h2>FSM de ejecución y conciliación</h2>
+          </div>
+          <span>2 piernas · exposición trazable</span>
+        </div>
+        <p class="panel-ayuda">Cada transición prueba qué ocurrió antes de tocar wallets. Si la venta falla después de llenar la compra, el motor abre exposición temporal, ejecuta unwind y termina con 0 BTC residual y PnL realizado.</p>
+        <div class="tabla-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Estado</th>
+                <th>Pierna</th>
+                <th>Ruta</th>
+                <th>Exposición</th>
+                <th>PnL</th>
+                <th>Evidencia</th>
+              </tr>
+            </thead>
+            <tbody id="trazasEjecucion"></tbody>
+          </table>
+        </div>
       </section>
       </div>
       </div>
@@ -681,7 +737,7 @@
           </table>
         </div>
         <div id="backtestEvidencia" class="evidence-summary" aria-live="polite">
-          Calculando validación multisemilla…
+          Pulsa Ejecutar para correr la validación multisemilla reproducible.
         </div>
       </section>
 
@@ -712,7 +768,7 @@
           </table>
         </div>
         <div id="labEvidencia" class="evidence-summary" aria-live="polite">
-          Comparando robustez en 24 semillas comunes…
+          Pulsa Comparar para evaluar robustez en 24 semillas comunes.
         </div>
       </section>
 
@@ -950,6 +1006,6 @@
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260710-table-tools" type="module"></script>
+    <script src="/app.js?v=20260711-responsive-dashboard" type="module"></script>
   </body>
 </html>

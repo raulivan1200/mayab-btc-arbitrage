@@ -98,6 +98,8 @@ ok = (
     and metrics.get("pnlUsd", 0) > 0
     and evidence.get("ultimaAuditoria")
     and evidence.get("ga")
+    and demo.get("riesgoSegundaPierna", {}).get("estadoFinal") == "RECONCILED_LOSS"
+    and demo.get("riesgoSegundaPierna", {}).get("exposicionFinalBtc") == 0
     and paquete.get("huellaAuditoria")
     and (validation.get("base") or {}).get("corridas") == 24
     and (validation.get("optimizada") or {}).get("corridas") == 24

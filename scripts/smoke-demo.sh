@@ -76,6 +76,7 @@ json_post "/api/ga/evolucionar" '{"usarReplaySiVacio":true,"muestras":96}' "$TMP
 json_post "/api/demo" '{"escenario":"mercado_rentable"}' "$TMP_DIR/demo-rentable.json"
 json_post "/api/demo" '{"escenario":"rebalanceo"}' "$TMP_DIR/demo-rebalanceo.json"
 json_post "/api/demo/final" '{}' "$TMP_DIR/demo-final.json"
+json_post "/api/demo/caos" '{}' "$TMP_DIR/demo-caos.json"
 wait_preflight_ready "$TMP_DIR/preflight-demo.json" 60 || true
 json_get "/api/estado" "$TMP_DIR/estado.json"
 json_get "/api/jurado" "$TMP_DIR/jurado.json"
@@ -114,6 +115,7 @@ ga = load("ga.json")
 demo = load("demo-rentable.json")
 rebalanceo = load("demo-rebalanceo.json")
 demo_final = load("demo-final.json")
+demo_caos = load("demo-caos.json")
 estado = load("estado.json")
 jurado = load("jurado.json")
 paquete = load("paquete.json")
@@ -156,6 +158,12 @@ if rebalanceo.get("ok") is not True:
 
 if demo_final.get("ok") is not True:
     errors.append("/api/demo/final fallo")
+if demo_caos.get("ok") is not True or demo_caos.get("aprobados") != demo_caos.get("totalChecks"):
+    errors.append("/api/demo/caos no supero todos los checks")
+if abs(demo_caos.get("estadoFinal", {}).get("exposicionResidualBtc", 1)) >= 1e-9:
+    errors.append("/api/demo/caos termino con exposicion residual")
+if demo_caos.get("estadoFinal", {}).get("circuitBreakerActivo"):
+    errors.append("/api/demo/caos no restauro el circuit breaker")
 
 metricas = estado.get("metricas") or {}
 genetico = estado.get("genetico") or {}
@@ -172,6 +180,9 @@ if metricas.get("rebalanceosTotales", 0) <= 0:
     errors.append("no hay rebalanceos visibles despues de demo rebalanceo")
 if not estado.get("auditoriaDecisiones"):
     errors.append("estado no contiene auditoria de decisiones")
+trazas = estado.get("trazasEjecucion") or []
+if not any(t.get("estado") == "RECONCILED_LOSS" and abs(t.get("exposicionBtc", 1)) < 1e-9 for t in trazas):
+    errors.append("estado no contiene FSM de segunda pierna reconciliada sin exposicion")
 if not any(o.get("parcial") for o in estado.get("operaciones", []) + estado.get("oportunidades", [])):
     errors.append("estado no contiene evidencia de fill parcial")
 
@@ -182,6 +193,8 @@ if not jurado.get("scorecard") or len(jurado.get("scorecard") or []) < 8:
     errors.append("/api/jurado no expone scorecard suficiente")
 if jurado.get("enlaces", {}).get("demoFinal") != "/api/demo/final":
     errors.append("/api/jurado no enlaza demoFinal")
+if jurado.get("enlaces", {}).get("demoCaos") != "/api/demo/caos":
+    errors.append("/api/jurado no enlaza demoCaos")
 
 rubrica = paquete.get("rubricaOficialComite") or []
 if len(rubrica) != 5:
@@ -232,7 +245,7 @@ if lab.get("tipo") != "research_lab_sweep" or len(lab.get("resultados") or []) <
 if not lab.get("ganador"):
     errors.append("/api/lab/sweep no reporta ganador")
 
-for key in ["operaciones", "eventosEjecucion", "auditoriaDecisiones", "rebalanceos", "balances", "configuracion"]:
+for key in ["operaciones", "eventosEjecucion", "trazasEjecucion", "auditoriaDecisiones", "rebalanceos", "balances", "configuracion", "telemetriaPipeline"]:
     if key not in export_json:
         errors.append(f"/api/export/json no incluye {key}")
 if "tipo,tiempo,ruta,detalle,cantidad_btc" not in export_csv.splitlines()[0]:

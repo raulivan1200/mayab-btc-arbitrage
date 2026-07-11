@@ -4,11 +4,49 @@
 //! operación y tolerancia de latencia usando historial simulado o replay
 //! sintético controlado.
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{EstadoGenetico, Operacion};
+
+/// Score canónico compartido por ejecución, explicación y entrenamiento GA.
+/// Mantener esta transformación en un solo sitio evita que el campeón se
+/// evalúe con features distintas de las que gobiernan el motor.
+pub struct FeaturesScore {
+    pub utilidad_usd: f64,
+    pub latencia_ms: i64,
+    pub tolerancia_latencia_ms: i64,
+    pub cantidad_btc: f64,
+    pub max_operacion_btc: f64,
+    pub confiabilidad: f64,
+    pub z_score: f64,
+}
+
+pub fn score_canonico(pesos: &[f64], f: FeaturesScore) -> f64 {
+    let mut w = [0.40, 0.20, 0.20, 0.10, 0.10];
+    if pesos.len() >= 5 {
+        let total = pesos.iter().take(5).copied().sum::<f64>();
+        if total > 0.0 {
+            for i in 0..5 {
+                w[i] = pesos[i].max(0.0) / total;
+            }
+        }
+    }
+    let features = [
+        (f.utilidad_usd / 100.0).clamp(0.0, 1.0),
+        (1.0 - f.latencia_ms as f64 / f.tolerancia_latencia_ms.max(1) as f64).clamp(0.0, 1.0),
+        (f.cantidad_btc / f.max_operacion_btc.max(0.00000001)).clamp(0.0, 1.0),
+        f.confiabilidad.clamp(0.0, 1.0),
+        (f.z_score / 3.0).clamp(0.0, 1.0),
+    ];
+    w.iter()
+        .zip(features)
+        .map(|(peso, valor)| peso * valor)
+        .sum()
+}
 
 /// Parámetros de evolución del algoritmo genético.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -498,6 +536,8 @@ struct VentanaFitness {
     max_drawdown: f64,
     latencia_media: f64,
     fill_parcial_rate: f64,
+    calibracion_pesos: f64,
+    edge_ponderado: f64,
     n: usize,
     fallos: usize,
 }
@@ -558,6 +598,8 @@ fn evaluar_ventana(operaciones: &[Operacion], fallos: usize) -> VentanaFitness {
         max_drawdown,
         latencia_media,
         fill_parcial_rate,
+        calibracion_pesos: 0.0,
+        edge_ponderado: 0.0,
         n,
         fallos,
     }
@@ -571,7 +613,7 @@ fn evaluar_genoma(g: &Genoma, operaciones: &[Operacion], fallos: usize) -> Venta
             if capital <= 0.0 || op.cantidad_btc <= 0.0 {
                 return None;
             }
-            let neto_bps = op.utilidad_usd / capital * 10_000.0;
+            let neto_bps = utilidad_esperada(op) / capital * 10_000.0;
             if neto_bps < g.umbral_min_spread_bps || op.latencia_max_ms > g.tolerancia_latencia_ms {
                 return None;
             }
@@ -583,22 +625,23 @@ fn evaluar_genoma(g: &Genoma, operaciones: &[Operacion], fallos: usize) -> Venta
             let mut candidato = op.clone();
             candidato.cantidad_btc = cantidad;
             candidato.utilidad_usd *= escala;
+            candidato.utilidad_esperada_usd *= escala;
             candidato.costos.fee_compra_usd *= escala;
             candidato.costos.fee_venta_usd *= escala;
             candidato.costos.deslizamiento_usd *= escala;
             candidato.costos.retiro_amort_usd *= escala;
             candidato.costos.latencia_riesgo_usd *= escala;
+            candidato.costos.seleccion_adversa_usd *= escala;
             candidato.costos.total_usd *= escala;
             Some(candidato)
         })
         .collect::<Vec<_>>();
-    evaluar_ventana(&seleccionadas, fallos)
+    let mut ventana = evaluar_ventana(&seleccionadas, fallos);
+    (ventana.calibracion_pesos, ventana.edge_ponderado) = evaluar_pesos(g, &seleccionadas);
+    ventana
 }
 
 fn fitness_genoma(g: &Genoma, base: &VentanaFitness) -> f64 {
-    let pesos_balanceados = 1.0 - desviacion_pesos(&g.pesos);
-    let ajuste_umbral = 1.0 - ((g.umbral_min_spread_bps - 0.9).abs() / 8.0).clamp(0.0, 0.9);
-    let ajuste_tamano = 1.0 - ((g.max_operacion_btc - 0.18).abs() / 1.25).clamp(0.0, 0.7);
     let penalizacion_latencia = if g.tolerancia_latencia_ms as f64 >= base.latencia_media {
         0.0
     } else {
@@ -607,27 +650,87 @@ fn fitness_genoma(g: &Genoma, base: &VentanaFitness) -> f64 {
     let penalizacion_fallos = base.fallos as f64 / (base.n + base.fallos).max(1) as f64;
     let penalizacion_parciales = base.fill_parcial_rate * 5.0;
 
-    (base.utilidad_media.tanh() * 28.0)
+    (base.utilidad_media.max(0.0).sqrt() * 6.0).min(35.0)
         + base.sharpe * 8.0
         + base.win_rate * 22.0
-        + (base.pnl_total / 500.0).tanh() * 18.0
-        + pesos_balanceados * 8.0
-        + ajuste_umbral * 8.0
-        + ajuste_tamano * 5.0
+        + (base.pnl_total.max(0.0).sqrt() * 0.8).min(40.0)
+        + base.calibracion_pesos * 16.0
+        + base.edge_ponderado * 14.0
         - (base.max_drawdown / 250.0).min(30.0)
         - penalizacion_fallos * 40.0
         - penalizacion_latencia.min(20.0)
         - penalizacion_parciales
 }
 
-fn desviacion_pesos(pesos: &[f64; 5]) -> f64 {
-    let ideal = [0.42, 0.18, 0.18, 0.12, 0.10];
-    pesos
+fn utilidad_esperada(op: &Operacion) -> f64 {
+    if op.utilidad_esperada_usd.is_finite() && op.utilidad_esperada_usd.abs() > f64::EPSILON {
+        op.utilidad_esperada_usd
+    } else {
+        (op.precio_venta - op.precio_compra) * op.cantidad_btc
+            - (op.costos.total_usd - op.costos.seleccion_adversa_usd).max(0.0)
+    }
+}
+
+fn evaluar_pesos(g: &Genoma, operaciones: &[Operacion]) -> (f64, f64) {
+    if operaciones.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut rutas: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut netos_bps = Vec::with_capacity(operaciones.len());
+    let max_cantidad = operaciones
         .iter()
-        .zip(ideal)
-        .map(|(a, b)| (a - b).abs())
-        .sum::<f64>()
-        .clamp(0.0, 1.0)
+        .map(|op| op.cantidad_btc)
+        .fold(0.0_f64, f64::max)
+        .max(0.00000001);
+    for op in operaciones {
+        let ruta = format!("{}->{}", op.compra_en, op.venta_en);
+        let entry = rutas.entry(ruta).or_insert((0, 0));
+        entry.0 += usize::from(op.utilidad_usd > 0.0);
+        entry.1 += 1;
+        let capital = (op.precio_compra * op.cantidad_btc).max(0.00000001);
+        netos_bps.push(utilidad_esperada(op) / capital * 10_000.0);
+    }
+    let media = netos_bps.iter().sum::<f64>() / netos_bps.len() as f64;
+    let desv = if netos_bps.len() > 1 {
+        (netos_bps
+            .iter()
+            .map(|valor| (valor - media).powi(2))
+            .sum::<f64>()
+            / (netos_bps.len() - 1) as f64)
+            .sqrt()
+            .max(0.00000001)
+    } else {
+        1.0
+    };
+
+    let mut calibracion = 0.0;
+    let mut edge = 0.0;
+    for (op, neto_bps) in operaciones.iter().zip(netos_bps) {
+        let ruta = format!("{}->{}", op.compra_en, op.venta_en);
+        let (wins, total) = rutas.get(&ruta).copied().unwrap_or((0, 1));
+        let z_score = (neto_bps - media) / desv;
+        let prediccion = score_canonico(
+            &g.pesos,
+            FeaturesScore {
+                utilidad_usd: utilidad_esperada(op),
+                latencia_ms: op.latencia_max_ms,
+                tolerancia_latencia_ms: g.tolerancia_latencia_ms,
+                cantidad_btc: op.cantidad_btc,
+                max_operacion_btc: max_cantidad,
+                confiabilidad: wins as f64 / total.max(1) as f64,
+                z_score,
+            },
+        )
+        .clamp(0.0, 1.0);
+        let outcome = if op.utilidad_usd > 0.0 { 1.0 } else { 0.0 };
+        calibracion += 1.0 - (prediccion - outcome).powi(2);
+        edge += (prediccion - 0.5) * (op.utilidad_usd / 25.0).tanh();
+    }
+    let n = operaciones.len() as f64;
+    (
+        (calibracion / n).clamp(0.0, 1.0),
+        (0.5 + edge / n).clamp(0.0, 1.0),
+    )
 }
 
 fn diversidad(poblacion: &[Genoma]) -> f64 {
@@ -671,6 +774,7 @@ mod tests {
             precio_compra: 100_000.0,
             precio_venta: 100_100.0,
             utilidad_usd: utilidad,
+            utilidad_esperada_usd: utilidad,
             costos: CostosOperacion::default(),
             parcial,
             ejecutada_en: Utc::now(),
@@ -712,5 +816,32 @@ mod tests {
         assert_eq!(ventana_amplia.n, 2);
         assert_eq!(ventana_estricta.pnl_total, 0.0);
         assert!(ventana_pequena.pnl_total < ventana_amplia.pnl_total);
+    }
+
+    #[test]
+    fn fitness_de_pesos_depende_de_outcomes_y_no_de_vector_ideal_fijo() {
+        let mut ganadora = op(22.0, false);
+        ganadora.utilidad_esperada_usd = 22.0;
+        ganadora.latencia_max_ms = 4_000;
+        let mut adversa = op(-12.0, false);
+        adversa.utilidad_esperada_usd = 1.0;
+        adversa.latencia_max_ms = 10;
+        let operaciones = vec![ganadora, adversa];
+
+        let mut utilidad = Genoma::base();
+        utilidad.pesos = [0.96, 0.01, 0.01, 0.01, 0.01];
+        utilidad.normalizar();
+        let mut frescura = Genoma::base();
+        frescura.pesos = [0.01, 0.96, 0.01, 0.01, 0.01];
+        frescura.normalizar();
+
+        let ventana_utilidad = evaluar_genoma(&utilidad, &operaciones, 0);
+        let ventana_frescura = evaluar_genoma(&frescura, &operaciones, 0);
+
+        assert!(ventana_utilidad.calibracion_pesos > ventana_frescura.calibracion_pesos);
+        assert!(
+            fitness_genoma(&utilidad, &ventana_utilidad)
+                > fitness_genoma(&frescura, &ventana_frescura)
+        );
     }
 }

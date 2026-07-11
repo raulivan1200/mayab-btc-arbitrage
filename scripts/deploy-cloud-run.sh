@@ -44,6 +44,8 @@ if [ -z "$SERVICE_URL" ]; then
 fi
 
 echo "Validando revision publica en ${SERVICE_URL}"
+# Cloud Run puede interceptar el path raíz exacto /healthz antes de Axum.
+# /api/healthz es el contrato público estable; /healthz se conserva para local.
 curl -fsS --retry 8 --retry-delay 2 --retry-all-errors "${SERVICE_URL}/api/healthz" >/dev/null
 curl -fsS --retry 4 --retry-delay 2 --retry-all-errors "${SERVICE_URL}/api/preflight" >/dev/null
 

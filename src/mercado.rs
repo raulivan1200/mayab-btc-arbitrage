@@ -39,6 +39,11 @@ struct LibroEstado {
     par: String,
     bids: BTreeMap<i64, f64>,
     asks: BTreeMap<i64, f64>,
+    ultima_secuencia: Option<u64>,
+    integrity_status: String,
+    resyncs: u64,
+    requiere_snapshot: bool,
+    timestamp_confiable: bool,
 }
 
 impl LibroEstado {
@@ -47,6 +52,11 @@ impl LibroEstado {
             par: normalizar_par(par),
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
+            ultima_secuencia: None,
+            integrity_status: "esperando_snapshot".to_string(),
+            resyncs: 0,
+            requiere_snapshot: true,
+            timestamp_confiable: false,
         }
     }
 
@@ -88,12 +98,109 @@ impl LibroEstado {
     }
 
     fn cotizacion(&self, evento_unix_ms: i64) -> Option<Cotizacion> {
-        cotizacion(
+        let mut cotizacion = cotizacion(
             &self.par,
             self.snapshot_bids(10),
             self.snapshot_asks(10),
             evento_unix_ms,
-        )
+        )?;
+        cotizacion.exchange_sequence = self.ultima_secuencia;
+        cotizacion.integrity_status = self.integrity_status.clone();
+        cotizacion.resyncs = self.resyncs;
+        cotizacion.timestamp_confiable = self.timestamp_confiable;
+        Some(cotizacion)
+    }
+
+    fn registrar_snapshot(
+        &mut self,
+        secuencia: Option<u64>,
+        integrity_status: &str,
+        timestamp_confiable: bool,
+    ) {
+        self.ultima_secuencia = secuencia;
+        self.integrity_status = integrity_status.to_string();
+        self.requiere_snapshot = false;
+        self.timestamp_confiable = timestamp_confiable;
+    }
+
+    fn registrar_incremental_exacto(&mut self, secuencia: Option<u64>) -> bool {
+        if self.requiere_snapshot {
+            self.integrity_status = "esperando_snapshot".to_string();
+            return false;
+        }
+        let Some(actual) = secuencia else {
+            self.integrity_status = "secuencia_no_disponible".to_string();
+            return true;
+        };
+        if let Some(anterior) = self.ultima_secuencia {
+            if actual <= anterior {
+                self.integrity_status = "fuera_de_orden".to_string();
+                return false;
+            }
+            if actual != anterior.saturating_add(1) {
+                self.resyncs += 1;
+                self.requiere_snapshot = true;
+                self.integrity_status = "gap_requiere_snapshot".to_string();
+                let par = self.par.clone();
+                self.reset(&par);
+                self.ultima_secuencia = None;
+                return false;
+            }
+        }
+        self.ultima_secuencia = Some(actual);
+        self.integrity_status = "secuencia_continua".to_string();
+        true
+    }
+
+    fn registrar_incremental_monotono(&mut self, secuencia: Option<u64>) -> bool {
+        if self.requiere_snapshot {
+            self.integrity_status = "esperando_snapshot".to_string();
+            return false;
+        }
+        let Some(actual) = secuencia else {
+            self.integrity_status = "secuencia_no_disponible".to_string();
+            return true;
+        };
+        if self
+            .ultima_secuencia
+            .is_some_and(|anterior| actual < anterior)
+        {
+            self.integrity_status = "fuera_de_orden".to_string();
+            return false;
+        }
+        self.ultima_secuencia = Some(actual);
+        self.integrity_status = "secuencia_monotona".to_string();
+        true
+    }
+
+    fn registrar_incremental_enlazado(
+        &mut self,
+        secuencia: Option<u64>,
+        previa: Option<u64>,
+    ) -> bool {
+        if self.requiere_snapshot {
+            self.integrity_status = "esperando_snapshot".to_string();
+            return false;
+        }
+        let (Some(actual), Some(previa)) = (secuencia, previa) else {
+            self.integrity_status = "secuencia_no_disponible".to_string();
+            return true;
+        };
+        if self
+            .ultima_secuencia
+            .is_some_and(|anterior| previa != anterior || actual <= anterior)
+        {
+            self.resyncs += 1;
+            self.requiere_snapshot = true;
+            self.integrity_status = "gap_requiere_snapshot".to_string();
+            let par = self.par.clone();
+            self.reset(&par);
+            self.ultima_secuencia = None;
+            return false;
+        }
+        self.ultima_secuencia = Some(actual);
+        self.integrity_status = "secuencia_enlazada".to_string();
+        true
     }
 }
 
@@ -288,7 +395,7 @@ fn adaptadores(par: &str) -> Vec<Adaptador> {
             par: normalizar_par(&usdt),
             url: "wss://stream.bybit.com/v5/public/spot".to_string(),
             suscripcion: Some(
-                serde_json::json!({"op":"subscribe","args":[format!("orderbook.1.{usdt}")]}),
+                serde_json::json!({"op":"subscribe","args":[format!("orderbook.50.{usdt}")]}),
             ),
             parser: parsear_bybit,
             rest: Some(RestFallback {
@@ -308,6 +415,11 @@ fn parsear_binance(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> 
     if v.get("lastUpdateId").is_some() {
         let par_actual = libro.par.clone();
         libro.reset(&par_actual);
+        libro.registrar_snapshot(
+            v.get("lastUpdateId").and_then(Value::as_u64),
+            "snapshot_parcial",
+            v.get("E").is_some(),
+        );
     }
     libro.actualizar_bids(&bids);
     libro.actualizar_asks(&asks);
@@ -332,8 +444,15 @@ fn parsear_okx(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         || v.pointer("/arg/channel").and_then(Value::as_str) == Some("books5")
     {
         libro.reset(par);
+        libro.registrar_snapshot(item.get("seqId").and_then(parse_u64), "snapshot_seq", true);
     } else {
         libro.par = normalizar_par(par);
+        if !libro.registrar_incremental_enlazado(
+            item.get("seqId").and_then(parse_u64),
+            item.get("prevSeqId").and_then(parse_u64),
+        ) {
+            return None;
+        }
     }
     // Los deltas pueden modificar un solo lado del libro. Una clave ausente no
     // invalida el mensaje: equivale a "sin cambios" para ese lado.
@@ -364,10 +483,15 @@ fn parsear_bybit(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         return None;
     }
     let par = topic.rsplit('.').next().unwrap_or("BTCUSDT");
+    let secuencia = v.pointer("/data/seq").and_then(parse_u64);
     if v.get("type").and_then(Value::as_str) == Some("snapshot") {
         libro.reset(par);
+        libro.registrar_snapshot(secuencia, "snapshot_seq", true);
     } else {
         libro.par = normalizar_par(par);
+        if !libro.registrar_incremental_monotono(secuencia) {
+            return None;
+        }
     }
     let bids = v
         .pointer("/data/b")
@@ -398,8 +522,15 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         || v.get("type").and_then(Value::as_str) == Some("snapshot")
     {
         libro.reset(par);
+        libro.registrar_snapshot(None, "checksum_no_verificado", true);
     } else {
+        if libro.requiere_snapshot {
+            libro.integrity_status = "esperando_snapshot".to_string();
+            return None;
+        }
         libro.par = normalizar_par(par);
+        libro.integrity_status = "incremental_sin_checksum".to_string();
+        libro.timestamp_confiable = true;
     }
     let bids = item
         .get("bids")
@@ -434,6 +565,17 @@ fn parsear_coinbase(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion>
         .and_then(Value::as_str)
         .and_then(rfc3339_ms)
         .unwrap_or_default();
+    let secuencia = v.get("sequence_num").and_then(parse_u64);
+    let es_snapshot = v
+        .get("events")?
+        .as_array()?
+        .iter()
+        .any(|event| event.get("type").and_then(Value::as_str) == Some("snapshot"));
+    if es_snapshot {
+        libro.registrar_snapshot(secuencia, "snapshot_seq", true);
+    } else if !libro.registrar_incremental_exacto(secuencia) {
+        return None;
+    }
     for event in v.get("events")?.as_array()? {
         if let Some(product_id) = event.get("product_id").and_then(Value::as_str) {
             if event.get("type").and_then(Value::as_str) == Some("snapshot") {
@@ -474,7 +616,7 @@ fn parsear_rest_binance(bytes: &[u8], par: &str) -> Option<Cotizacion> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let bids = niveles_strings(v.get("bids")?.as_array()?, 10);
     let asks = niveles_strings(v.get("asks")?.as_array()?, 10);
-    cotizacion(par, bids, asks, 0)
+    marcar_rest(cotizacion(par, bids, asks, 0), false)
 }
 
 fn parsear_rest_kraken(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -485,7 +627,7 @@ fn parsear_rest_kraken(bytes: &[u8], par: &str) -> Option<Cotizacion> {
     let book = v.get("result")?.as_object()?.values().next()?;
     let bids = niveles_strings(book.get("bids")?.as_array()?, 10);
     let asks = niveles_strings(book.get("asks")?.as_array()?, 10);
-    cotizacion(par, bids, asks, 0)
+    marcar_rest(cotizacion(par, bids, asks, 0), false)
 }
 
 fn parsear_rest_coinbase(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -497,7 +639,7 @@ fn parsear_rest_coinbase(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         .and_then(Value::as_str)
         .and_then(rfc3339_ms)
         .unwrap_or_default();
-    cotizacion(par, bids, asks, ts)
+    marcar_rest(cotizacion(par, bids, asks, ts), ts > 0)
 }
 
 fn parsear_rest_okx(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -513,7 +655,7 @@ fn parsear_rest_okx(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         .and_then(Value::as_str)
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
-    cotizacion(par, bids, asks, ts)
+    marcar_rest(cotizacion(par, bids, asks, ts), true)
 }
 
 fn parsear_rest_bybit(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -532,7 +674,15 @@ fn parsear_rest_bybit(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         })
         .or_else(|| v.get("time").and_then(Value::as_i64))
         .unwrap_or_else(|| Utc::now().timestamp_millis());
-    cotizacion(par, bids, asks, ts)
+    marcar_rest(cotizacion(par, bids, asks, ts), true)
+}
+
+fn marcar_rest(cotizacion: Option<Cotizacion>, timestamp_confiable: bool) -> Option<Cotizacion> {
+    cotizacion.map(|mut cotizacion| {
+        cotizacion.integrity_status = "rest_snapshot".to_string();
+        cotizacion.timestamp_confiable = timestamp_confiable;
+        cotizacion
+    })
 }
 
 fn niveles_strings(items: &[Value], max: usize) -> Vec<NivelOrden> {
@@ -575,6 +725,12 @@ fn parse_num(v: &Value) -> Option<f64> {
         _ => None,
     }
     .filter(|n| n.is_finite())
+}
+
+fn parse_u64(v: &Value) -> Option<u64> {
+    v.as_u64()
+        .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
 }
 
 fn actualizar_lado(lado: &mut BTreeMap<i64, f64>, niveles: &[NivelOrden]) {
@@ -620,6 +776,10 @@ fn cotizacion(
         recibida_en: Utc::now(),
         latencia_ms: 0,
         secuencia: 0,
+        exchange_sequence: None,
+        integrity_status: "sin_validar".to_string(),
+        resyncs: 0,
+        timestamp_confiable: evento_unix_ms > 0,
         conectado: true,
         ultimo_mensaje: String::new(),
     })
@@ -700,6 +860,30 @@ mod tests {
     }
 
     #[test]
+    fn bybit_descarta_cross_sequence_fuera_de_orden() {
+        let snapshot = br#"{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1710000000000,"data":{"seq":100,"b":[["100.0","2.0"]],"a":[["101.0","1.5"]]}}"#;
+        let atrasado = br#"{"topic":"orderbook.50.BTCUSDT","type":"delta","ts":1710000000001,"data":{"seq":99,"b":[["100.5","3.0"]]}}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_bybit(snapshot, &mut libro).unwrap();
+
+        assert!(parsear_bybit(atrasado, &mut libro).is_none());
+        assert_eq!(libro.integrity_status, "fuera_de_orden");
+    }
+
+    #[test]
+    fn coinbase_gap_bloquea_deltas_hasta_nuevo_snapshot() {
+        let snapshot = br#"{"channel":"l2_data","sequence_num":10,"timestamp":"2024-03-09T00:00:00Z","events":[{"type":"snapshot","product_id":"BTC-USD","updates":[{"side":"bid","price_level":"100.0","new_quantity":"2.0"},{"side":"offer","price_level":"101.0","new_quantity":"1.5"}]}]}"#;
+        let gap = br#"{"channel":"l2_data","sequence_num":12,"timestamp":"2024-03-09T00:00:00.001Z","events":[{"type":"update","product_id":"BTC-USD","updates":[{"side":"bid","price_level":"100.5","new_quantity":"2.0"}]}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_coinbase(snapshot, &mut libro).unwrap();
+
+        assert!(parsear_coinbase(gap, &mut libro).is_none());
+        assert_eq!(libro.integrity_status, "gap_requiere_snapshot");
+        assert_eq!(libro.resyncs, 1);
+        assert!(libro.bids.is_empty());
+    }
+
+    #[test]
     fn kraken_conserva_bid_en_delta_solo_ask() {
         let snapshot = br#"{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":100.0,"qty":2.0}],"asks":[{"price":101.0,"qty":1.5}],"timestamp":"2024-03-09T00:00:00Z"}]}"#;
         let delta = br#"{"channel":"book","type":"update","data":[{"symbol":"BTC/USD","asks":[{"price":100.8,"qty":1.0}],"timestamp":"2024-03-09T00:00:00.001Z"}]}"#;
@@ -723,6 +907,18 @@ mod tests {
 
         assert_eq!(c.bid, 100.5);
         assert_eq!(c.ask, 101.0);
+    }
+
+    #[test]
+    fn okx_prev_seq_invalido_fuerza_resync() {
+        let snapshot = br#"{"arg":{"channel":"books","instId":"BTC-USDT"},"action":"snapshot","data":[{"seqId":10,"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"ts":"1710000000000"}]}"#;
+        let gap = br#"{"arg":{"channel":"books","instId":"BTC-USDT"},"action":"update","data":[{"seqId":12,"prevSeqId":9,"bids":[["100.5","3.0"]],"ts":"1710000000001"}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        parsear_okx(snapshot, &mut libro).unwrap();
+
+        assert!(parsear_okx(gap, &mut libro).is_none());
+        assert_eq!(libro.integrity_status, "gap_requiere_snapshot");
+        assert_eq!(libro.resyncs, 1);
     }
 
     #[test]

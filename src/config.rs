@@ -114,6 +114,10 @@ impl Config {
             rebalance_umbral_pct: non_negative(env_f64("REBALANCE_UMBRAL_PCT", 35.0), 35.0),
             rebalance_max_transfer_pct: prob_pct(env_f64("REBALANCE_MAX_TRANSFER_PCT", 35.0), 35.0),
             costo_rebalanceo_usd: non_negative(env_f64("COSTO_REBALANCEO_USD", 5.0), 5.0),
+            rebalance_settlement_ms: non_negative_i64(
+                env_i64("REBALANCE_SETTLEMENT_MS", 1800),
+                1800,
+            ),
             exchanges,
         };
 

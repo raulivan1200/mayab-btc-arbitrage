@@ -37,6 +37,18 @@ pub struct Cotizacion {
     #[serde(rename = "latenciaMs")]
     pub latencia_ms: i64,
     pub secuencia: u64,
+    #[serde(
+        rename = "exchangeSequence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exchange_sequence: Option<u64>,
+    #[serde(rename = "integrityStatus", default)]
+    pub integrity_status: String,
+    #[serde(rename = "resyncs", default)]
+    pub resyncs: u64,
+    #[serde(rename = "timestampConfiable", default)]
+    pub timestamp_confiable: bool,
     pub conectado: bool,
     #[serde(
         rename = "ultimoMensaje",
@@ -70,6 +82,8 @@ pub struct CostosOperacion {
     pub retiro_amort_usd: f64,
     #[serde(rename = "latenciaRiesgoUsd")]
     pub latencia_riesgo_usd: f64,
+    #[serde(rename = "seleccionAdversaUsd", default)]
+    pub seleccion_adversa_usd: f64,
     #[serde(rename = "totalUsd")]
     pub total_usd: f64,
 }
@@ -134,6 +148,8 @@ pub struct Operacion {
     pub precio_venta: f64,
     #[serde(rename = "utilidadUsd")]
     pub utilidad_usd: f64,
+    #[serde(rename = "utilidadEsperadaUsd", default)]
+    pub utilidad_esperada_usd: f64,
     pub costos: CostosOperacion,
     pub parcial: bool,
     #[serde(rename = "ejecutadaEn")]
@@ -157,6 +173,25 @@ pub struct EventoEjecucion {
     pub cantidad_btc: f64,
 }
 
+/// Transición auditable de la máquina de estados de ejecución por piernas.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransicionEjecucion {
+    pub id: String,
+    #[serde(rename = "operacionId")]
+    pub operacion_id: String,
+    pub ruta: String,
+    #[serde(rename = "estadoAnterior")]
+    pub estado_anterior: String,
+    pub estado: String,
+    pub pierna: String,
+    pub detalle: String,
+    #[serde(rename = "exposicionBtc")]
+    pub exposicion_btc: f64,
+    #[serde(rename = "pnlRealizadoUsd")]
+    pub pnl_realizado_usd: f64,
+    pub tiempo: DateTime<Utc>,
+}
+
 /// Movimiento interno simulado para mantener balances operativos.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rebalanceo {
@@ -169,6 +204,29 @@ pub struct Rebalanceo {
     pub costo_usd: f64,
     pub razon: String,
     pub tiempo: DateTime<Utc>,
+}
+
+/// Capital de rebalanceo debitado pero todavía no disponible en destino.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransferenciaInventario {
+    pub id: String,
+    #[serde(rename = "rebalanceoId")]
+    pub rebalanceo_id: String,
+    pub desde: String,
+    pub hacia: String,
+    pub activo: String,
+    #[serde(rename = "cantidadBruta")]
+    pub cantidad_bruta: f64,
+    #[serde(rename = "cantidadNeta")]
+    pub cantidad_neta: f64,
+    #[serde(rename = "costoUsd")]
+    pub costo_usd: f64,
+    pub estado: String,
+    #[serde(rename = "creadaEn")]
+    pub creada_en: DateTime<Utc>,
+    #[serde(rename = "liquidaEn")]
+    pub liquida_en: DateTime<Utc>,
+    pub razon: String,
 }
 
 /// Registro forense de una decisión de aceptación o descarte.
@@ -282,6 +340,36 @@ pub struct LatenciaExchange {
     pub region_sugerida: String,
 }
 
+/// Telemetría interna del pipeline evento -> análisis -> decisión.
+///
+/// Se mantiene separada de la latencia de red para no confundir tiempo de
+/// transporte del exchange con tiempo de cómputo del motor.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TelemetriaPipeline {
+    #[serde(rename = "ciclosAnalisis")]
+    pub ciclos_analisis: u64,
+    #[serde(rename = "ciclosSinCambiosOmitidos")]
+    pub ciclos_sin_cambios_omitidos: u64,
+    #[serde(rename = "rutasEvaluadas")]
+    pub rutas_evaluadas: u64,
+    #[serde(rename = "eventosPorSegundo")]
+    pub eventos_por_segundo: f64,
+    #[serde(rename = "muestras")]
+    pub muestras: usize,
+    #[serde(rename = "computeP50Us")]
+    pub compute_p50_us: u64,
+    #[serde(rename = "computeP95Us")]
+    pub compute_p95_us: u64,
+    #[serde(rename = "computeP99Us")]
+    pub compute_p99_us: u64,
+    #[serde(rename = "quoteToDecisionP50Ms")]
+    pub quote_to_decision_p50_ms: i64,
+    #[serde(rename = "quoteToDecisionP95Ms")]
+    pub quote_to_decision_p95_ms: i64,
+    #[serde(rename = "quoteToDecisionP99Ms")]
+    pub quote_to_decision_p99_ms: i64,
+}
+
 /// Métricas agregadas del motor.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Metricas {
@@ -371,6 +459,11 @@ pub struct MapaCostos {
     pub rebalance_max_transfer_pct: f64,
     #[serde(rename = "costoRebalanceoUsd", default)]
     pub costo_rebalanceo_usd: f64,
+    #[serde(
+        rename = "rebalanceSettlementMs",
+        default = "default_rebalance_settlement_ms"
+    )]
+    pub rebalance_settlement_ms: i64,
     pub exchanges: HashMap<String, ExchangeConfig>,
 }
 
@@ -425,8 +518,23 @@ pub struct EstadoPersistencia {
     pub eventos: usize,
     pub auditorias: usize,
     pub rebalanceos: usize,
+    #[serde(rename = "dbBytes", default)]
+    pub db_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Proveniencia de la corrida visible para separar mercado live de PnL demo.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EstadoCorrida {
+    pub id: String,
+    pub modo: String,
+    #[serde(rename = "iniciadaEn")]
+    pub iniciada_en: DateTime<Utc>,
+    #[serde(rename = "fuentePnl")]
+    pub fuente_pnl: String,
+    #[serde(rename = "ejecucionReal")]
+    pub ejecucion_real: bool,
 }
 
 /// Snapshot completo expuesto por `/api/estado` y WebSocket.
@@ -434,17 +542,24 @@ pub struct EstadoPersistencia {
 pub struct EstadoPublico {
     #[serde(rename = "generadoEn")]
     pub generado_en: DateTime<Utc>,
+    pub corrida: EstadoCorrida,
     pub cotizaciones: Vec<Cotizacion>,
     pub oportunidades: VecDeque<Oportunidad>,
     pub operaciones: VecDeque<Operacion>,
     #[serde(rename = "eventosEjecucion")]
     pub eventos_ejecucion: VecDeque<EventoEjecucion>,
+    #[serde(rename = "trazasEjecucion")]
+    pub trazas_ejecucion: VecDeque<TransicionEjecucion>,
     #[serde(rename = "auditoriaDecisiones")]
     pub auditoria_decisiones: VecDeque<AuditoriaDecision>,
     pub rebalanceos: VecDeque<Rebalanceo>,
+    #[serde(rename = "transferenciasInventario")]
+    pub transferencias_inventario: VecDeque<TransferenciaInventario>,
     pub balances: Vec<Balance>,
     #[serde(rename = "latenciasExchange")]
     pub latencias_exchange: Vec<LatenciaExchange>,
+    #[serde(rename = "telemetriaPipeline")]
+    pub telemetria_pipeline: TelemetriaPipeline,
     #[serde(rename = "seriePnl")]
     pub serie_pnl: VecDeque<PuntoSerie>,
     #[serde(rename = "serieDiferencial")]
@@ -461,4 +576,8 @@ pub struct EstadoPublico {
     pub exchanges_activos: HashMap<String, bool>,
     #[serde(rename = "paresActivos")]
     pub pares_activos: Vec<String>,
+}
+
+fn default_rebalance_settlement_ms() -> i64 {
+    1_800
 }

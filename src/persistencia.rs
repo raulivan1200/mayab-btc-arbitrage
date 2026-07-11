@@ -6,11 +6,18 @@
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Mutex, MutexGuard,
     },
     time::Duration,
 };
+
+const LIMITE_OPERACIONES: usize = 10_000;
+const LIMITE_OPORTUNIDADES: usize = 25_000;
+const LIMITE_EVENTOS: usize = 15_000;
+const LIMITE_AUDITORIAS: usize = 25_000;
+const LIMITE_REBALANCEOS: usize = 5_000;
+const MANTENIMIENTO_CADA_ESCRITURAS: usize = 256;
 
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection};
@@ -27,6 +34,8 @@ pub struct Persistencia {
     eventos: AtomicUsize,
     auditorias: AtomicUsize,
     rebalanceos: AtomicUsize,
+    db_bytes: AtomicU64,
+    escrituras_desde_mantenimiento: AtomicUsize,
 }
 
 impl Persistencia {
@@ -43,6 +52,8 @@ impl Persistencia {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         inicializar_schema(&conn)?;
+        aplicar_retencion(&conn)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         let operaciones = contar_tabla(&conn, "operaciones")?;
         let oportunidades = contar_tabla(&conn, "oportunidades")?;
         let eventos = contar_tabla(&conn, "eventos")?;
@@ -56,6 +67,8 @@ impl Persistencia {
             eventos: AtomicUsize::new(eventos),
             auditorias: AtomicUsize::new(auditorias),
             rebalanceos: AtomicUsize::new(rebalanceos),
+            db_bytes: AtomicU64::new(tamano_sqlite(ruta)),
+            escrituras_desde_mantenimiento: AtomicUsize::new(0),
         })
     }
 
@@ -69,6 +82,7 @@ impl Persistencia {
             eventos: self.eventos.load(Ordering::Relaxed),
             auditorias: self.auditorias.load(Ordering::Relaxed),
             rebalanceos: self.rebalanceos.load(Ordering::Relaxed),
+            db_bytes: self.db_bytes.load(Ordering::Relaxed),
             error: None,
         }
     }
@@ -92,6 +106,7 @@ impl Persistencia {
         )?;
         if changed > 0 {
             self.operaciones.fetch_add(1, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
         }
         Ok(())
     }
@@ -114,6 +129,7 @@ impl Persistencia {
         )?;
         if changed > 0 {
             self.eventos.fetch_add(1, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
         }
         Ok(())
     }
@@ -136,6 +152,7 @@ impl Persistencia {
         )?;
         if changed > 0 {
             self.rebalanceos.fetch_add(1, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
         }
         Ok(())
     }
@@ -170,6 +187,7 @@ impl Persistencia {
         tx.commit()?;
         if changed > 0 {
             self.oportunidades.fetch_add(changed, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
         }
         Ok(())
     }
@@ -204,6 +222,7 @@ impl Persistencia {
         tx.commit()?;
         if changed > 0 {
             self.auditorias.fetch_add(changed, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
         }
         Ok(())
     }
@@ -213,6 +232,65 @@ impl Persistencia {
             .lock()
             .map_err(|_| anyhow!("conexion SQLite bloqueada por panic previo"))
     }
+
+    fn mantenimiento_si_corresponde(
+        &self,
+        conn: &Connection,
+        escrituras: usize,
+    ) -> anyhow::Result<()> {
+        let previas = self
+            .escrituras_desde_mantenimiento
+            .fetch_add(escrituras, Ordering::Relaxed);
+        if previas + escrituras < MANTENIMIENTO_CADA_ESCRITURAS {
+            return Ok(());
+        }
+        self.escrituras_desde_mantenimiento
+            .store(0, Ordering::Relaxed);
+        aplicar_retencion(conn)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        self.operaciones
+            .store(contar_tabla(conn, "operaciones")?, Ordering::Relaxed);
+        self.oportunidades
+            .store(contar_tabla(conn, "oportunidades")?, Ordering::Relaxed);
+        self.eventos
+            .store(contar_tabla(conn, "eventos")?, Ordering::Relaxed);
+        self.auditorias
+            .store(contar_tabla(conn, "auditorias")?, Ordering::Relaxed);
+        self.rebalanceos
+            .store(contar_tabla(conn, "rebalanceos")?, Ordering::Relaxed);
+        self.db_bytes
+            .store(tamano_sqlite(&self.ruta), Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+fn aplicar_retencion(conn: &Connection) -> anyhow::Result<()> {
+    for (tabla, limite) in [
+        ("operaciones", LIMITE_OPERACIONES),
+        ("oportunidades", LIMITE_OPORTUNIDADES),
+        ("eventos", LIMITE_EVENTOS),
+        ("auditorias", LIMITE_AUDITORIAS),
+        ("rebalanceos", LIMITE_REBALANCEOS),
+    ] {
+        let sql = format!(
+            "DELETE FROM {tabla} WHERE rowid NOT IN \
+             (SELECT rowid FROM {tabla} ORDER BY tiempo DESC, rowid DESC LIMIT ?1)"
+        );
+        conn.execute(&sql, [limite as i64])?;
+    }
+    Ok(())
+}
+
+fn tamano_sqlite(ruta: &str) -> u64 {
+    [
+        ruta.to_string(),
+        format!("{ruta}-wal"),
+        format!("{ruta}-shm"),
+    ]
+    .iter()
+    .filter_map(|path| std::fs::metadata(path).ok())
+    .map(|meta| meta.len())
+    .sum()
 }
 
 fn contar_tabla(conn: &Connection, tabla: &'static str) -> anyhow::Result<usize> {
@@ -287,5 +365,34 @@ fn decimal_string(valor: f64, decimales: usize) -> String {
         format!("{valor:.decimales$}")
     } else {
         "0".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retencion_conserva_solo_las_auditorias_mas_recientes() {
+        let conn = Connection::open_in_memory().unwrap();
+        inicializar_schema(&conn).unwrap();
+        conn.execute_batch(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x <= 25000)
+             INSERT INTO auditorias (id, tiempo, ruta, decision, score, utilidad_usd, razon, payload_json)
+             SELECT printf('aud-%05d', x), printf('%05d', x), 'A->B', 'skip', '0', '0', 'qa', '{}'
+             FROM n;",
+        )
+        .unwrap();
+
+        aplicar_retencion(&conn).unwrap();
+
+        assert_eq!(
+            contar_tabla(&conn, "auditorias").unwrap(),
+            LIMITE_AUDITORIAS
+        );
+        let mas_antigua: String = conn
+            .query_row("SELECT MIN(tiempo) FROM auditorias", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mas_antigua, "00002");
     }
 }

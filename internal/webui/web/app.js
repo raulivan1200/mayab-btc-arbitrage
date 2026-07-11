@@ -2,9 +2,7 @@ let ultimoEstado = null;
 let tieneCambios = false;
 let oportunidadSeleccionadaId = null;
 const gaHistorial = [];
-const INTERVALO_AUTO_GA_MS = 6500;
 let gaAutoEnCurso = false;
-const CLAVE_LIDER_GA = "mayabGaAutoLeader";
 const ID_PESTANA = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const DEBUG_ACTIVO =
   new URLSearchParams(location.search).has("debug") ||
@@ -302,7 +300,6 @@ iniciarBacktest();
 iniciarResearchLab();
 iniciarPresets();
 iniciarDemo();
-iniciarAutoGa();
 iniciarHeaderColapsable();
 iniciarTutorial();
 setInterval(verificarConexion, 900);
@@ -333,7 +330,7 @@ async function conectar() {
   const socket = new WebSocket(`${protocolo}://${location.host}/tiempo-real`);
   cambiarSocket("conectando");
 
-  socket.addEventListener("open", () => cambiarSocket("en vivo", true));
+  socket.addEventListener("open", () => cambiarSocket("dashboard conectado", true));
 
   socket.addEventListener("message", (evento) => {
     try {
@@ -584,10 +581,12 @@ function renderizar(datos) {
     consBadge.hidden = !datos.metricas.modoConservador;
   }
   actualizarModoOperacion(datos);
+  renderProvenance(datos);
 
   // Renderizado de paneles secundarios.
   renderMercado(datos);
   renderLatencias(datos);
+  renderPipeline(datos.telemetriaPipeline);
   renderJudgeReadiness(datos);
   renderBenchmarkCobertura();
   renderEdgePanel(datos);
@@ -597,6 +596,7 @@ function renderizar(datos) {
   renderDetalleOportunidad(datos);
   renderOperaciones(datos);
   renderEventosEjecucion(datos);
+  renderTrazasEjecucion(datos);
   renderRebalanceos(datos);
   renderAuditoriaDecisiones(datos);
   renderGenetico(datos);
@@ -641,6 +641,18 @@ function actualizarModoOperacion(datos) {
   } else {
     badge.textContent = "LIVE WS";
   }
+}
+
+function renderProvenance(datos) {
+  const activos = Object.values(datos.exchangesActivos || {}).filter(Boolean).length || 5;
+  const frescos = (datos.cotizaciones || []).filter((cot) => cot.conectado && cot.ultimoMensaje !== "rest_fallback").length;
+  setText("provenanceData", `LIVE ${frescos}/${activos}`);
+  setText("provenanceLatency", `${formato(datos.metricas?.latenciaPromedioMs || 0, 0)} ms wire promedio`);
+  const corrida = datos.corrida || {};
+  const id = String(corrida.id || "session");
+  setText("provenanceRun", corrida.modo === "observacion_live" ? "observación live" : id);
+  const inicio = corrida.iniciadaEn ? new Date(corrida.iniciadaEn).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+  setText("provenanceRunMeta", `${corrida.fuentePnl || "simulación"} · ${inicio} · real=${corrida.ejecucionReal ? "sí" : "no"}`);
 }
 
 function actualizarDetallePnl(datos) {
@@ -992,15 +1004,21 @@ function iniciarPresets() {
 
 function iniciarDemo() {
   const btnFinal = $("btnDemoFinal");
+  const btnFinalTop = $("btnDemoFinalTop");
   const btnReset = $("btnResetDemo");
+  const btnCaos = $("btnDemoCaos");
   if (btnFinal) {
     btnFinal.addEventListener("click", prepararDemoFinal);
+  }
+  if (btnFinalTop) {
+    btnFinalTop.addEventListener("click", prepararDemoFinal);
   }
   if (btnReset) {
     btnReset.addEventListener("click", reiniciarDemoJurado);
   }
-  iniciarDemoFinalAlHacerScroll();
-
+  if (btnCaos) {
+    btnCaos.addEventListener("click", ejecutarPruebaCaos);
+  }
   document.querySelectorAll("[data-demo]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const escenario = btn.dataset.demo;
@@ -1018,7 +1036,9 @@ function iniciarDemo() {
         const ok = res.ok;
         const body = ok ? await res.json() : null;
         if (estado) estado.textContent = ok ? "evento enviado" : "rechazado";
-        const detalle = body?.partialFill
+        const detalle = body?.ejecucionBloqueada
+          ? "Escenario bloqueado por el circuit breaker. Reinicia la corrida antes de continuar."
+          : body?.partialFill
           ? `Fill parcial probado: solicitado ${btc.format(body.requestedQtyBtc || 0)} BTC, ejecutado ${btc.format(body.filledQtyBtc || 0)} BTC.`
           : body?.operacionesInsertadas
           ? `Profit inyectado: ${body.operacionesInsertadas} trades simulados; GA gen ${body.generacionGa}.`
@@ -1034,6 +1054,47 @@ function iniciarDemo() {
       }
     });
   });
+}
+
+async function ejecutarPruebaCaos() {
+  const btn = $("btnDemoCaos");
+  const feedback = $("demoFeedback");
+  const estado = $("demoEstado");
+  const textoOriginal = btn?.textContent || "Prueba de caos completa";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Estresando motor…";
+  }
+  if (estado) estado.textContent = "caos controlado";
+  mostrarFeedback(feedback, "Ejecutando fill parcial, baja liquidez, fallo de segunda pierna, circuit breaker, rebalanceo y recuperación…", true);
+  try {
+    const res = await fetch("/api/demo/caos", {
+      method: "POST",
+      headers: headersMutacion({ "Content-Type": "application/json" }),
+    });
+    if (!res.ok) {
+      mostrarFeedback(feedback, `No se pudo completar la prueba: ${await mensajeErrorApi(res, "error de API")}`, false);
+      if (estado) estado.textContent = "prueba fallida";
+      return;
+    }
+    const body = await res.json();
+    const final = body.estadoFinal || {};
+    if (estado) estado.textContent = body.ok ? "resiliencia verificada" : "revisar checks";
+    mostrarFeedback(
+      feedback,
+      `${body.aprobados || 0}/${body.totalChecks || 0} checks superados · exposición residual ${btc.format(final.exposicionResidualBtc || 0)} BTC · circuit breaker ${final.circuitBreakerActivo ? "activo" : "restaurado"} · PnL ${dinero.format(final.pnlFinalUsd || 0)}.`,
+      Boolean(body.ok),
+    );
+    preflightCache = null;
+  } catch (_) {
+    if (estado) estado.textContent = "error de red";
+    mostrarFeedback(feedback, "Error de red durante la prueba de caos", false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = textoOriginal;
+    }
+  }
 }
 
 async function reiniciarDemoJurado() {
@@ -1060,44 +1121,20 @@ async function reiniciarDemoJurado() {
   }
 }
 
-function iniciarDemoFinalAlHacerScroll() {
-  const panel = document.querySelector(".demo-panel");
-  if (!panel) return;
-
-  const prepararUnaVez = () => {
-    if (panel.dataset.demoAutoPreparada === "true") return;
-    panel.dataset.demoAutoPreparada = "true";
-    prepararDemoFinal();
-  };
-
-  if (!("IntersectionObserver" in window)) {
-    prepararUnaVez();
-    return;
-  }
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      observer.disconnect();
-      prepararUnaVez();
-    },
-    {
-      root: document.querySelector(".pantalla"),
-      threshold: 0.12,
-      rootMargin: "0px 0px 18% 0px",
-    },
-  );
-  observer.observe(panel);
-}
-
 async function prepararDemoFinal() {
   const btn = $("btnDemoFinal");
+  const btnTop = $("btnDemoFinalTop");
   const feedback = $("demoFeedback");
   const estado = $("demoEstado");
   const textoOriginal = btn?.textContent || "Cargar demo ganadora";
+  const textoTopOriginal = btnTop?.textContent || "Preparar demo auditada";
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Cargando...";
+  }
+  if (btnTop) {
+    btnTop.disabled = true;
+    btnTop.textContent = "Preparando…";
   }
   if (estado) estado.textContent = "armando evidencia";
   mostrarFeedback(feedback, "Cargando corrida rentable, GA, fill parcial y rebalanceo...", true);
@@ -1118,7 +1155,7 @@ async function prepararDemoFinal() {
     const gen = body?.metricas ? body?.ga?.generacion : null;
     mostrarFeedback(
       feedback,
-      `Demo ganadora lista: PnL ${dinero.format(pnl)}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
+      `Corrida ${body?.corridaId || "de jurado"} lista: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
       true,
     );
     try {
@@ -1132,6 +1169,10 @@ async function prepararDemoFinal() {
     if (btn) {
       btn.disabled = false;
       btn.textContent = textoOriginal;
+    }
+    if (btnTop) {
+      btnTop.disabled = false;
+      btnTop.textContent = textoTopOriginal;
     }
   }
 }
@@ -1190,25 +1231,9 @@ async function actualizarInputsGaUnaVez(g) {
 
   const btnEvolucionar = $("btnEvolucionarGa");
   if (btnEvolucionar) {
-    btnEvolucionar.onclick = () => evolucionarGa({ manual: true });
+    btnEvolucionar.onclick = evolucionarGa;
   }
   gaInicializada = true;
-}
-
-function iniciarAutoGa() {
-  setInterval(() => evolucionarGa({ manual: false }), INTERVALO_AUTO_GA_MS);
-}
-
-function esLiderAutoGa() {
-  const ahora = Date.now();
-  try {
-    const actual = JSON.parse(localStorage.getItem(CLAVE_LIDER_GA) || "null");
-    if (actual && actual.id !== ID_PESTANA && actual.expira > ahora) return false;
-    localStorage.setItem(CLAVE_LIDER_GA, JSON.stringify({ id: ID_PESTANA, expira: ahora + INTERVALO_AUTO_GA_MS * 2 }));
-    return true;
-  } catch (_) {
-    return true;
-  }
 }
 
 function headersMutacion(extra = {}) {
@@ -1218,17 +1243,15 @@ function headersMutacion(extra = {}) {
   return headers;
 }
 
-async function evolucionarGa({ manual }) {
+async function evolucionarGa() {
   if (gaAutoEnCurso) return;
-  if (!manual && (!ultimoEstado || document.hidden)) return;
-  if (!manual && !esLiderAutoGa()) return;
 
   const feedback = $("gaFeedback");
   const btnEvolucionar = $("btnEvolucionarGa");
   const genAntes = ultimoEstado?.genetico?.generacion ?? null;
   gaAutoEnCurso = true;
 
-  if (manual && btnEvolucionar) {
+  if (btnEvolucionar) {
     btnEvolucionar.disabled = true;
     btnEvolucionar.textContent = "Compitiendo...";
     mostrarFeedback(feedback, "El GA está probando estrategias contra el replay...", true);
@@ -1241,7 +1264,7 @@ async function evolucionarGa({ manual }) {
       body: JSON.stringify({ usarReplaySiVacio: true, muestras: 96 }),
     });
     if (!res.ok) {
-      if (manual) mostrarFeedback(feedback, `No se pudo evolucionar GA: ${await mensajeErrorApi(res, "error de API")}`, false);
+      mostrarFeedback(feedback, `No se pudo evolucionar GA: ${await mensajeErrorApi(res, "error de API")}`, false);
       return;
     }
 
@@ -1262,14 +1285,14 @@ async function evolucionarGa({ manual }) {
     const detalle = muestras > 0
       ? `${muestras} operaciones evaluadas (${fuente}); delta y campeón retenido actualizados`
       : "sin operaciones para aprender; población sigue explorando";
-    mostrarFeedback(feedback, `${manual ? "GA" : "Auto GA"} ${prefijo}: ${detalle}`, true);
+    mostrarFeedback(feedback, `GA ${prefijo}: ${detalle}`, true);
     marcarCambio($("gaGeneracion"));
     marcarCambio($("gaPesos"));
   } catch (e) {
-    if (manual) mostrarFeedback(feedback, "Error de red al evolucionar GA", false);
+    mostrarFeedback(feedback, "Error de red al evolucionar GA", false);
   } finally {
     gaAutoEnCurso = false;
-    if (manual && btnEvolucionar) {
+    if (btnEvolucionar) {
       btnEvolucionar.disabled = false;
       btnEvolucionar.textContent = "Evolucionar ahora";
     }
@@ -1324,7 +1347,7 @@ function renderMercado(datos) {
     const latChip = art.querySelector("header .latencia-chip");
     const nuevaClase = `latencia-chip ${latenciaMs > 850 ? "alta" : latenciaMs > 420 ? "media" : "buena"}`;
     if (latChip.className !== nuevaClase) latChip.className = nuevaClase;
-    latChip.textContent = `${c.latenciaMs || 0} ms`;
+    latChip.textContent = c.timestampConfiable ? `${c.latenciaMs || 0} ms` : "wire n/d";
 
     art.querySelector(".precio.bid strong").textContent = dinero.format(c.bid);
     art.querySelector(".precio.ask strong").textContent = dinero.format(c.ask);
@@ -1332,7 +1355,9 @@ function renderMercado(datos) {
     art.querySelector(".barra-diferencial div.fill").style.width = `${Math.min(100, (diferencial / maxDiferencial) * 100)}%`;
 
     art.querySelector(".exchange-meta .edad").innerHTML = `Edad del libro <strong>${numero.format(edadMs)} ms</strong>`;
-    art.querySelector(".exchange-meta .fuente").textContent = fuente;
+    const integridad = String(c.integrityStatus || "sin validar").replaceAll("_", " ");
+    const secuencia = c.exchangeSequence == null ? "seq n/d" : `seq ${numero.format(c.exchangeSequence)}`;
+    art.querySelector(".exchange-meta .fuente").textContent = `${fuente} · ${integridad} · ${secuencia}`;
   });
 
   while (container.children.length > datos.cotizaciones.length) {
@@ -1622,6 +1647,28 @@ function renderLatencias(datos) {
   }
 }
 
+function renderPipeline(pipeline) {
+  if (!pipeline) return;
+  setText("pipelineDecision", `${formato(pipeline.quoteToDecisionP50Ms || 0, 0)} ms`);
+  setText(
+    "pipelineDecisionTail",
+    `p95 ${formato(pipeline.quoteToDecisionP95Ms || 0, 0)} ms · p99 ${formato(pipeline.quoteToDecisionP99Ms || 0, 0)} ms`,
+  );
+  setText("pipelineCompute", `${formato(pipeline.computeP50Us || 0, 0)} µs`);
+  setText(
+    "pipelineComputeTail",
+    `p95 ${formato(pipeline.computeP95Us || 0, 0)} µs · p99 ${formato(pipeline.computeP99Us || 0, 0)} µs`,
+  );
+  setText("pipelineThroughput", `${formato(pipeline.eventosPorSegundo || 0, 1)} evt/s`);
+  setText("pipelineRoutes", `${numero.format(pipeline.rutasEvaluadas || 0)} rutas evaluadas`);
+  const analizados = Number(pipeline.ciclosAnalisis || 0);
+  const omitidos = Number(pipeline.ciclosSinCambiosOmitidos || 0);
+  const total = analizados + omitidos;
+  const pct = total > 0 ? (omitidos / total) * 100 : 0;
+  setText("pipelineCoalescing", `${formato(pct, 0)}% omitido`);
+  setText("pipelineSamples", `${numero.format(pipeline.muestras || 0)} muestras · ${numero.format(analizados)} scans`);
+}
+
 function iniciarBacktest() {
   const btn = $("btnBacktest");
   if (!btn) return;
@@ -1641,8 +1688,6 @@ function iniciarBacktest() {
     }
   };
   btn.onclick = hacerBacktest;
-  // Trigger automatically on load
-  setTimeout(hacerBacktest, 500);
 }
 
 function iniciarResearchLab() {
@@ -1662,8 +1707,6 @@ function iniciarResearchLab() {
     }
   };
   btn.onclick = hacerSweep;
-  // Trigger automatically on load
-  setTimeout(hacerSweep, 500);
 }
 
 function renderBacktest(datos) {
@@ -1922,6 +1965,7 @@ function renderDetalleOportunidad(datos) {
       <div><span>Slippage</span><strong>${dinero.format(costos.deslizamientoUsd || 0)}</strong></div>
       <div><span>Retiro amort.</span><strong>${dinero.format(costos.retiroAmortUsd || 0)}</strong></div>
       <div><span>Riesgo latencia</span><strong>${dinero.format(costos.latenciaRiesgoUsd || 0)}</strong></div>
+      <div><span>Selección adversa</span><strong>${dinero.format(costos.seleccionAdversaUsd || 0)}</strong></div>
       <div><span>Total costos</span><strong>${dinero.format(costos.totalUsd || 0)}</strong></div>
     </div>
     <p class="decision-reason">${escapeHtml(decisionReason)}</p>
@@ -1993,6 +2037,37 @@ function renderEventosEjecucion(datos) {
     tr.appendChild(tdRuta);
     tr.appendChild(tdDetalle);
     tr.appendChild(tdProfit);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderTrazasEjecucion(datos) {
+  const tbody = $("trazasEjecucion");
+  if (!tbody) return;
+  tbody.textContent = "";
+  const trazas = (datos.trazasEjecucion || []).slice(0, 28);
+  if (trazas.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td colspan="6" class="vacio">Prepara la demo auditada o ejecuta “Fallar segunda pierna + unwind”.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  trazas.forEach((trace) => {
+    const tr = document.createElement("tr");
+    const estado = document.createElement("td");
+    estado.innerHTML = `<span class="decision-code-badge ${String(trace.estado || "").includes("FAILED") || String(trace.estado || "").includes("LOSS") ? "bad" : "ok"}">${escapeHtml(trace.estado || "—")}</span>`;
+    const pierna = document.createElement("td");
+    pierna.textContent = trace.pierna || "—";
+    const ruta = document.createElement("td");
+    ruta.textContent = trace.ruta || "—";
+    const exposicion = document.createElement("td");
+    exposicion.textContent = `${btc.format(trace.exposicionBtc || 0)} BTC`;
+    const pnl = document.createElement("td");
+    pnl.textContent = dinero.format(trace.pnlRealizadoUsd || 0);
+    pnl.className = Number(trace.pnlRealizadoUsd || 0) < 0 ? "negativo" : "";
+    const detalle = document.createElement("td");
+    detalle.textContent = trace.detalle || `${trace.estadoAnterior || "—"} → ${trace.estado || "—"}`;
+    tr.append(estado, pierna, ruta, exposicion, pnl, detalle);
     tbody.appendChild(tr);
   });
 }
@@ -2722,7 +2797,9 @@ function fondoArquitectonico(ctx, w, h, temaOscuro) {
 function prepararCanvas(canvas) {
   const ratio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  const ancho = Math.max(320, Math.floor(rect.width));
+  // El ancho debe seguir al contenedor: forzar 320 px desbordaba los paneles
+  // en telefonos estrechos y terminaba recortando la parte derecha del grafico.
+  const ancho = Math.max(1, Math.floor(rect.width));
   const alto = Math.max(220, Math.floor(rect.height));
   const anchoFisico = Math.floor(ancho * ratio);
   const altoFisico = Math.floor(alto * ratio);
@@ -2791,27 +2868,38 @@ document.addEventListener("DOMContentLoaded", () => {
   const overview = document.getElementById("tab-overview");
   const pantalla = document.querySelector(".pantalla");
   const scrollPorTab = new Map();
-  const scrollGuardado = sessionStorage.getItem("mayabScrollPorTab");
-  if (scrollGuardado) {
-    try {
-      Object.entries(JSON.parse(scrollGuardado)).forEach(([tab, posicion]) => {
-        if (Number.isFinite(posicion)) scrollPorTab.set(tab, posicion);
-      });
-    } catch (_) {
-      sessionStorage.removeItem("mayabScrollPorTab");
-    }
-  }
 
   const guardarScroll = () => {
     const tabActivo = document.querySelector(".tab-content.activo")?.id;
     if (!pantalla || !tabActivo) return;
     scrollPorTab.set(tabActivo, pantalla.scrollTop);
-    sessionStorage.setItem("mayabScrollPorTab", JSON.stringify(Object.fromEntries(scrollPorTab)));
   };
   iniciarLanding();
   iniciarAjusteMetricas();
   iniciarDiccionario();
   iniciarHerramientasTablas();
+
+  const mobileNavToggle = document.querySelector(".mobile-nav-toggle");
+  const tabsNav = document.querySelector(".tabs-nav");
+  const mobileNavLabel = document.getElementById("mobileNavLabel");
+  const cerrarMenuMobile = () => {
+    mobileNavToggle?.setAttribute("aria-expanded", "false");
+    tabsNav?.classList.remove("mobile-open");
+  };
+  mobileNavToggle?.addEventListener("click", () => {
+    const abrir = mobileNavToggle.getAttribute("aria-expanded") !== "true";
+    mobileNavToggle.setAttribute("aria-expanded", String(abrir));
+    tabsNav?.classList.toggle("mobile-open", abrir);
+  });
+  document.addEventListener("click", (event) => {
+    if (!mobileNavToggle?.contains(event.target) && !tabsNav?.contains(event.target)) cerrarMenuMobile();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      cerrarMenuMobile();
+      mobileNavToggle?.focus();
+    }
+  });
 
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -2824,13 +2912,13 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("activo"));
 
       btn.classList.add("activo");
+      document.querySelectorAll(".tab-btn").forEach(b => b.setAttribute("aria-selected", String(b === btn)));
+      if (mobileNavLabel) mobileNavLabel.textContent = btn.textContent.trim();
+      cerrarMenuMobile();
       const targetId = btn.getAttribute("data-tab");
       const targetContent = document.getElementById(targetId);
       if (targetContent) {
         targetContent.classList.add("activo");
-
-        // Guardar pestaña activa para que persista al recargar
-        localStorage.setItem("mayabActiveTab", targetId);
 
         actualizarHeaderColapsable();
 
@@ -2859,15 +2947,6 @@ document.addEventListener("DOMContentLoaded", () => {
       requestAnimationFrame(() => irAlDashboard());
     });
   });
-
-  // Restaurar pestaña activa guardada en localStorage
-  const savedTab = localStorage.getItem("mayabActiveTab");
-  if (savedTab) {
-    const tabBtn = document.querySelector(`.tab-btn[data-tab="${savedTab}"]`);
-    if (tabBtn) {
-      tabBtn.click();
-    }
-  }
 
   if (overview) {
     overview.addEventListener("scroll", actualizarHeaderColapsable, { passive: true });
@@ -3069,6 +3148,10 @@ function iniciarLanding() {
     const grupo = el.parentElement;
     const orden = ordenPorGrupo.get(grupo) || 0;
     el.style.setProperty("--reveal-delay", `${Math.min(orden * 45, 135)}ms`);
+    // Variar apenas el punto de expansión evita que toda la cuadrícula revele
+    // como un bloque y refuerza el efecto de card compacta a card completa.
+    const origenes = ["46% 58%", "54% 54%", "50% 62%"];
+    el.style.setProperty("--reveal-origin", origenes[orden % origenes.length]);
     ordenPorGrupo.set(grupo, orden + 1);
   });
 

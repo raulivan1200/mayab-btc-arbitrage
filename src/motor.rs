@@ -10,7 +10,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
@@ -21,7 +21,11 @@ use rust_decimal::{
 };
 use tokio::sync::RwLock;
 
-use crate::{ga::EstadoGa, persistencia::Persistencia, types::*};
+use crate::{
+    ga::{score_canonico, EstadoGa, FeaturesScore},
+    persistencia::Persistencia,
+    types::*,
+};
 
 /// Motor central de arbitraje simulado.
 ///
@@ -48,6 +52,14 @@ struct State {
     eventos_ejecucion: VecDeque<EventoEjecucion>,
     auditoria_decisiones: VecDeque<AuditoriaDecision>,
     rebalanceos: VecDeque<Rebalanceo>,
+    transferencias_inventario: VecDeque<TransferenciaInventario>,
+    trazas_ejecucion: VecDeque<TransicionEjecucion>,
+    corrida: EstadoCorrida,
+    telemetria_pipeline: TelemetriaPipeline,
+    eventos_inicio_corrida: u64,
+    ultimo_evento_analizado: u64,
+    muestras_compute_us: VecDeque<u64>,
+    muestras_quote_decision_ms: VecDeque<i64>,
     rebalanceos_total: u64,
     costo_rebalanceo_acumulado_usd: f64,
     serie_pnl: VecDeque<PuntoSerie>,
@@ -72,6 +84,7 @@ struct State {
 /// Escenarios controlados para demostrar robustez sin depender del mercado real.
 pub enum EscenarioDemo {
     FalloOrden,
+    FalloSegundaPierna,
     MercadoMovido,
     LiquidezInsuficiente,
     FillParcial,
@@ -122,10 +135,11 @@ impl Motor {
             .collect();
         let carteras = Carteras::new(&exchanges, capital_inicial_usd, balance_inicial_btc);
         let exchanges_activos = exchanges.into_iter().map(|e| (e, true)).collect();
+        let ahora = Utc::now();
         Self {
             state: RwLock::new(State {
                 costos,
-                inicio: Utc::now(),
+                inicio: ahora,
                 cotizaciones: HashMap::new(),
                 carteras,
                 oportunidades: VecDeque::with_capacity(128),
@@ -134,6 +148,20 @@ impl Motor {
                 eventos_ejecucion: VecDeque::with_capacity(128),
                 auditoria_decisiones: VecDeque::with_capacity(160),
                 rebalanceos: VecDeque::with_capacity(64),
+                transferencias_inventario: VecDeque::with_capacity(64),
+                trazas_ejecucion: VecDeque::with_capacity(160),
+                corrida: EstadoCorrida {
+                    id: format!("live-{}", ahora.timestamp_millis()),
+                    modo: "mercado_live_simulado".to_string(),
+                    iniciada_en: ahora,
+                    fuente_pnl: "mercado_publico".to_string(),
+                    ejecucion_real: false,
+                },
+                telemetria_pipeline: TelemetriaPipeline::default(),
+                eventos_inicio_corrida: 0,
+                ultimo_evento_analizado: 0,
+                muestras_compute_us: VecDeque::with_capacity(512),
+                muestras_quote_decision_ms: VecDeque::with_capacity(512),
                 rebalanceos_total: 0,
                 costo_rebalanceo_acumulado_usd: 0.0,
                 serie_pnl: VecDeque::with_capacity(256),
@@ -209,9 +237,17 @@ impl Motor {
     }
 
     async fn analizar(&self, ahora: DateTime<Utc>) {
+        let inicio_scan = Instant::now();
+        let evento_actual = self.eventos.load(Ordering::SeqCst);
         let (cotizaciones, costos, carteras, activo, historial, enfriamiento, pesos) = {
             let mut state = self.state.write().await;
+            if evento_actual == state.ultimo_evento_analizado {
+                state.telemetria_pipeline.ciclos_sin_cambios_omitidos += 1;
+                return;
+            }
+            state.ultimo_evento_analizado = evento_actual;
             state.ciclos += 1;
+            state.telemetria_pipeline.ciclos_analisis += 1;
 
             let cotizaciones: HashMap<String, Cotizacion> = state
                 .cotizaciones
@@ -263,6 +299,7 @@ impl Motor {
             )
         };
 
+        let cotizacion_mas_reciente = cotizaciones.values().map(|c| c.recibida_en).max();
         let por_par = agrupar_por_par(cotizaciones);
         let mut oportunidades = Vec::new();
         for cotz in por_par.values() {
@@ -284,8 +321,17 @@ impl Motor {
         if oportunidades.is_empty() {
             let mut state = self.state.write().await;
             state.oportunidades.clear();
+            registrar_muestra_pipeline(
+                &mut state,
+                inicio_scan,
+                cotizacion_mas_reciente,
+                0,
+                evento_actual,
+                ahora,
+            );
             return;
         }
+        let rutas_evaluadas = oportunidades.len();
         oportunidades.sort_by(|a, b| {
             b.ejecutable
                 .cmp(&a.ejecutable)
@@ -348,6 +394,15 @@ impl Motor {
         self.persistir_auditorias(&auditorias_persistir);
 
         if activo {
+            let mut state = self.state.write().await;
+            registrar_muestra_pipeline(
+                &mut state,
+                inicio_scan,
+                cotizacion_mas_reciente,
+                rutas_evaluadas,
+                evento_actual,
+                ahora,
+            );
             return;
         }
 
@@ -378,6 +433,15 @@ impl Motor {
         if let Some(oportunidad) = mejor {
             self.ejecutar(oportunidad, ahora).await;
         }
+        let mut state = self.state.write().await;
+        registrar_muestra_pipeline(
+            &mut state,
+            inicio_scan,
+            cotizacion_mas_reciente,
+            rutas_evaluadas,
+            evento_actual,
+            ahora,
+        );
     }
 
     async fn ejecutar(&self, oportunidad: Oportunidad, ahora: DateTime<Utc>) {
@@ -498,14 +562,18 @@ impl Motor {
         let operaciones_totales = self.ops_ejecutadas.load(Ordering::SeqCst) as usize;
         EstadoPublico {
             generado_en: Utc::now(),
+            corrida: state.corrida.clone(),
             cotizaciones,
             oportunidades: state.oportunidades.clone(),
             operaciones: state.operaciones.clone(),
             eventos_ejecucion: state.eventos_ejecucion.clone(),
+            trazas_ejecucion: state.trazas_ejecucion.clone(),
             rebalanceos: state.rebalanceos.clone(),
+            transferencias_inventario: state.transferencias_inventario.clone(),
             auditoria_decisiones: state.auditoria_decisiones.clone(),
             balances: state.carteras.snapshot(),
             latencias_exchange: snapshot_latencias(&state),
+            telemetria_pipeline: state.telemetria_pipeline.clone(),
             serie_pnl: state.serie_pnl.clone(),
             serie_diferencial: state.serie_diferencial.clone(),
             metricas: Metricas {
@@ -613,7 +681,7 @@ impl Motor {
 
     /// Restablece únicamente la simulación para iniciar una corrida de jurado reproducible.
     /// Conserva feeds, latencias, configuración y conexiones de mercado activas.
-    pub async fn reiniciar_demo_jurado(&self) {
+    pub async fn reiniciar_demo_jurado(&self) -> String {
         let ahora = Utc::now();
         let mut state = self.state.write().await;
         state.inicio = ahora;
@@ -624,6 +692,13 @@ impl Motor {
         state.eventos_ejecucion.clear();
         state.auditoria_decisiones.clear();
         state.rebalanceos.clear();
+        state.transferencias_inventario.clear();
+        state.trazas_ejecucion.clear();
+        state.telemetria_pipeline = TelemetriaPipeline::default();
+        state.eventos_inicio_corrida = self.eventos.load(Ordering::SeqCst);
+        state.ultimo_evento_analizado = self.eventos.load(Ordering::SeqCst);
+        state.muestras_compute_us.clear();
+        state.muestras_quote_decision_ms.clear();
         state.rebalanceos_total = 0;
         state.costo_rebalanceo_acumulado_usd = 0.0;
         state.serie_pnl.clear();
@@ -638,6 +713,14 @@ impl Motor {
         state.ciclos = 0;
         state.ga = EstadoGa::default();
         state.demo_forzado = None;
+        let corrida_id = format!("jury-{}", ahora.format("%Y%m%dT%H%M%S%.3fZ"));
+        state.corrida = EstadoCorrida {
+            id: corrida_id.clone(),
+            modo: "demo_controlada".to_string(),
+            iniciada_en: ahora,
+            fuente_pnl: "demo_controlada".to_string(),
+            ejecucion_real: false,
+        };
         self.ops_ejecutadas.store(0, Ordering::SeqCst);
         self.ops_fallidas.store(0, Ordering::SeqCst);
         self.ejecucion_en_curso.store(false, Ordering::SeqCst);
@@ -651,6 +734,7 @@ impl Motor {
         if let Some(evento) = state.eventos_ejecucion.front() {
             self.persistir_evento(evento);
         }
+        corrida_id
     }
 
     /// Activa o desactiva un exchange para nuevas rutas.
@@ -749,6 +833,69 @@ impl Motor {
                 }
                 serde_json::json!({ "ok": true, "modo": "pendiente", "detalle": detalle })
             }
+            EscenarioDemo::FalloSegundaPierna => {
+                let op_id = format!("demo-leg2-{}", ahora.timestamp_millis());
+                let ruta = "Binance->OKX".to_string();
+                let transiciones = [
+                    (
+                        "PENDING",
+                        "LEG_A_FILLED",
+                        "compra",
+                        0.01,
+                        0.0,
+                        "primera pierna confirmada",
+                    ),
+                    (
+                        "LEG_A_FILLED",
+                        "LEG_B_REJECTED",
+                        "venta",
+                        0.01,
+                        0.0,
+                        "segunda pierna rechazada",
+                    ),
+                    (
+                        "LEG_B_REJECTED",
+                        "UNWIND_FILLED",
+                        "compensacion",
+                        0.0,
+                        -3.25,
+                        "inventario compensado",
+                    ),
+                    (
+                        "UNWIND_FILLED",
+                        "RECONCILED_LOSS",
+                        "ledger",
+                        0.0,
+                        -3.25,
+                        "sin exposicion residual",
+                    ),
+                ];
+                for (idx, (anterior, estado, pierna, exposicion, pnl, detalle)) in
+                    transiciones.into_iter().enumerate()
+                {
+                    state.trazas_ejecucion.push_front(TransicionEjecucion {
+                        id: format!("fsm-{op_id}-{idx}"),
+                        operacion_id: op_id.clone(),
+                        ruta: ruta.clone(),
+                        estado_anterior: anterior.to_string(),
+                        estado: estado.to_string(),
+                        pierna: pierna.to_string(),
+                        detalle: detalle.to_string(),
+                        exposicion_btc: exposicion,
+                        pnl_realizado_usd: pnl,
+                        tiempo: ahora,
+                    });
+                }
+                state.trazas_ejecucion.truncate(160);
+                insertar_evento_sistema(
+                    &mut state,
+                    "segunda_pierna_reconciliada",
+                    "demo: segunda pierna rechazada; unwind aplicado y exposicion BTC llevada a cero",
+                    "alta",
+                    ahora,
+                );
+                serde_json::json!({"ok": true, "modo": "instantaneo", "operacionId": op_id, "estadoFinal": "RECONCILED_LOSS", "exposicionFinalBtc": 0.0})
+            }
             EscenarioDemo::LiquidezInsuficiente => {
                 insertar_evento_sistema(
                     &mut state,
@@ -846,6 +993,7 @@ impl Motor {
                         precio_compra: 0.0,
                         precio_venta: 0.0,
                         utilidad_usd: perdida_demo,
+                        utilidad_esperada_usd: perdida_demo,
                         costos: CostosOperacion::default(),
                         parcial: false,
                         ejecutada_en: ahora,
@@ -966,6 +1114,49 @@ impl Motor {
             }
         }
     }
+}
+
+fn registrar_muestra_pipeline(
+    state: &mut State,
+    inicio_scan: Instant,
+    cotizacion_mas_reciente: Option<DateTime<Utc>>,
+    rutas_evaluadas: usize,
+    evento_actual: u64,
+    ahora_scan: DateTime<Utc>,
+) {
+    let compute_us = inicio_scan.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    let quote_decision_ms = cotizacion_mas_reciente
+        .map(|recibida| (Utc::now() - recibida).num_milliseconds().max(0))
+        .unwrap_or(0);
+
+    state.muestras_compute_us.push_back(compute_us);
+    state
+        .muestras_quote_decision_ms
+        .push_back(quote_decision_ms);
+    truncar_primeros(&mut state.muestras_compute_us, 512);
+    truncar_primeros(&mut state.muestras_quote_decision_ms, 512);
+
+    let mut compute: Vec<u64> = state.muestras_compute_us.iter().copied().collect();
+    let mut quote: Vec<i64> = state.muestras_quote_decision_ms.iter().copied().collect();
+    compute.sort_unstable();
+    quote.sort_unstable();
+
+    let segundos = (ahora_scan - state.inicio).num_milliseconds().max(1) as f64 / 1000.0;
+    let eventos_corrida = evento_actual.saturating_sub(state.eventos_inicio_corrida);
+    state.telemetria_pipeline.rutas_evaluadas += rutas_evaluadas as u64;
+    state.telemetria_pipeline.eventos_por_segundo = eventos_corrida as f64 / segundos;
+    state.telemetria_pipeline.muestras = compute.len();
+    state.telemetria_pipeline.compute_p50_us = percentil_entero(&compute, 0.50);
+    state.telemetria_pipeline.compute_p95_us = percentil_entero(&compute, 0.95);
+    state.telemetria_pipeline.compute_p99_us = percentil_entero(&compute, 0.99);
+    state.telemetria_pipeline.quote_to_decision_p50_ms = percentil_entero(&quote, 0.50);
+    state.telemetria_pipeline.quote_to_decision_p95_ms = percentil_entero(&quote, 0.95);
+    state.telemetria_pipeline.quote_to_decision_p99_ms = percentil_entero(&quote, 0.99);
+}
+
+fn percentil_entero<T: Copy>(valores: &[T], p: f64) -> T {
+    let indice = (((valores.len().saturating_sub(1)) as f64) * p.clamp(0.0, 1.0)).round() as usize;
+    valores[indice]
 }
 
 impl Carteras {
@@ -1372,6 +1563,7 @@ fn revalidar_operacion(
         precio_compra: actual.ask,
         precio_venta: actual.bid,
         utilidad_usd: actual.utilidad_usd,
+        utilidad_esperada_usd: actual.utilidad_usd,
         costos: actual.costos,
         parcial: actual.parcial,
         ejecutada_en: ahora,
@@ -1421,6 +1613,7 @@ fn calcular_costos(
         deslizamiento_usd: dec_to_f64(deslizamiento_usd),
         retiro_amort_usd: dec_to_f64(retiro_amort_usd),
         latencia_riesgo_usd: dec_to_f64(latencia_riesgo_usd),
+        seleccion_adversa_usd: 0.0,
         total_usd: dec_to_f64(total_usd),
     }
 }
@@ -1791,6 +1984,7 @@ fn operaciones_sinteticas_ga(
             deslizamiento_usd: cantidad * mid * costos.deslizamiento_bps / 10000.0,
             retiro_amort_usd: cantidad * mid * costos.retiro_amortizado_bps / 10000.0,
             latencia_riesgo_usd: cantidad * mid * costos.latencia_riesgo_bps / 10000.0,
+            seleccion_adversa_usd: 0.0,
             total_usd: 0.0,
         };
         let total_usd = costos_operacion.fee_compra_usd
@@ -1813,6 +2007,7 @@ fn operaciones_sinteticas_ga(
             precio_compra,
             precio_venta,
             utilidad_usd: utilidad,
+            utilidad_esperada_usd: utilidad,
             costos: CostosOperacion {
                 total_usd,
                 ..costos_operacion
@@ -1897,6 +2092,7 @@ fn operacion_demo_fill_parcial(
         deslizamiento_usd: filled * mid * costos.deslizamiento_bps / 10000.0,
         retiro_amort_usd: filled * mid * costos.retiro_amortizado_bps / 10000.0,
         latencia_riesgo_usd: filled * mid * costos.latencia_riesgo_bps / 10000.0,
+        seleccion_adversa_usd: 0.0,
         total_usd: 0.0,
     };
     let total_usd = costos_operacion.fee_compra_usd
@@ -1913,6 +2109,7 @@ fn operacion_demo_fill_parcial(
         precio_compra,
         precio_venta,
         utilidad_usd: ((precio_venta - precio_compra) * filled - total_usd).max(1.0),
+        utilidad_esperada_usd: ((precio_venta - precio_compra) * filled - total_usd).max(1.0),
         costos: CostosOperacion {
             total_usd,
             ..costos_operacion
@@ -2122,31 +2319,21 @@ fn puntuar_oportunidad(
     z_score: f64,
     pesos: &[f64],
 ) -> f64 {
-    let mut w = [0.40, 0.20, 0.20, 0.10, 0.10];
-    if pesos.len() >= 5 {
-        let total: f64 = pesos.iter().take(5).sum();
-        if total > 0.0 {
-            for i in 0..5 {
-                w[i] = pesos[i] / total;
-            }
-        }
-    }
-    let utilidad = (o.utilidad_usd / 100.0).clamp(0.0, 1.0);
-    let frescura = if stale_ms > 0 {
-        (1.0 - o.latencia_max_ms as f64 / stale_ms as f64).clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let liquidez = if max_operacion_btc > 0.0 {
-        (o.cantidad_btc / max_operacion_btc).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
     let confiabilidad = *historial
         .get(&format!("{}->{}", o.compra_en, o.venta_en))
         .unwrap_or(&1.0);
-    let z = (z_score / 3.0).clamp(0.0, 1.0);
-    w[0] * utilidad + w[1] * frescura + w[2] * liquidez + w[3] * confiabilidad + w[4] * z
+    score_canonico(
+        pesos,
+        FeaturesScore {
+            utilidad_usd: o.utilidad_usd,
+            latencia_ms: o.latencia_max_ms,
+            tolerancia_latencia_ms: stale_ms,
+            cantidad_btc: o.cantidad_btc,
+            max_operacion_btc,
+            confiabilidad,
+            z_score,
+        },
+    )
 }
 
 fn actualizar_historial(op: &Operacion, historial: &mut HashMap<String, f64>, exito: bool) {
@@ -2418,6 +2605,7 @@ mod tests {
             rebalance_umbral_pct: 35.0,
             rebalance_max_transfer_pct: 50.0,
             costo_rebalanceo_usd: 10.0,
+            rebalance_settlement_ms: 1_800,
             exchanges,
         }
     }
@@ -2442,6 +2630,10 @@ mod tests {
             recibida_en: Utc::now(),
             latencia_ms: 0,
             secuencia: 0,
+            exchange_sequence: None,
+            integrity_status: "test_snapshot".to_string(),
+            resyncs: 0,
+            timestamp_confiable: true,
             conectado: true,
             ultimo_mensaje: String::new(),
         }
@@ -2465,6 +2657,7 @@ mod tests {
             precio_compra: 100.0,
             precio_venta: 110.0,
             utilidad_usd: 1.0,
+            utilidad_esperada_usd: 1.0,
             costos: CostosOperacion::default(),
             parcial: false,
             ejecutada_en: Utc::now(),
@@ -2522,6 +2715,7 @@ mod tests {
             precio_compra: 100.0,
             precio_venta: 101.0,
             utilidad_usd,
+            utilidad_esperada_usd: utilidad_usd,
             costos: CostosOperacion::default(),
             parcial: false,
             ejecutada_en: Utc::now(),
@@ -2650,6 +2844,7 @@ mod tests {
             precio_compra: 100.0,
             precio_venta: 110.0,
             utilidad_usd: 1.0,
+            utilidad_esperada_usd: 1.0,
             costos: CostosOperacion::default(),
             parcial: false,
             ejecutada_en: Utc::now(),
@@ -2671,6 +2866,7 @@ mod tests {
             precio_compra: 100.0,
             precio_venta: 110.0,
             utilidad_usd: 1.0,
+            utilidad_esperada_usd: 1.0,
             costos: CostosOperacion::default(),
             parcial: false,
             ejecutada_en: Utc::now(),
@@ -2725,6 +2921,29 @@ mod tests {
         assert!(ml_edge.score_actual.is_finite());
         assert!(ml_edge.expected_value_usd.is_finite());
         assert_eq!(ml_edge.features.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn pipeline_mide_scan_y_omite_ticks_sin_eventos_nuevos() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        motor
+            .recibir_cotizacion(cot("Binance", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        motor
+            .recibir_cotizacion(cot("OKX", 103.0, 104.0, 1.0, 1.0))
+            .await;
+
+        motor.analizar(Utc::now()).await;
+        let medida = motor.estado().await.telemetria_pipeline;
+        assert_eq!(medida.ciclos_analisis, 1);
+        assert_eq!(medida.muestras, 1);
+        assert!(medida.rutas_evaluadas > 0);
+        assert!(medida.compute_p99_us > 0);
+
+        motor.analizar(Utc::now()).await;
+        let omitida = motor.estado().await.telemetria_pipeline;
+        assert_eq!(omitida.ciclos_analisis, 1);
+        assert_eq!(omitida.ciclos_sin_cambios_omitidos, 1);
     }
 
     #[tokio::test]

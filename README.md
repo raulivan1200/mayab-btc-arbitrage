@@ -11,7 +11,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. Desplázate hasta **Demo controlada**: al entrar el panel en pantalla, el sistema prepara automáticamente el recorrido completo e inyecta una dislocación sintética etiquetada, operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética. El botón queda disponible para repetir la corrida.
+4. Pulsa **Preparar demo auditada** en el resumen o **Preparar recorrido completo** en Demo controlada. Cada ejecución reinicia primero el estado simulado y después inyecta una dislocación sintética etiquetada, operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética; así una visita o doble clic no infla las métricas.
 5. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
@@ -89,7 +89,9 @@ Contrato HTTP:
 - **Auditoría de decisiones** por ruta: score final, razón de aceptación/descarte, pesos GA usados, costo total, latencia, Z-Score y balances relevantes antes de ejecutar.
 - **Auditoría local en SQLite**: operaciones, oportunidades, eventos, rebalanceos y decisiones se guardan para revisión y exportación. En Cloud Run, `/tmp` es efímero; retención permanente requiere volumen o backend externo.
 - **Ranking de latencia por exchange** con EWMA, min/max, feed degradado y sugerencia de región operativa.
+- **Telemetría end-to-end del pipeline**: separa wire latency de quote→decisión y compute interno, publica p50/p95/p99, throughput, rutas evaluadas y ticks coalescidos sin datos nuevos.
 - **Modo demo adverso controlado** desde la UI/API para forzar fallo de orden, shock de mercado, liquidez insuficiente, circuit breaker y rebalanceo sin depender del azar.
+- **Prueba de caos encadenada** (`POST /api/demo/caos`): ejecuta fill parcial, baja liquidez, rechazo de segunda pierna con unwind, circuit breaker, rebalanceo y recuperación; termina con ocho checks y exposición residual explícita.
 - **Modo demo rentable + GA** para inyectar operaciones sintéticas auditables, generar P&L visible y entrenar el GA cuando el mercado real no ofrece spread neto ejecutable.
 - **Exportación JSON/CSV** de operaciones, oportunidades, eventos, auditoría, rebalanceos, balances, configuración y estado GA.
 - Docker listo para correr sin instalar Rust en la máquina evaluadora.
@@ -210,7 +212,7 @@ Flujo recomendado para evaluar la aplicación en vivo:
    - **Estrés**: aumenta probabilidad de fallo, movimiento brusco y activa una gestión más conservadora.
 4. Desactivar un exchange y confirmar que el motor recalcula rutas y mantiene el estado activo/inactivo visible.
 5. Usar “Demo controlada” para forzar fallo de orden, shock de mercado, fill parcial, liquidez insuficiente, circuit breaker o rebalanceo; confirmar que aparecen en operaciones, eventos y auditoría.
-6. Llegar a **Demo controlada** si el mercado real está plano; el recorrido completo se prepara automáticamente al aparecer el panel y confirma operaciones, P&L, oportunidades verdes, fill parcial, rebalanceo, auditoría y GA activo. **Preparar recorrido completo** repite toda la corrida y **Repetir escenario rentable** vuelve a inyectar sólo la dislocación rentable.
+6. Si el mercado real está plano, pulsa **Preparar recorrido completo**. La acción explícita reinicia la corrida simulada y confirma operaciones, P&L, oportunidades verdes, fill parcial, rebalanceo, auditoría y GA activo. **Repetir escenario rentable** inyecta sólo otra dislocación rentable dentro de la corrida actual.
 7. Exportar JSON/CSV para revisar trazabilidad fuera del dashboard.
 8. Ejecutar el backtest reproducible para comparar estrategia base vs estrategia optimizada con los costos vigentes.
 9. Forzar una evolución genética y observar fuente de entrenamiento, muestras, fitness, diversidad y pesos de scoring.
@@ -468,7 +470,7 @@ GET  /api/resumen-llm      snapshot compacto para jueces, scripts y agentes LLM
 GET  /api/mcp/manifest     catálogo MCP-lite de herramientas para agentes LLM
 POST /api/mcp/call         invoca herramientas MCP-lite; mutaciones respetan ADMIN_TOKEN
 GET  /api/paquete-evaluacion scorecard, evidencia y guion reproducible para jurado
-GET  /api/latencias        ranking EWMA por exchange y sugerencia de región
+GET  /api/latencias        wire latency + pipeline p50/p95/p99, throughput y coalescing
 GET  /api/backtest         backtest Monte Carlo reproducible con costos actuales e IC 95%
 GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/GA Edge
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
@@ -476,6 +478,7 @@ GET  /api/export/csv       descarga bitácora unificada en CSV
 POST /api/config           actualizar parámetros de simulación
 POST /api/demo             disparar escenario adverso o demo rentable controlada
 POST /api/demo/reset       reiniciar balances, PnL, riesgo y GA conservando feeds/configuración
+POST /api/demo/caos        prueba encadenada de resiliencia con recuperación y checks finales
 POST /api/demo/final       prepara demo final: GA, mercado rentable, fill parcial y rebalanceo
 GET  /api/ga/estado        estado detallado del motor genético
 GET  /api/ga/config        configuración actual del GA
@@ -540,12 +543,13 @@ Para convertir ese scorecard en una prueba repetible:
 
 ```bash
 curl -X POST http://localhost:8080/api/demo/reset
+curl -X POST http://localhost:8080/api/demo/caos
 curl -X POST http://localhost:8080/api/demo/final
 curl http://localhost:8080/api/lab/sweep
 curl http://localhost:8080/api/paquete-evaluacion
 ```
 
-`/api/demo/reset` crea una corrida limpia sin tumbar los feeds públicos. `/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay y valida robustez en 24 semillas comunes. El campeón puede perder: el reporte conserva el resultado para evitar cherry-picking.
+`/api/demo/reset` crea una corrida limpia sin tumbar los feeds públicos. `/api/demo/caos` prueba el ciclo degradación→protección→recuperación y verifica que la segunda pierna termine conciliada sin exposición residual. `/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay y valida robustez en 24 semillas comunes. El campeón puede perder: el reporte conserva el resultado para evitar cherry-picking.
 
 También puedes correr el smoke completo:
 
