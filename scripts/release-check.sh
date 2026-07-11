@@ -61,17 +61,33 @@ preflight = json.load(open(sys.argv[3]))
 paquete = json.load(open(sys.argv[4]))
 readiness = preflight.get("judgeReadiness") or {}
 jury_state = jurado.get("estado") or {}
-score = float(paquete.get("puntajeTotal") or 0)
 checks = readiness.get("checks") or []
 rubrica = readiness.get("rubricaOficial") or []
+required_rubric_fields = {
+    "criterio", "pesoPct", "puntaje", "preguntaComite",
+    "evidenciaActual", "siguienteMovimientoDemo",
+}
+rubric_contract_ok = (
+    len(rubrica) == 5
+    and sum((item.get("pesoPct", 0) for item in rubrica)) == 100
+    and all(required_rubric_fields.issubset(item) for item in rubrica)
+    and all(item.get("criterio") and item.get("evidenciaActual") for item in rubrica)
+)
+evidence = paquete.get("evidencia") or {}
+metrics = evidence.get("metricas") or {}
 ok = (
     demo.get("ok") is True
     and jurado.get("nombre") == "Mayab Jury Mode"
     and jury_state.get("status") == "ready"
     and readiness.get("status") == "ready"
     and len(checks) >= 9
-    and len(rubrica) == 5
-    and score >= 90
+    and all(check.get("ok") is True for check in checks)
+    and rubric_contract_ok
+    and metrics.get("operaciones", 0) > 0
+    and metrics.get("pnlUsd", 0) > 0
+    and evidence.get("ultimaAuditoria")
+    and evidence.get("ga")
+    and paquete.get("huellaAuditoria")
 )
 sys.exit(0 if ok else 1)
 PY

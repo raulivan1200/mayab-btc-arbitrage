@@ -11,6 +11,13 @@ const DEBUG_ACTIVO =
   localStorage.getItem("mayabDebug") === "1";
 const INTERVALO_CANVAS_MS = 1000 / 30;
 let ultimoFrameCanvas = 0;
+const reducirMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const animacionGa = { firma: "", inicio: 0 };
+const formatoHoraGrafica = new Intl.DateTimeFormat("es-MX", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
 let ultimoPreflightMs = 0;
 let preflightCache = null;
 let preflightEnCurso = false;
@@ -178,6 +185,7 @@ function loopAnimacion(timestamp) {
   if (ultimoEstado && timestamp - ultimoFrameCanvas >= INTERVALO_CANVAS_MS) {
     const inicio = debugNow();
     dibujarMapa(ultimoEstado);
+    dibujarSeries(ultimoEstado, timestamp);
     dibujarGa(ultimoEstado.genetico);
     ultimoFrameCanvas = timestamp;
     if (DEBUG_ACTIVO) metricasDebug.framesCanvas += 1;
@@ -514,7 +522,7 @@ function actualizarDetallePnl(datos) {
     return;
   }
 
-  const oportunidades = datos.oportunidades || [];
+  const oportunidades = oportunidadesVigentes(datos);
   if (oportunidades.length === 0) {
     el.textContent = "Mercado real sin edge neto por ahora; la demo rentable mantiene visible el flujo ganador.";
     return;
@@ -1582,14 +1590,17 @@ function renderOportunidades(datos) {
   const tbody = $("oportunidades");
   if (!tbody) return;
   tbody.textContent = "";
+  const oportunidades = oportunidadesVigentes(datos);
+  const instanteVigente = oportunidades[0]?.detectadaEn;
   const scorePorRuta = new Map();
   (datos.auditoriaDecisiones || []).forEach((a) => {
+    if (instanteVigente && a.tiempo !== instanteVigente) return;
     if (!scorePorRuta.has(a.ruta)) {
       scorePorRuta.set(a.ruta, a.score || 0);
     }
   });
 
-  datos.oportunidades.slice(0, 16).forEach((o) => {
+  oportunidades.slice(0, 16).forEach((o) => {
     const tr = document.createElement("tr");
     tr.className = o.id === oportunidadSeleccionadaId ? "fila-seleccionada" : "";
     tr.tabIndex = 0;
@@ -1645,7 +1656,7 @@ function renderOportunidades(datos) {
 function renderDetalleOportunidad(datos) {
   const panel = $("detalleOportunidad");
   if (!panel) return;
-  const oportunidades = datos?.oportunidades || [];
+  const oportunidades = oportunidadesVigentes(datos);
   const seleccionada = oportunidades.find((o) => o.id === oportunidadSeleccionadaId) || oportunidades[0];
   if (!seleccionada) {
     panel.innerHTML = `
@@ -1655,12 +1666,15 @@ function renderDetalleOportunidad(datos) {
     `;
     return;
   }
-  if (!oportunidadSeleccionadaId) {
+  if (oportunidadSeleccionadaId !== seleccionada.id) {
     oportunidadSeleccionadaId = seleccionada.id;
   }
   const costos = seleccionada.costos || {};
   const estado = seleccionada.ejecutable ? "Ejecutable" : seleccionada.razon;
-  const auditoria = (datos?.auditoriaDecisiones || []).find((a) => a.ruta === `${seleccionada.compraEn}->${seleccionada.ventaEn}`);
+  const auditoria = (datos?.auditoriaDecisiones || []).find((a) =>
+    a.ruta === `${seleccionada.compraEn}->${seleccionada.ventaEn}` &&
+    a.tiempo === seleccionada.detectadaEn
+  );
   const score = auditoria?.score || 0;
   const decisionCode = auditoria?.decisionCode || seleccionada.decisionCode || "NO_CODE";
   const decisionReason = auditoria?.decisionReason || seleccionada.decisionReason || seleccionada.razon || "";
@@ -1980,8 +1994,9 @@ function registrarPulsoGa(g) {
 function renderResumenLlm(datos) {
   const el = $("resumenLlm");
   if (!el) return;
-  const mejor = [...(datos.oportunidades || [])].sort((a, b) => b.diferencialNetoBps - a.diferencialNetoBps)[0];
-  const ejecutable = (datos.oportunidades || []).find((o) => o.ejecutable);
+  const oportunidades = oportunidadesVigentes(datos);
+  const mejor = [...oportunidades].sort((a, b) => b.diferencialNetoBps - a.diferencialNetoBps)[0];
+  const ejecutable = oportunidades.find((o) => o.ejecutable);
   const g = datos.genetico;
   const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
   const modo = esDemoRentable
@@ -2074,7 +2089,7 @@ function escapeHtml(valor) {
 }
 
 function detectarNotificaciones(datos) {
-  datos.oportunidades.forEach((o) => {
+  oportunidadesVigentes(datos).forEach((o) => {
     if (o.ejecutable && o.utilidadUsd > 50 && !opsNotificadas.has(o.id)) {
       opsNotificadas.add(o.id);
       if (opsNotificadas.size > 200) {
@@ -2169,7 +2184,7 @@ function dibujarMapa(datos) {
     });
   });
 
-  datos.oportunidades.slice(0, 18).forEach((o, i) => {
+  oportunidadesVigentes(datos).slice(0, 18).forEach((o, i) => {
     const a = posiciones.get(o.compraEn);
     const b = posiciones.get(o.ventaEn);
     if (!a || !b) return;
@@ -2244,23 +2259,38 @@ function dibujarSeries(datos) {
   ctx.clearRect(0, 0, w, h);
 
   const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
-  const colorTinta = temaOscuro ? "#f4f0e6" : "#141414";
-  const pnlColor = temaOscuro ? "#4ade80" : "#16a34a";
-  const difColor = temaOscuro ? "#60a5fa" : "#0284c7";
+  const pnlColor = temaOscuro ? "#b7ff3c" : "#168a3a";
+  const difColor = temaOscuro ? "#a78bfa" : "#6d28d9";
 
   fondoArquitectonico(ctx, w, h, temaOscuro);
 
-  dibujarLinea(ctx, datos.seriePnl.map((p) => p.valor), pnlColor, w, h, 0.58);
-  dibujarLinea(ctx, datos.serieDiferencial.map((p) => p.valor), difColor, w, h, 0.34);
+  const seriePnl = normalizarSerieTemporal(datos.seriePnl);
+  const serieDif = normalizarSerieTemporal(datos.serieDiferencial);
+  const tiempos = [...seriePnl, ...serieDif].map((p) => p.tiempo);
+  const tiempoMin = Math.min(...tiempos);
+  const tiempoMax = Math.max(...tiempos);
+  const dominioTiempo = Number.isFinite(tiempoMin) && Number.isFinite(tiempoMax)
+    ? [tiempoMin, Math.max(tiempoMax, tiempoMin + 1)]
+    : null;
+
+  dibujarLineaTemporal(ctx, seriePnl, pnlColor, w, h, 0.58, dominioTiempo);
+  dibujarLineaTemporal(ctx, serieDif, difColor, w, h, 0.34, dominioTiempo);
+  dibujarEjeTemporal(ctx, dominioTiempo, w, h, temaOscuro);
 
   // Agregar ejes y etiquetas
-  ctx.fillStyle = colorTinta;
+  ctx.fillStyle = pnlColor;
   ctx.font = "800 14px Archivo, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("Utilidad neta acumulada (USD)", 24, 30);
+  ctx.fillText(`Utilidad neta acumulada · ${dinero.format(seriePnl.at(-1)?.valor || 0)}`, 24, 30);
 
   ctx.fillStyle = difColor;
-  ctx.fillText("Diferencial neto (bps)", 24, 52);
+  ctx.fillText(`Diferencial neto · ${formato(serieDif.at(-1)?.valor || 0, 2)} bps`, 24, 52);
+
+  ctx.fillStyle = temaOscuro ? "#a7a096" : "#6b625b";
+  ctx.font = "700 11px Aeonik Pro, sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText(`PnL ${rangoSerie(seriePnl.map((p) => p.valor), dinero.format)}`, w - 24, 30);
+  ctx.fillText(`Spread ${rangoSerie(serieDif.map((p) => p.valor), (v) => `${formato(v, 2)} bps`)}`, w - 24, 52);
 }
 
 function dibujarGa(g) {
@@ -2302,9 +2332,16 @@ function dibujarGa(g) {
   const px = (i) => 34 + (i / Math.max(datos.length - 1, 1)) * (w - 68);
   const py = (valor) => h - 34 - ((valor - min) / rango) * (h - 72);
 
-  trazarSerieGa(ctx, datos.map((p) => p.mejor), px, py, "#f8c547", 4);
-  trazarSerieGa(ctx, datos.map((p) => p.retador ?? p.promedio), px, py, "#fb7185", 3);
-  trazarSerieGa(ctx, datos.map((p) => p.promedio), px, py, "#22d3ee", 3);
+  const ahora = performance.now();
+  const firmaGa = `${datos.length}:${datos.at(-1)?.generacion || 0}:${datos.at(-1)?.mejor || 0}`;
+  if (firmaGa !== animacionGa.firma) {
+    animacionGa.firma = firmaGa;
+    animacionGa.inicio = ahora;
+  }
+  const progresoGa = reducirMovimiento ? 1 : easeOutCubic(Math.min(1, (ahora - animacionGa.inicio) / 680));
+  trazarSerieGa(ctx, datos.map((p) => p.mejor), px, py, "#ffd43b", 5, progresoGa);
+  trazarSerieGa(ctx, datos.map((p) => p.retador ?? p.promedio), px, py, "#ff4d8d", 4, progresoGa);
+  trazarSerieGa(ctx, datos.map((p) => p.promedio), px, py, "#00c8ff", 4, progresoGa);
 
   datos.slice(-18).forEach((p, i, arr) => {
     const x = px(datos.length - arr.length + i);
@@ -2323,78 +2360,125 @@ function dibujarGa(g) {
   ctx.font = "900 13px Aeonik Pro, sans-serif";
   ctx.textAlign = "left";
   ctx.fillText(`Auto Gen ${ultimo.generacion} · ${resumenDuelo}`, 22, 24);
-  ctx.fillStyle = "#f8c547";
+  ctx.fillStyle = "#ffd43b";
   ctx.fillText("campeón", 22, h - 14);
-  ctx.fillStyle = "#fb7185";
+  ctx.fillStyle = "#ff4d8d";
   ctx.fillText("retador", 112, h - 14);
-  ctx.fillStyle = "#22d3ee";
+  ctx.fillStyle = "#00c8ff";
   ctx.fillText("promedio", 196, h - 14);
   ctx.fillStyle = "#20e69a";
   ctx.fillText("diversidad", 296, h - 14);
 }
 
-function trazarSerieGa(ctx, valores, px, py, color, grosor) {
+function trazarSerieGa(ctx, valores, px, py, color, grosor, progreso = 1) {
   ctx.strokeStyle = color;
   ctx.lineWidth = grosor;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 7;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   ctx.beginPath();
-  valores.forEach((valor, i) => {
+  const ultimoVisible = Math.max(1, Math.ceil((valores.length - 1) * progreso));
+  valores.slice(0, ultimoVisible + 1).forEach((valor, i) => {
     const x = px(i);
     const y = py(valor);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
-  const x = px(valores.length - 1);
-  const y = py(valores[valores.length - 1]);
+  ctx.shadowBlur = 0;
+  const x = px(ultimoVisible);
+  const y = py(valores[ultimoVisible]);
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(x, y, 5, 0, Math.PI * 2);
   ctx.fill();
 }
 
-function dibujarLinea(ctx, valores, color, w, h, base) {
-  if (valores.length < 2) return;
+function normalizarSerieTemporal(serie = []) {
+  return serie
+    .map((p) => ({ tiempo: Date.parse(p?.tiempo), valor: Number(p?.valor) }))
+    .filter((p) => Number.isFinite(p.tiempo) && Number.isFinite(p.valor))
+    .sort((a, b) => a.tiempo - b.tiempo);
+}
+
+function dibujarLineaTemporal(ctx, puntos, color, w, h, base, dominioTiempo) {
+  if (!puntos.length || !dominioTiempo) return;
+  const valores = puntos.map((p) => p.valor);
   const min = Math.min(...valores, 0);
   const max = Math.max(...valores, 1);
   const absMax = Math.max(Math.abs(min), Math.abs(max));
   const max_amp = Math.max(absMax, 1);
+  const [tiempoMin, tiempoMax] = dominioTiempo;
+  const px = (tiempo) => 28 + ((tiempo - tiempoMin) / (tiempoMax - tiempoMin)) * (w - 56);
+  const py = (valor) => h * base - (valor / max_amp) * (h * 0.24);
 
-  ctx.globalAlpha = 0.1;
+  ctx.globalAlpha = 0.14;
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.moveTo(28, h * base);
-  valores.forEach((valor, i) => {
-    const x = 28 + (i / (valores.length - 1)) * (w - 56);
-    const y = h * base - (valor / max_amp) * (h * 0.24);
-    ctx.lineTo(x, y);
+  ctx.moveTo(px(puntos[0].tiempo), h * base);
+  puntos.forEach((p) => {
+    ctx.lineTo(px(p.tiempo), py(p.valor));
   });
-  ctx.lineTo(28 + (w - 56), h * base);
+  ctx.lineTo(px(puntos.at(-1).tiempo), h * base);
+  ctx.closePath();
   ctx.fill();
   ctx.globalAlpha = 1.0;
 
-  // Stroke line
   ctx.strokeStyle = color;
-  ctx.lineWidth = 4;
+  ctx.lineWidth = 5.5;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 9;
   ctx.beginPath();
-  valores.forEach((valor, i) => {
-    const x = 28 + (i / (valores.length - 1)) * (w - 56);
-    const y = h * base - (valor / max_amp) * (h * 0.24);
+  puntos.forEach((p, i) => {
+    const x = px(p.tiempo);
+    const y = py(p.valor);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+  ctx.shadowBlur = 0;
 
-  // End point
-  const lastX = 28 + w - 56;
-  const lastY = h * base - (valores[valores.length - 1] / max_amp) * (h * 0.24);
+  const ultimo = puntos.at(-1);
   ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(lastX, lastY, 6, 0, Math.PI * 2);
+  ctx.arc(px(ultimo.tiempo), py(ultimo.valor), 7, 0, Math.PI * 2);
   ctx.fill();
+  ctx.globalAlpha = 0.35;
+  ctx.beginPath();
+  ctx.arc(px(ultimo.tiempo), py(ultimo.valor), 11, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function dibujarEjeTemporal(ctx, dominioTiempo, w, h, temaOscuro) {
+  if (!dominioTiempo) return;
+  const [inicio, fin] = dominioTiempo;
+  ctx.strokeStyle = temaOscuro ? "#4a4640" : "#d5cec2";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(28, h - 24);
+  ctx.lineTo(w - 28, h - 24);
+  ctx.stroke();
+  ctx.fillStyle = temaOscuro ? "#a7a096" : "#6b625b";
+  ctx.font = "700 11px Aeonik Pro, sans-serif";
+  [inicio, inicio + (fin - inicio) / 2, fin].forEach((tiempo, i) => {
+    ctx.textAlign = i === 0 ? "left" : i === 2 ? "right" : "center";
+    ctx.fillText(formatoHoraGrafica.format(new Date(tiempo)), 28 + (i / 2) * (w - 56), h - 7);
+  });
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function rangoSerie(valores, formatear) {
+  if (!valores.length) return "sin muestras";
+  return `${formatear(Math.min(...valores))} — ${formatear(Math.max(...valores))}`;
 }
 
 function fondoArquitectonico(ctx, w, h, temaOscuro) {
@@ -2438,7 +2522,7 @@ function prepararCanvas(canvas) {
 function actualizarMejorDiferencial(datos) {
   const el = $("mejorDiferencial");
   if (!el) return;
-  const oportunidades = datos.oportunidades || [];
+  const oportunidades = oportunidadesVigentes(datos);
 
   const countEl = $("conteoRutas");
   if (countEl) {
@@ -2458,6 +2542,25 @@ function actualizarMejorDiferencial(datos) {
   el.className = `mapa-bps ${mejor >= 0 ? "positivo" : "negativo"}`;
 }
 
+// El backend conserva una cola corta para auditoría. Para superficies marcadas
+// como LIVE mostramos únicamente el lote del análisis más reciente.
+function oportunidadesVigentes(datos) {
+  const oportunidades = Array.isArray(datos?.oportunidades) ? datos.oportunidades : [];
+  if (oportunidades.length < 2) return oportunidades;
+
+  let instanteMasReciente = Number.NEGATIVE_INFINITY;
+  for (const oportunidad of oportunidades) {
+    const instante = Date.parse(oportunidad.detectadaEn || "");
+    if (Number.isFinite(instante)) instanteMasReciente = Math.max(instanteMasReciente, instante);
+  }
+  if (!Number.isFinite(instanteMasReciente)) return oportunidades;
+
+  return oportunidades.filter((oportunidad) => {
+    const instante = Date.parse(oportunidad.detectadaEn || "");
+    return Number.isFinite(instante) && instante === instanteMasReciente;
+  });
+}
+
 function formato(valor, decimales) {
   return Number(valor || 0).toLocaleString("es-MX", {
     minimumFractionDigits: decimales,
@@ -2469,13 +2572,17 @@ function formato(valor, decimales) {
 document.addEventListener("DOMContentLoaded", () => {
   const overview = document.getElementById("tab-overview");
   const pantalla = document.querySelector(".pantalla");
+  const scrollPorTab = new Map();
   iniciarLanding();
   iniciarAjusteMetricas();
+  iniciarDiccionario();
 
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       const pantalla = document.querySelector(".pantalla");
       const scrollActual = pantalla ? pantalla.scrollTop : 0;
+      const tabAnterior = document.querySelector(".tab-content.activo")?.id;
+      if (tabAnterior) scrollPorTab.set(tabAnterior, scrollActual);
 
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("activo"));
       document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("activo"));
@@ -2489,17 +2596,28 @@ document.addEventListener("DOMContentLoaded", () => {
         // Guardar pestaña activa para que persista al recargar
         localStorage.setItem("mayabActiveTab", targetId);
 
-        if (pantalla) {
-          pantalla.scrollTop = scrollActual;
-        }
-
         actualizarHeaderColapsable();
 
         // Forzar resize para que los canvas recalcule su bounding rect (ya que display: none devuelve width/height 0)
         requestAnimationFrame(() => {
+          if (pantalla) {
+            const dashboardTop = Math.max(0, (document.getElementById("dashboard")?.offsetTop || 0) - 18);
+            pantalla.scrollTop = scrollPorTab.get(targetId) ?? dashboardTop;
+          }
           window.dispatchEvent(new Event("resize"));
+          window.dispatchEvent(new CustomEvent("mayab:tab-visible"));
         });
       }
+    });
+  });
+
+  document.querySelectorAll("[data-tab-target]").forEach((control) => {
+    control.addEventListener("click", () => {
+      const target = control.getAttribute("data-tab-target");
+      const tab = document.querySelector(`.tab-btn[data-tab="${target}"]`);
+      if (!tab) return;
+      tab.click();
+      document.getElementById("dashboard")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 
@@ -2522,6 +2640,49 @@ document.addEventListener("DOMContentLoaded", () => {
   actualizarVisibilidadNotificaciones();
 });
 
+function iniciarDiccionario() {
+  const toggle = $("dictionaryToggle");
+  const panel = $("dictionaryPanel");
+  const close = $("dictionaryClose");
+  const backdrop = $("dictionaryBackdrop");
+  const search = $("dictionarySearch");
+  const rows = [...document.querySelectorAll("#dictionaryTerms tr")];
+  const empty = $("dictionaryEmpty");
+  if (!toggle || !panel || !close || !backdrop) return;
+
+  const cerrar = () => {
+    panel.hidden = true;
+    backdrop.hidden = true;
+    document.body.classList.remove("dictionary-open");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.focus();
+  };
+  const abrir = () => {
+    panel.hidden = false;
+    backdrop.hidden = false;
+    document.body.classList.add("dictionary-open");
+    toggle.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => search?.focus());
+  };
+
+  toggle.addEventListener("click", abrir);
+  close.addEventListener("click", cerrar);
+  backdrop.addEventListener("click", cerrar);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !panel.hidden) cerrar();
+  });
+  search?.addEventListener("input", () => {
+    const query = search.value.trim().toLocaleLowerCase("es");
+    let visibles = 0;
+    rows.forEach((row) => {
+      const coincide = row.textContent.toLocaleLowerCase("es").includes(query);
+      row.hidden = !coincide;
+      if (coincide) visibles += 1;
+    });
+    if (empty) empty.hidden = visibles !== 0;
+  });
+}
+
 function iniciarLanding() {
   const elementsToReveal = document.querySelectorAll('.panel, .ga-panel, .metricas article, .landing-card, .llm-strip, .barra-superior, .tabs-nav');
   const ordenPorGrupo = new Map();
@@ -2531,7 +2692,7 @@ function iniciarLanding() {
     }
     const grupo = el.parentElement;
     const orden = ordenPorGrupo.get(grupo) || 0;
-    el.style.setProperty("--reveal-delay", `${Math.min(orden * 85, 340)}ms`);
+    el.style.setProperty("--reveal-delay", `${Math.min(orden * 45, 135)}ms`);
     ordenPorGrupo.set(grupo, orden + 1);
   });
 
@@ -2554,6 +2715,7 @@ function iniciarLanding() {
     return;
   }
 
+  const root = document.querySelector(".pantalla");
   const observer = new IntersectionObserver(
     (entries) => {
       entries
@@ -2564,10 +2726,32 @@ function iniciarLanding() {
           observer.unobserve(entry.target);
         });
     },
-    { root: document.querySelector(".pantalla"), threshold: 0.18, rootMargin: "0px 0px -8% 0px" },
+    // La zona inferior ampliada inicia el reveal antes de que el usuario tenga
+    // que llevar una tarjeta grande hasta el centro del viewport.
+    { root, threshold: 0.04, rootMargin: "8% 0px 28% 0px" },
   );
 
   cards.forEach((card) => observer.observe(card));
+
+  const revelarCercanas = () => {
+    const limite = root?.getBoundingClientRect() || {
+      top: 0,
+      bottom: window.innerHeight,
+      height: window.innerHeight,
+    };
+    const anticipacion = limite.height * 0.28;
+    cards.forEach((card) => {
+      if (card.classList.contains("is-visible") || card.offsetParent === null) return;
+      const rect = card.getBoundingClientRect();
+      if (rect.bottom >= limite.top && rect.top <= limite.bottom + anticipacion) {
+        card.classList.add("is-visible");
+        observer.unobserve(card);
+      }
+    });
+  };
+
+  requestAnimationFrame(revelarCercanas);
+  window.addEventListener("mayab:tab-visible", revelarCercanas);
 }
 
 function irAlDashboard(suave = true) {

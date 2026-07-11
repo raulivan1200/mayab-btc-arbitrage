@@ -7,7 +7,7 @@ Este documento detalla el paso a paso para probar todas las funcionalidades prin
 - **Expectativa:** 5 tarjetas deben mostrar "Ok" validando la parametrización, robustez, soporte multi-wallet, métricas de latencia y documentación.
 
 ## 2. Inyectar Oportunidad (Demo Rentable)
-- **Acción:** En la sección "Demo controlada", presione **"Demo rentable + GA"**.
+- **Acción:** En la sección "Demo controlada", presione **"Preparar recorrido completo"**.
 - **Expectativa:** 
   1. El PnL debe incrementar.
   2. En "Ejecución -> Operaciones" debe aparecer una transacción rentable en verde.
@@ -22,7 +22,7 @@ Este documento detalla el paso a paso para probar todas las funcionalidades prin
 - **Expectativa:** 
   1. Aparecerá un banner superior rojo alertando la detención de las ejecuciones.
   2. El "Modo de Operación" en la esquina superior izquierda se tornará Ámbar/Rojo.
-  3. Las siguientes inyecciones de "Demo rentable" serán rechazadas con `RECHAZADA_CIRCUIT_BREAKER`.
+  3. Las siguientes inyecciones de **"Repetir escenario rentable"** serán rechazadas con `RECHAZADA_CIRCUIT_BREAKER`.
 
 ## 5. Escenario: Rebalanceo de Carteras
 - **Acción:** Presione **"Forzar rebalanceo"**.

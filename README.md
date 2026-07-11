@@ -11,7 +11,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. Pulsa **Demo rentable + GA**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, eventos `demo_rentable`, auditoría y evolución genética.
+4. Pulsa **Preparar recorrido completo**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética.
 5. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
@@ -210,7 +210,7 @@ Flujo recomendado para evaluar la aplicación en vivo:
    - **Estrés**: aumenta probabilidad de fallo, movimiento brusco y activa una gestión más conservadora.
 4. Desactivar un exchange y confirmar que el motor recalcula rutas y mantiene el estado activo/inactivo visible.
 5. Usar “Demo controlada” para forzar fallo de orden, shock de mercado, fill parcial, liquidez insuficiente, circuit breaker o rebalanceo; confirmar que aparecen en operaciones, eventos y auditoría.
-6. Usar “Demo rentable + GA” si el mercado real está plano; confirma operaciones, P&L, oportunidades verdes, auditoría y GA activo.
+6. Usar **Preparar recorrido completo** si el mercado real está plano; confirma operaciones, P&L, oportunidades verdes, fill parcial, rebalanceo, auditoría y GA activo. **Repetir escenario rentable** permite volver a inyectar sólo la dislocación rentable.
 7. Exportar JSON/CSV para revisar trazabilidad fuera del dashboard.
 8. Ejecutar el backtest reproducible para comparar estrategia base vs estrategia optimizada con los costos vigentes.
 9. Forzar una evolución genética y observar fuente de entrenamiento, muestras, fitness, diversidad y pesos de scoring.
@@ -258,8 +258,20 @@ http://localhost:8080
 
 ## Ejecución local con Rust
 
+Requisitos: Rust estable compatible con `Cargo.lock` y acceso de red a los
+feeds públicos. Node.js solo es necesario para el gate visual de `make check`.
+
 ```bash
+cargo fetch --locked
 cargo run
+```
+
+Comprueba que el backend y los feeds estén disponibles:
+
+```bash
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:8080/api/preflight
+curl -sS http://127.0.0.1:8080/api/estado
 ```
 
 Modo debug local:
@@ -353,21 +365,86 @@ RETIRO_BTC_BYBIT=0.00010
 
 La demo pública actual apunta a Cloud Run. Es la opción recomendada para el comité porque soporta WebSockets, HTTPS automático, logs centralizados y despliegue directo desde el repo.
 
-Cloud Run:
+Deploy manual desde el código fuente. El script deja una sola instancia
+caliente porque wallets, GA, WebSocket y SQLite viven en el proceso:
 
 ```bash
+PROJECT=arahli-495117 \
+REGION=us-central1 \
+MIN_INSTANCES=1 \
+MAX_INSTANCES=1 \
 ./scripts/deploy-cloud-run.sh
 ```
 
 Variables útiles para la demo final:
 
 ```bash
-# Mantiene una instancia caliente durante evaluación; puede generar costo.
-MIN_INSTANCES=1 ./scripts/deploy-cloud-run.sh
-
 # Si quieres mover región, cambia REGION y actualiza la URL pública entregada.
 REGION=us-east4 ./scripts/deploy-cloud-run.sh
+
+# También acepta una imagen ya publicada y evita Cloud Build.
+IMAGE=us-central1-docker.pkg.dev/PROYECTO/REPO/IMAGEN:SHA \
+./scripts/deploy-cloud-run.sh
 ```
+
+Después del deploy:
+
+```bash
+BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+curl -sS https://tu-url-publica/api/preflight
+```
+
+### CI/CD automático
+
+El workflow `.github/workflows/rust.yml` ejecuta formato, Clippy, tests, build
+release y smoke local en cada push o pull request. En un push verde a `master`,
+además:
+
+1. autentica GitHub en Google Cloud mediante OIDC/Workload Identity Federation;
+2. construye una imagen etiquetada con el SHA completo del commit;
+3. la publica en Artifact Registry;
+4. despliega Cloud Run con `min=1` y `max=1`;
+5. ejecuta el smoke público y deja preparada la demo del jurado.
+
+No se guarda una llave JSON. El repositorio usa estas GitHub Actions Variables:
+
+```text
+GCP_PROJECT_ID
+GCP_REGION
+CLOUD_RUN_SERVICE
+GAR_REPOSITORY
+WIF_PROVIDER
+WIF_SERVICE_ACCOUNT
+```
+
+Los pull requests nunca despliegan. La identidad federada está condicionada al
+repositorio y a `refs/heads/master`. Para revisar el último rollout:
+
+```bash
+gh run list --workflow rust.yml --limit 5
+gcloud run revisions list --service mayab-btc-arbitrage --region us-central1
+```
+
+### Benchmark real multi-región
+
+`scripts/benchmark-cloud-run-regions.sh` despliega temporalmente el mismo digest
+del contenedor en varias regiones de Cloud Run, calienta los feeds públicos y
+compara la latencia *evento del exchange → ingestión regional* usando p50, p95 y
+p99 de `/api/latencias`. También registra el RTT HTTP desde la máquina que corre
+el script como métrica secundaria. Al terminar elimina las réplicas por defecto
+para no dejar costo o estado duplicado.
+
+```bash
+REGIONS="us-central1 us-east4 us-west1" \
+WARMUP_SECONDS=45 \
+SAMPLES=3 \
+./scripts/benchmark-cloud-run-regions.sh
+```
+
+Los resultados quedan en JSON y CSV bajo `/tmp/mayab-region-benchmark-*`. Esto
+es un benchmark reproducible de una corrida y sus condiciones de red, no una
+promesa universal de latencia ni un SLA de los exchanges. Usa `CLEANUP=0` solo
+si necesitas inspeccionar temporalmente las réplicas y elimínalas después.
 
 Render también está soportado vía `render.yaml`, pero el plan gratuito puede dormir la app y hacer que la primera carga sea lenta.
 
@@ -383,6 +460,7 @@ fly deploy
 ```text
 GET  /                     tablero web embebido
 GET  /healthz              verificación de salud
+GET  /api/healthz          verificación de salud compatible con Cloud Run
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
 GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación

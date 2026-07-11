@@ -69,6 +69,7 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         ServeDir::new("internal/webui/web").append_index_html_on_directories(true);
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/healthz", get(healthz))
         .route("/api/estado", get(estado))
         .route("/api/jurado", get(jurado))
         .route("/api/preflight", get(preflight))

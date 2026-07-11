@@ -16,11 +16,11 @@ La demo es segura: no usa llaves API, no firma órdenes, no custodia fondos y to
 
 2. Abrir `/api/preflight`.
    - Confirmar `judgeReadiness.status=ready`.
-   - Confirmar 9/9 checks.
+   - Confirmar 10/10 checks.
    - Mostrar `rubricaOficial` con los 5 criterios del correo.
 
 3. Ejecutar demo rentable.
-   - Botón: **Demo rentable + GA**.
+   - Botón: **Preparar recorrido completo**.
    - Evidencia esperada: operaciones, PnL positivo, eventos `demo_rentable`, auditoría y GA activo.
 
 4. Ejecutar rebalanceo.

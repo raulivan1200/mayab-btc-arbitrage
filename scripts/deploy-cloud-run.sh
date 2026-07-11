@@ -3,15 +3,23 @@ set -eu
 
 SERVICE="${SERVICE:-mayab-btc-arbitrage}"
 REGION="${REGION:-us-central1}"
-MIN_INSTANCES="${MIN_INSTANCES:-0}"
-MAX_INSTANCES="${MAX_INSTANCES:-2}"
+PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+MIN_INSTANCES="${MIN_INSTANCES:-1}"
+MAX_INSTANCES="${MAX_INSTANCES:-1}"
 MEMORY="${MEMORY:-512Mi}"
 CPU="${CPU:-1}"
 CONCURRENCY="${CONCURRENCY:-20}"
 TIMEOUT="${TIMEOUT:-3600}"
 
+if [ -n "${IMAGE:-}" ]; then
+  set -- --image "$IMAGE"
+else
+  set -- --source .
+fi
+
 gcloud run deploy "$SERVICE" \
-  --source . \
+  "$@" \
+  --project "$PROJECT" \
   --region "$REGION" \
   --allow-unauthenticated \
   --memory "$MEMORY" \
@@ -23,4 +31,4 @@ gcloud run deploy "$SERVICE" \
   --max-instances "$MAX_INSTANCES" \
   --execution-environment gen2 \
   --cpu-boost \
-  --set-env-vars "RUST_LOG=error,FEE_BINANCE=0.0010,FEE_KRAKEN=0.0026,FEE_COINBASE=0.0060,FEE_OKX=0.0010,FEE_BYBIT=0.0010,RETIRO_BTC_BINANCE=0.00010,RETIRO_BTC_KRAKEN=0.00020,RETIRO_BTC_COINBASE=0.00012,RETIRO_BTC_OKX=0.00010,RETIRO_BTC_BYBIT=0.00010"
+  --set-env-vars "RUST_LOG=error,DEMO_RENTABLE_INICIAL=false,FEE_BINANCE=0.0010,FEE_KRAKEN=0.0026,FEE_COINBASE=0.0060,FEE_OKX=0.0010,FEE_BYBIT=0.0010,RETIRO_BTC_BINANCE=0.00010,RETIRO_BTC_KRAKEN=0.00020,RETIRO_BTC_COINBASE=0.00012,RETIRO_BTC_OKX=0.00010,RETIRO_BTC_BYBIT=0.00010"

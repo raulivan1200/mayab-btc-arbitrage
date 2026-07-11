@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mayab Arbitraje BTC</title>
-    <meta name="description" content="Mayab Arbitraje BTC — Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange" />
-    <link id="favicon" rel="icon" type="image/svg+xml" href="/icons/currency_bitcoin.svg" />
-    <meta property="og:title" content="Mayab Arbitraje BTC" />
-    <meta property="og:description" content="Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange." />
+    <title>Mayab Edge — Arbitraje BTC explicable</title>
+    <meta name="description" content="Mayab Edge detecta, simula y explica oportunidades de arbitraje BTC con datos públicos multi-exchange, riesgo visible y evidencia reproducible." />
+    <link id="favicon" rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <meta property="og:title" content="Mayab Edge — Arbitraje BTC explicable" />
+    <meta property="og:description" content="Datos públicos, ejecución simulada, riesgo visible y decisiones auditables en tiempo real." />
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#0c0e14" id="themeMetaColor" />
     <style>
@@ -26,7 +26,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260710-scrollbar-edge" />
+    <link rel="stylesheet" href="/styles.css?v=20260710-more-noise" />
   </head>
   <body>
     <noscript>
@@ -34,8 +34,6 @@
         Este sistema requiere JavaScript para conectarse al feed de datos WebSocket en tiempo real. Por favor, actívalo en tu navegador.
       </div>
     </noscript>
-
-    <div id="bg-grid" aria-hidden="true"></div>
 
     <main class="pantalla">
       <section class="landing-page" aria-label="Landing Mayab Arbitraje BTC">
@@ -46,15 +44,23 @@
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker">Demo rentable por defecto · mercado vivo en paralelo</p>
-            <h1>El bot muestra utilidad neta desde el primer segundo.</h1>
+            <p class="landing-kicker">Mercado real · ejecución simulada · evidencia auditable</p>
+            <h1>Arbitraje BTC que no te pide creer: te deja comprobar.</h1>
             <p>
-              Mayab arranca con una corrida rentable, simulada y auditada para que el comité vea el flujo completo: detección, costos, ejecución, carteras, GA y PnL. Los feeds públicos siguen activos para comparar contra mercado real.
+              Mayab convierte feeds públicos de múltiples exchanges en decisiones explicables. Cada oportunidad muestra costos, liquidez, latencia, inventario y riesgo antes de simular una ejecución. La demo reproducible permite evaluar el flujo completo sin depender de que el mercado coopere.
             </p>
-            <a class="landing-cta" href="#dashboard">
-              Ver motor en vivo
-              <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
-            </a>
+            <div class="landing-actions">
+              <a class="landing-cta" href="#dashboard">
+                Explorar demo en vivo
+                <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
+              </a>
+              <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación">Abrir reporte técnico completo</a>
+            </div>
+            <div class="landing-proof" aria-label="Principios de la demo">
+              <span><strong>01</strong> Datos públicos en vivo</span>
+              <span><strong>02</strong> Costos incluidos</span>
+              <span><strong>03</strong> Sin dinero real</span>
+            </div>
           </div>
 
           <div class="landing-card-stack" aria-label="Resumen de capacidades">
@@ -69,9 +75,9 @@
             </article>
             <article class="landing-card landing-card-yellow reveal-card">
               <span>02</span>
-              <h2>Profit demo</h2>
+              <h2>Resultado reproducible</h2>
               <ul>
-                <li>PnL positivo sin esperar suerte del mercado</li>
+                <li>Escenario rentable etiquetado, repetible y auditable</li>
                 <li>Fees, slippage, latencia y fills parciales</li>
                 <li>GA entrenado con replay sintético etiquetado</li>
               </ul>
@@ -91,7 +97,7 @@
           </article>
           <article class="landing-card landing-card-purple reveal-card">
             <span>04</span>
-            <h2>IA que se explica</h2>
+            <h2>Optimización explicable</h2>
             <ul>
               <li>Mayab Edge Tensor con variables legibles</li>
               <li>Pesos GA, fitness y diversidad por generación</li>
@@ -100,9 +106,9 @@
           </article>
           <article class="landing-card landing-card-black reveal-card">
             <span>05</span>
-            <h2>Listo para ganar</h2>
+            <h2>Listo para evaluar</h2>
             <ul>
-              <li>Score jurado, preflight y paquete de evaluación</li>
+              <li>Score técnico, preflight y paquete de evidencia</li>
               <li>Smoke reproducible y contratos HTTP estables</li>
               <li>Sin llaves, sin custodia, sin trading real</li>
             </ul>
@@ -117,24 +123,27 @@
       </section>
 
       <header id="dashboard" class="barra-superior">
-        <div class="brand-block">
-          <div class="topline">
-            <p class="ceja">Mayab Arbitraje BTC</p>
-            <span id="modoOperacionBadge" class="modo-operacion-badge">LIVE WS</span>
-            <span id="modoConservadorBadge" class="modo-conservador-badge" hidden>MODO CONSERVADOR</span>
+        <div id="header-grid" class="header-grid" aria-hidden="true"></div>
+        <div class="header-content">
+          <div class="brand-block">
+            <div class="topline">
+              <p class="ceja">Mayab Arbitraje BTC</p>
+              <span id="modoOperacionBadge" class="modo-operacion-badge">LIVE WS</span>
+              <span id="modoConservadorBadge" class="modo-conservador-badge" hidden>MODO CONSERVADOR</span>
+            </div>
+            <div>
+              <h1>Mayab Edge: arbitraje BTC explicado</h1>
+            </div>
           </div>
-          <div>
-          <h1>Mayab Edge: arbitraje BTC explicado</h1>
-          </div>
-        </div>
-        <div class="toolbar">
-          <button id="themeToggle" class="tema-toggle" type="button" aria-label="Cambiar a modo oscuro" title="Cambiar a modo oscuro">
-            <span class="theme-icon icon-sun" aria-hidden="true"></span>
-            <span class="theme-icon icon-moon" aria-hidden="true"></span>
-          </button>
-          <div class="estado-live" id="estadoSocket">
-            <span class="pulso"></span>
-            conectando
+          <div class="toolbar">
+            <button id="themeToggle" class="tema-toggle" type="button" aria-label="Cambiar a modo oscuro" title="Cambiar a modo oscuro">
+              <span class="theme-icon icon-sun" aria-hidden="true"></span>
+              <span class="theme-icon icon-moon" aria-hidden="true"></span>
+            </button>
+            <div class="estado-live" id="estadoSocket">
+              <span class="pulso"></span>
+              conectando
+            </div>
           </div>
         </div>
       </header>
@@ -146,11 +155,11 @@
 
 
       <nav class="tabs-nav" aria-label="Navegación principal">
-        <button class="tab-btn activo" data-tab="tab-overview">Overview</button>
-        <button class="tab-btn" data-tab="tab-mercado">Mercado y Rutas</button>
-        <button class="tab-btn" data-tab="tab-riesgo">Gestión de Riesgo</button>
-        <button class="tab-btn" data-tab="tab-logs">Logs y Backtest</button>
-        <button class="tab-btn" data-tab="tab-galab">Laboratorio GA</button>
+        <button class="tab-btn activo" data-tab="tab-overview">Resumen</button>
+        <button class="tab-btn" data-tab="tab-mercado">Mercado y rutas</button>
+        <button class="tab-btn" data-tab="tab-riesgo">Riesgo y escenarios</button>
+        <button class="tab-btn" data-tab="tab-logs">Auditoría y backtest</button>
+        <button class="tab-btn" data-tab="tab-galab">Optimización GA</button>
       </nav>
 
       <div class="tab-content activo" id="tab-overview">
@@ -171,11 +180,11 @@
           <li><span>Latencia</span><strong id="llm-latencia">Cargando...</strong></li>
         </ul>
         <div class="strip-actions" aria-label="Exportar auditoría">
-          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener">Ver score jurado</a>
-          <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Evidencia final</a>
-          <a class="btn-link" href="/api/mcp/manifest" target="_blank" rel="noopener">MCP tools</a>
-          <a class="btn-link" href="/api/export/json" download>Exportar JSON</a>
-          <a class="btn-link" href="/api/export/csv" download>Exportar CSV</a>
+          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Abre el resumen JSON de validaciones, score, métricas y estado operativo">Abrir resumen de validación</a>
+          <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con criterios, métricas, auditoría y cobertura técnica">Abrir reporte técnico completo</a>
+          <a class="btn-link" href="/api/mcp/manifest" target="_blank" rel="noopener" title="Consulta el manifiesto de herramientas disponibles para integraciones MCP">Consultar API para agentes</a>
+          <a class="btn-link" href="/api/export/json" download title="Descarga métricas, operaciones, oportunidades, decisiones, rebalanceos y balances">Descargar auditoría completa · JSON</a>
+          <a class="btn-link" href="/api/export/csv" download title="Descarga el log tabular de operaciones, eventos y decisiones auditadas">Descargar log de transacciones · CSV</a>
         </div>
       </section>
 
@@ -235,25 +244,25 @@
         </article>
       </section>
 
-      <section class="panel judge-panel" aria-label="Checklist de jurado">
+      <section class="panel judge-panel" aria-label="Checklist de validación técnica">
         <div class="panel-titulo">
           <div>
-            <p class="ceja">Jurado</p>
-            <h2>Readiness</h2>
+            <p class="ceja">Validación técnica</p>
+          <h2>Evidencia de preparación</h2>
           </div>
-          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener">Score jurado</a>
-          <a class="btn-link" href="/api/preflight" target="_blank" rel="noopener">Preflight</a>
+          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Muestra score, checks operativos, métricas clave y enlaces de verificación">Consultar validación y score</a>
+          <a class="btn-link" href="/api/preflight" target="_blank" rel="noopener" title="Ejecuta el checklist de salud, datos, seguridad y capacidad de auditoría">Ver checklist operativo</a>
         </div>
-        <div id="judgeReadiness" class="judge-readiness">Armando score de jurado con evidencia runtime...</div>
+        <div id="judgeReadiness" class="judge-readiness">Calculando validaciones con métricas de la sesión...</div>
       </section>
 
       <section class="panel benchmark-panel" aria-label="Cobertura de benchmark finalista">
         <div class="panel-titulo">
           <div>
             <p class="ceja">Benchmark finalista</p>
-            <h2>Cobertura competitiva</h2>
+            <h2>Cobertura de la rúbrica</h2>
           </div>
-          <a class="btn-link" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Ver evidencia</a>
+          <a class="btn-link" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con la cobertura detallada de cada criterio técnico">Abrir reporte de cobertura</a>
         </div>
         <p class="panel-ayuda">Cobertura contra la rúbrica final: parametrización, adversidad, wallets, visualización, documentación y evidencia reproducible.</p>
         <div id="benchmarkCobertura" class="benchmark-grid">Calculando cobertura contra la rúbrica...</div>
@@ -484,14 +493,14 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Sala de pruebas</p>
-            <h2>Demuestra edge bajo presión</h2>
+            <h2>Prueba el motor bajo presión</h2>
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda">Usa estos botones para enseñar al comité cómo responde el bot cuando gana, cuando falla una orden, cuando falta liquidez o cuando toca proteger capital.</p>
+        <p class="panel-ayuda">Ejecuta escenarios reproducibles para observar cómo responde el motor ante utilidad, fallos de orden, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
         <div class="demo-actions">
-          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final">Cargar demo ganadora</button>
-          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Inyectar profit + GA</button>
+          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final">Preparar recorrido completo</button>
+          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Repetir escenario rentable</button>
           <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
           <button type="button" class="btn-secundario" data-demo="mercado_movido">Shock de mercado</button>
           <button type="button" class="btn-secundario" data-demo="fill_parcial">Fill parcial</button>
@@ -841,10 +850,79 @@
 
       <div id="notificaciones" class="notificaciones-container"></div>
     </main>
-    <div id="paper-texture-overlay" aria-hidden="true" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; mix-blend-mode: multiply; z-index: 9999;"></div>
-    <script src="/favicon.js?v=20260710-fav" type="module"></script>
-    <script src="/cursor.js?v=20260710-ui-fixes" type="module"></script>
-    <script src="/shader.js?v=20260709-landing1" type="module"></script>
-    <script src="/app.js?v=20260710-ui-fixes" type="module"></script>
+
+    <button id="dictionaryToggle" class="dictionary-fab" type="button" aria-label="Abrir diccionario de conceptos" aria-controls="dictionaryPanel" aria-expanded="false">
+      <img src="/icons/dictionary.svg" alt="" aria-hidden="true" />
+      <span>Diccionario</span>
+    </button>
+    <div id="dictionaryBackdrop" class="dictionary-backdrop" hidden></div>
+    <aside id="dictionaryPanel" class="dictionary-panel" role="dialog" aria-modal="true" aria-labelledby="dictionaryTitle" hidden>
+      <header class="dictionary-header">
+        <div>
+          <p class="ceja">Guía rápida</p>
+          <h2 id="dictionaryTitle">Diccionario Mayab</h2>
+        </div>
+        <button id="dictionaryClose" class="dictionary-close" type="button" aria-label="Cerrar diccionario">×</button>
+      </header>
+      <div class="dictionary-body">
+        <section class="dictionary-intro" aria-labelledby="dictionaryIntroTitle">
+          <h3 id="dictionaryIntroTitle">¿Qué hace esta pantalla?</h3>
+          <p>Mayab observa precios públicos de Bitcoin en varios exchanges, calcula si comprar en uno y vender en otro dejaría utilidad después de costos y simula el resultado. No mueve dinero real: todo el saldo, las operaciones y los escenarios son una demostración segura y auditable.</p>
+          <p><strong>Cómo leerla:</strong> empieza en Resumen, revisa Mercado y rutas para entender la oportunidad, confirma el riesgo y termina en Auditoría o GA para ver la evidencia y la optimización.</p>
+        </section>
+        <label class="dictionary-search-label" for="dictionarySearch">Buscar un concepto</label>
+        <input id="dictionarySearch" class="dictionary-search" type="search" placeholder="Ej. PnL, spread, GA…" autocomplete="off" />
+        <div class="dictionary-table-wrap">
+          <table class="dictionary-table">
+            <thead><tr><th scope="col">Concepto</th><th scope="col">¿Qué significa?</th></tr></thead>
+            <tbody id="dictionaryTerms">
+              <tr><th scope="row">Arbitraje</th><td>Comprar BTC donde está más barato y venderlo donde está más caro.</td></tr>
+              <tr><th scope="row">Ask</th><td>Precio más bajo al que alguien está dispuesto a vender.</td></tr>
+              <tr><th scope="row">Bid</th><td>Precio más alto que alguien está dispuesto a pagar.</td></tr>
+              <tr><th scope="row">Spread</th><td>Diferencia entre precios; en Mayab se compara entre una compra y una venta.</td></tr>
+              <tr><th scope="row">Bps</th><td>Puntos base. 100 bps equivalen a 1%.</td></tr>
+              <tr><th scope="row">PnL</th><td>Ganancia o pérdida acumulada después de los costos simulados.</td></tr>
+              <tr><th scope="row">Fee</th><td>Comisión que cobraría un exchange por ejecutar una operación.</td></tr>
+              <tr><th scope="row">Slippage</th><td>Diferencia entre el precio esperado y el precio que realmente se lograría.</td></tr>
+              <tr><th scope="row">Liquidez</th><td>BTC disponible para comprar o vender sin mover demasiado el precio.</td></tr>
+              <tr><th scope="row">Latencia</th><td>Tiempo que tarda en llegar un dato; menor latencia significa información más fresca.</td></tr>
+              <tr><th scope="row">Book</th><td>Libro de órdenes con precios y cantidades disponibles para compra y venta.</td></tr>
+              <tr><th scope="row">Ruta</th><td>Par de exchanges propuesto: uno para comprar y otro para vender.</td></tr>
+              <tr><th scope="row">Fill</th><td>Parte de una orden que sí pudo ejecutarse; puede ser total o parcial.</td></tr>
+              <tr><th scope="row">Inventario</th><td>Saldo simulado de USD y BTC disponible en cada exchange.</td></tr>
+              <tr><th scope="row">Rebalanceo</th><td>Movimiento interno simulado para recuperar una distribución útil de saldos.</td></tr>
+              <tr><th scope="row">Valor esperado (EV)</th><td>Resultado probable de una operación considerando utilidad, fill y riesgo.</td></tr>
+              <tr><th scope="row">Score</th><td>Puntuación que ordena rutas usando utilidad, frescura, liquidez, confianza y z-score.</td></tr>
+              <tr><th scope="row">Z-score</th><td>Indica qué tan inusual es el spread frente a su comportamiento reciente.</td></tr>
+              <tr><th scope="row">Win rate</th><td>Porcentaje de operaciones simuladas que terminaron con utilidad positiva.</td></tr>
+              <tr><th scope="row">Sharpe ratio</th><td>Relación entre retorno y variabilidad; ayuda a comparar calidad, no solo ganancia.</td></tr>
+              <tr><th scope="row">Drawdown</th><td>Mayor caída del PnL desde un máximo anterior.</td></tr>
+              <tr><th scope="row">Circuit breaker</th><td>Protección que pausa ejecuciones cuando las pérdidas superan un límite.</td></tr>
+              <tr><th scope="row">GA</th><td>Algoritmo genético que prueba, mezcla y muta estrategias para buscar mejores parámetros.</td></tr>
+              <tr><th scope="row">Fitness</th><td>Nota usada por el GA para comparar qué estrategia funciona mejor.</td></tr>
+              <tr><th scope="row">Mutación</th><td>Cambio aleatorio pequeño en una estrategia para explorar nuevas soluciones.</td></tr>
+              <tr><th scope="row">Cruce</th><td>Combinación de parámetros de dos estrategias seleccionadas.</td></tr>
+              <tr><th scope="row">Replay</th><td>Serie de mercado guardada o sintética usada para repetir una evaluación comparable.</td></tr>
+              <tr><th scope="row">Backtest</th><td>Prueba de una estrategia contra datos pasados o reproducibles.</td></tr>
+              <tr><th scope="row">Demo rentable</th><td>Escenario sintético etiquetado que mantiene visible el flujo aun si el mercado real está plano.</td></tr>
+              <tr><th scope="row">WebSocket</th><td>Conexión que entrega cotizaciones nuevas en tiempo real sin recargar la página.</td></tr>
+              <tr><th scope="row">Auditoría</th><td>Registro de decisiones, costos, balances y motivos para poder verificar el resultado.</td></tr>
+            </tbody>
+          </table>
+          <p id="dictionaryEmpty" class="dictionary-empty" hidden>No encontré ese concepto. Prueba con otra palabra.</p>
+        </div>
+        <footer class="dictionary-credits">
+          <p class="ceja">Créditos</p>
+          <h3>Hecho para explicar, no para ocultar.</h3>
+          <p><strong>Concepto, diseño y desarrollo:</strong> Raúl Iván Rivera Pérez.</p>
+          <p>Mayab Arbitraje BTC combina Rust, Axum, datos públicos multi-exchange y optimización evolutiva. Es una demostración educativa con ejecuciones simuladas: no ofrece asesoría financiera ni opera fondos reales.</p>
+        </footer>
+      </div>
+    </aside>
+    <div id="paper-texture-overlay" aria-hidden="true"></div>
+    <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
+    <script src="/cursor.js?v=20260710-svg-cursor" type="module"></script>
+    <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
+    <script src="/app.js?v=20260710-early-reveal" type="module"></script>
   </body>
 </html>

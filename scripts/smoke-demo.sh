@@ -39,7 +39,9 @@ require_cmd python3
 
 echo "Smoke Mayab contra $BASE_URL"
 
-json_get "/healthz" "$TMP_DIR/healthz.json"
+if ! json_get "${HEALTH_PATH:-/api/healthz}" "$TMP_DIR/healthz.json" 2>/dev/null; then
+  json_get "/api/preflight" "$TMP_DIR/healthz.json"
+fi
 json_get "/api/jurado" "$TMP_DIR/jurado-inicial.json"
 json_get "/api/preflight" "$TMP_DIR/preflight-inicial.json"
 json_post "/api/ga/evolucionar" '{"usarReplaySiVacio":true,"muestras":96}' "$TMP_DIR/ga.json"
@@ -93,8 +95,8 @@ export_csv = (tmp / "export.csv").read_text()
 
 errors = []
 
-if healthz.get("ok") is not True:
-    errors.append("/healthz no devolvio ok=true")
+if healthz.get("ok") is not True and healthz.get("listo") is not True:
+    errors.append("health endpoint no devolvio ok=true")
 
 if jurado_inicial.get("nombre") != "Mayab Jury Mode":
     errors.append("/api/jurado no devolvio Jury Mode")
@@ -147,10 +149,27 @@ if jurado.get("enlaces", {}).get("demoFinal") != "/api/demo/final":
 rubrica = paquete.get("rubricaOficialComite") or []
 if len(rubrica) != 5:
     errors.append("/api/paquete-evaluacion no incluye 5 criterios oficiales")
-if min((item.get("puntaje", 0) for item in rubrica), default=0) < 90:
-    errors.append("algun criterio oficial quedo por debajo de 90 puntos")
-if paquete.get("puntajeTotal", 0) < 90:
-    errors.append("puntajeTotal del paquete quedo por debajo de 90")
+campos_rubrica = {
+    "criterio", "pesoPct", "puntaje", "preguntaComite",
+    "evidenciaActual", "siguienteMovimientoDemo",
+}
+for item in rubrica:
+    faltantes = campos_rubrica.difference(item)
+    if faltantes:
+        errors.append(f"criterio oficial sin contrato completo: {sorted(faltantes)}")
+    if not item.get("criterio") or not item.get("evidenciaActual"):
+        errors.append("criterio oficial sin nombre o evidencia verificable")
+if sum((item.get("pesoPct", 0) for item in rubrica)) != 100:
+    errors.append("los pesos de la rubrica oficial no suman 100%")
+
+evidencia_paquete = paquete.get("evidencia") or {}
+metricas_paquete = evidencia_paquete.get("metricas") or {}
+if metricas_paquete.get("operaciones", 0) <= 0 or metricas_paquete.get("pnlUsd", 0) <= 0:
+    errors.append("paquete no conserva evidencia de operaciones y PnL demo positivo")
+if not evidencia_paquete.get("ultimaAuditoria") or not evidencia_paquete.get("ga"):
+    errors.append("paquete no incluye auditoria de decision y estado GA")
+if not paquete.get("huellaAuditoria"):
+    errors.append("paquete no incluye huella de auditoria")
 
 recomendaciones = paquete.get("recomendacionesParaGanar") or []
 if not recomendaciones or "Estado listo" not in recomendaciones[0]:

@@ -1,201 +1,88 @@
-// Animación del Favicon - Mayab Arbitraje BTC
+// Favicon SVG reactivo de Mayab Edge.
+// El navegador conserva el formato vectorial; no se rasteriza mediante canvas.
 const DEBUG_ACTIVO =
   new URLSearchParams(location.search).has("debug") ||
   localStorage.getItem("mayabDebug") === "1";
 
-const BTC_PATH_STR = "M360-120v-80H240v-80h80v-400h-80v-80h120v-80h80v80h80v-80h80v85q52 14 86 56.5t34 98.5q0 29-10 55.5T682-497q35 21 56.5 57t21.5 80q0 66-47 113t-113 47v80h-80v-80h-80v80h-80Zm40-400h160q33 0 56.5-23.5T640-600q0-33-23.5-56.5T560-680H400v160Zm0 240h200q33 0 56.5-23.5T680-360q0-33-23.5-56.5T600-440H400v160Z";
-
 class FaviconAnimator {
   constructor() {
-    this.linkEl = document.getElementById("favicon");
-    if (!this.linkEl) {
-      // Fallback selector if ID is not ready
-      this.linkEl = document.querySelector("link[rel~='icon']");
-    }
-    
-    this.canvas = document.createElement("canvas");
-    this.canvas.width = 32;
-    this.canvas.height = 32;
-    this.ctx = this.canvas.getContext("2d");
-    this.btcPath = new Path2D(BTC_PATH_STR);
-
-    // States
-    this.angulo = 0;
-    this.velocidadRotacion = 0.04;
+    this.linkEl = document.getElementById("favicon") || document.querySelector("link[rel~='icon']");
     this.estadoSocket = "conectando";
     this.socketOk = undefined;
-    this.ultimoArbitrajeMs = 0;
-    this.intensidadFlash = 0;
-    this.timerId = null;
-    this.fps = 15;
-    this.intervalMs = 1000 / this.fps;
+    this.resetGananciaId = null;
+    this.movimientoReducido = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    this.init();
-  }
+    if (!this.linkEl) return;
 
-  init() {
-    // Escuchar eventos globales del dashboard
-    window.addEventListener("mayab:socket", (e) => {
-      this.estadoSocket = e.detail.texto;
-      this.socketOk = e.detail.ok;
+    window.addEventListener("mayab:socket", (evento) => {
+      this.estadoSocket = evento.detail?.texto || "conectando";
+      this.socketOk = evento.detail?.ok;
+      this.renderizar(false);
     });
 
-    window.addEventListener("mayab:arbitraje", () => {
-      this.ultimoArbitrajeMs = Date.now();
-      this.intensidadFlash = 1.0;
-    });
+    window.addEventListener("mayab:arbitraje", () => this.animarGanancia());
+    this.renderizar(false);
 
-    // Optimización de visibilidad
-    document.addEventListener("visibilitychange", () => {
-      this.actualizarBucle();
-    });
-
-    this.actualizarBucle();
-
-    if (DEBUG_ACTIVO) {
-      console.log("[Favicon] Animador de favicon inicializado y escuchando eventos.");
-    }
+    if (DEBUG_ACTIVO) console.log("[Favicon] SVG reactivo inicializado.");
   }
 
-  actualizarBucle() {
-    if (this.timerId) {
-      clearInterval(this.timerId);
-      this.timerId = null;
-    }
-
-    if (document.hidden) {
-      // Si la pestaña está oculta, bajar frecuencia drásticamente para ahorrar recursos
-      this.timerId = setInterval(() => this.tick(), 2000);
-    } else {
-      // Frecuencia normal de 15 FPS para una animación fluida pero eficiente
-      this.timerId = setInterval(() => this.tick(), this.intervalMs);
-    }
+  animarGanancia() {
+    window.clearTimeout(this.resetGananciaId);
+    this.renderizar(true);
+    this.resetGananciaId = window.setTimeout(() => this.renderizar(false), 1900);
   }
 
-  tick() {
-    this.update();
-    this.render();
+  colores(ganancia) {
+    if (ganancia) return { principal: "#22c55e", secundario: "#facc15", fondo: "#052e16" };
+    if (this.socketOk === false) return { principal: "#ef4444", secundario: "#fb7185", fondo: "#2b0b12" };
+    if (this.socketOk === undefined || ["conectando", "reconectando"].includes(this.estadoSocket)) {
+      return { principal: "#f59e0b", secundario: "#f97316", fondo: "#2a1605" };
+    }
+    return { principal: "#f7931a", secundario: "#22c55e", fondo: "#071a12" };
   }
 
-  update() {
-    const now = Date.now();
-    
-    // Decaimiento del destello de arbitraje (1.5 segundos de duración)
-    const timeSinceArbitraje = now - this.ultimoArbitrajeMs;
-    if (timeSinceArbitraje < 1500) {
-      this.intensidadFlash = 1.0 - (timeSinceArbitraje / 1500);
-    } else {
-      this.intensidadFlash = 0;
-    }
+  crearSvg(ganancia) {
+    const { principal, secundario, fondo } = this.colores(ganancia);
+    const animado = !this.movimientoReducido;
+    const animacionColor = animado
+      ? `<animate attributeName="stop-color" values="${principal};${secundario};${principal}" dur="2.4s" repeatCount="indefinite"/>`
+      : "";
 
-    // Calcular velocidad meta de rotación según estado de conexión
-    let targetVel = 0.04; // Conectado
-    if (this.socketOk === false) {
-      targetVel = 0; // Detener rotación si no hay enlace/datos
-    } else if (this.socketOk === undefined || this.estadoSocket === "conectando" || this.estadoSocket === "reconectando") {
-      targetVel = 0.015; // Rotación muy lenta
-    }
-
-    // Sumar impulso de velocidad si hay destello por arbitraje reciente
-    if (this.intensidadFlash > 0) {
-      this.velocidadRotacion = targetVel + (0.35 * this.intensidadFlash);
-    } else {
-      this.velocidadRotacion = targetVel;
-    }
-
-    this.angulo += this.velocidadRotacion;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+      <defs>
+        <linearGradient id="g" x1="4" y1="28" x2="28" y2="4" gradientUnits="userSpaceOnUse">
+          <stop stop-color="${principal}">${animacionColor}</stop>
+          <stop offset="1" stop-color="${secundario}"/>
+        </linearGradient>
+      </defs>
+      <style>
+        .aro{transform-origin:16px 16px;${animado ? "animation:pulso 1.8s ease-in-out infinite" : ""}}
+        .grafica{stroke-dasharray:29;stroke-dashoffset:${ganancia && animado ? "29;animation:sube .72s ease-out forwards" : "0"}}
+        .punta{transform-origin:25px 7px;${ganancia && animado ? "animation:salta .72s ease-out" : ""}}
+        .btc{transform-origin:16px 16px;${ganancia && animado ? "animation:moneda .72s ease-out" : ""}}
+        @keyframes pulso{50%{opacity:.6;transform:scale(.94)}}
+        @keyframes sube{to{stroke-dashoffset:0}}
+        @keyframes salta{0%,45%{opacity:0;transform:scale(.3)}100%{opacity:1;transform:scale(1)}}
+        @keyframes moneda{45%{transform:translateY(-1.5px) scale(1.12)}}
+      </style>
+      <rect width="32" height="32" rx="8" fill="${fondo}"/>
+      <circle class="aro" cx="16" cy="16" r="12.5" fill="none" stroke="url(#g)" stroke-width="1.5" opacity=".9"/>
+      <circle cx="13.5" cy="16" r="7.4" fill="url(#g)"/>
+      <path class="btc" fill="#fff" d="M11.1 10.8h1.2V9.5h1.2v1.3h.9V9.5h1.2v1.4c1.6.3 2.5 1.1 2.5 2.4 0 .9-.4 1.6-1.2 2 1 .4 1.6 1.2 1.6 2.4 0 1.7-1.2 2.8-3 3.1v1.6h-1.2v-1.5h-1v1.5h-1.2v-1.5h-1.3v-1.5h1.1v-7.1h-.8v-1.5Zm3 4c1.5 0 2.3-.3 2.3-1.2 0-.8-.6-1.1-1.9-1.1h-.8v2.3h.4Zm.3 4.4c1.6 0 2.4-.4 2.4-1.4 0-.9-.7-1.3-2.5-1.3h-.6v2.7h.7Z"/>
+      <path class="grafica" d="M18.5 21.5 21 18l2 1 3.5-5" fill="none" stroke="#dcfce7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path class="punta" d="m24 14 2.8-.4-.3 2.8" fill="none" stroke="#dcfce7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
   }
 
-  render() {
-    const ctx = this.ctx;
-    const now = Date.now();
-    ctx.clearRect(0, 0, 32, 32);
-
-    // Calcular pulso sinusoidal para efectos visuales (ciclo de 2 segundos)
-    const pulsePhase = (now % 2000) / 2000;
-    const pulseValue = Math.sin(pulsePhase * Math.PI * 2) * 0.5 + 0.5;
-
-    // Determinar color de base según estado de conexión
-    let r, g, b;
-    if (this.socketOk === false) {
-      // Error: Rojo
-      r = 239; g = 68; b = 68;
-    } else if (this.socketOk === undefined || this.estadoSocket === "conectando" || this.estadoSocket === "reconectando") {
-      // Transición/Cargando: Naranja/Ambar
-      r = 245; g = 158; b = 11;
-    } else {
-      // Correcto: Verde Esmeralda
-      r = 16; g = 185; b = 129;
-    }
-
-    // Mezclar con color oro brillante (251, 191, 36) si hay flash de arbitraje activo
-    if (this.intensidadFlash > 0) {
-      r = Math.round(r * (1 - this.intensidadFlash) + 251 * this.intensidadFlash);
-      g = Math.round(g * (1 - this.intensidadFlash) + 191 * this.intensidadFlash);
-      b = Math.round(b * (1 - this.intensidadFlash) + 36 * this.intensidadFlash);
-    }
-
-    // 1. Dibujar brillo de fondo (glow central)
-    let glowAlpha = 0.08 + 0.06 * pulseValue;
-    if (this.intensidadFlash > 0) {
-      glowAlpha = glowAlpha * (1 - this.intensidadFlash) + 0.4 * this.intensidadFlash;
-    }
-    ctx.beginPath();
-    ctx.arc(16, 16, 11, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${glowAlpha})`;
-    ctx.fill();
-
-    // 2. Dibujar anillo exterior indicador
-    let ringAlpha = 0.4 + 0.3 * pulseValue;
-    if (this.intensidadFlash > 0) {
-      ringAlpha = ringAlpha * (1 - this.intensidadFlash) + 0.9 * this.intensidadFlash;
-    }
-    ctx.beginPath();
-    ctx.arc(16, 16, 14, 0, Math.PI * 2);
-    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${ringAlpha})`;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // 3. Dibujar símbolo de Bitcoin (BTC) rotado y escalado
-    ctx.save();
-    ctx.translate(16, 16);
-    ctx.rotate(this.angulo);
-    
-    // Escala del símbolo (aprox 20px de alto en caja de 960px)
-    const scale = 20 / 960;
-    ctx.scale(scale, scale);
-    ctx.translate(-480, 480);
-
-    // Color del símbolo Bitcoin
-    let btcFill;
-    if (this.socketOk === false) {
-      btcFill = "#64748b"; // Gris si está desconectado
-    } else {
-      // Mezclar naranja Bitcoin tradicional (#F7931A) con amarillo oro brillante durante flash
-      if (this.intensidadFlash > 0) {
-        const rBtc = Math.round(247 * (1 - this.intensidadFlash) + 251 * this.intensidadFlash);
-        const gBtc = Math.round(147 * (1 - this.intensidadFlash) + 191 * this.intensidadFlash);
-        const bBtc = Math.round(26 * (1 - this.intensidadFlash) + 36 * this.intensidadFlash);
-        btcFill = `rgb(${rBtc}, ${gBtc}, ${bBtc})`;
-      } else {
-        btcFill = "#f7931a"; // Naranja standard
-      }
-    }
-
-    ctx.fillStyle = btcFill;
-    ctx.fill(this.btcPath);
-    ctx.restore();
-
-    // 4. Actualizar favicon en la cabecera
-    if (this.linkEl) {
-      this.linkEl.href = this.canvas.toDataURL("image/png");
-    }
+  renderizar(ganancia) {
+    const svg = this.crearSvg(ganancia);
+    this.linkEl.type = "image/svg+xml";
+    this.linkEl.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
   }
 }
 
-// Iniciar cuando el DOM esté listo
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => new FaviconAnimator());
+  document.addEventListener("DOMContentLoaded", () => new FaviconAnimator(), { once: true });
 } else {
   new FaviconAnimator();
 }

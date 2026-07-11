@@ -1,4 +1,4 @@
-name: Quality gates
+name: CI/CD
 
 on:
   push:
@@ -36,3 +36,80 @@ jobs:
             sleep 1
           done
           ./scripts/smoke-demo.sh
+
+  deploy:
+    name: Deploy Cloud Run
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: mayab-cloud-run-production
+      cancel-in-progress: false
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+      MIN_INSTANCES: "1"
+      MAX_INSTANCES: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Build and publish immutable image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="${REGION}-docker.pkg.dev"
+          image="${registry}/${PROJECT}/${GAR_REPOSITORY}/${SERVICE}:${GITHUB_SHA}"
+          gcloud auth configure-docker "$registry" --quiet
+          docker build --tag "$image" .
+          docker push "$image"
+          echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy one warm production instance
+        env:
+          IMAGE: ${{ steps.image.outputs.uri }}
+        run: ./scripts/deploy-cloud-run.sh
+
+      - name: Resolve public URL
+        id: service
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "$SERVICE" \
+            --project "$PROJECT" \
+            --region "$REGION" \
+            --format='value(status.url)')
+          test -n "$url"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Public smoke
+        env:
+          BASE_URL: ${{ steps.service.outputs.url }}
+        run: ./scripts/smoke-demo.sh
+
+      - name: Leave jury demo ready
+        if: always() && steps.service.outputs.url != ''
+        env:
+          BASE_URL: ${{ steps.service.outputs.url }}
+        run: |
+          curl -fsS -X POST "$BASE_URL/api/demo/final" \
+            -H 'Content-Type: application/json' \
+            -d '{}' >/dev/null

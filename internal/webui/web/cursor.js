@@ -3,81 +3,67 @@ if (window.matchMedia('(pointer: fine)').matches) {
 }
 
 function initCursor() {
-  const dot = document.createElement('div');
-  dot.className = 'custom-cursor-dot';
-  dot.innerHTML = '<span class="custom-cursor-icon" aria-hidden="true"></span>';
+  const cursor = document.createElement('span');
+  cursor.className = 'custom-cursor';
+  cursor.setAttribute('aria-hidden', 'true');
+  cursor.hidden = true;
 
-  const ring = document.createElement('div');
-  ring.className = 'custom-cursor-ring';
-
-  document.body.appendChild(dot);
-  document.body.appendChild(ring);
+  const cursorIcon = document.createElement('img');
+  cursorIcon.src = '/icons/currency_bitcoin.svg';
+  cursorIcon.alt = '';
+  cursorIcon.draggable = false;
+  cursor.appendChild(cursorIcon);
+  document.body.appendChild(cursor);
 
   let mouseX = window.innerWidth / 2;
   let mouseY = window.innerHeight / 2;
-  let ringX = mouseX;
-  let ringY = mouseY;
   let hasMoved = false;
+  let animationFrame = 0;
 
-  window.addEventListener('mousemove', (e) => {
+  window.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
     mouseX = e.clientX;
     mouseY = e.clientY;
     if (!hasMoved) {
       hasMoved = true;
-      dot.style.opacity = '1';
-      ring.style.opacity = '1';
+      cursor.hidden = false;
     }
-  });
+    if (!animationFrame) animationFrame = requestAnimationFrame(updateCursor);
+  }, { passive: true });
 
-  // Target interactives to grow the cursor
-  const hoverSelector = 'a, button, [role="button"], input, select, textarea, .tab-btn, .btn-link, .scroll-indicator, .landing-cta, .landing-nav-link, .landing-brand';
+  const interactiveSelector = [
+    'a[href]',
+    'button:not(:disabled)',
+    '[role="button"]:not([aria-disabled="true"])',
+    'input:not(:disabled)',
+    'select:not(:disabled)',
+    'textarea:not(:disabled)',
+    '[tabindex]:not([tabindex="-1"])',
+    '.scroll-indicator',
+    '.landing-brand',
+  ].join(',');
 
-  document.addEventListener('mouseover', (e) => {
-    const target = e.target.closest(hoverSelector);
-    if (target && !target.disabled) {
-      dot.classList.add('hovering');
-      ring.classList.add('hovering');
-    } else {
-      dot.classList.remove('hovering');
-      ring.classList.remove('hovering');
-    }
-  });
+  document.addEventListener('pointerover', (event) => {
+    if (event.pointerType === 'touch') return;
+    cursor.classList.toggle('is-clickable', Boolean(event.target.closest?.(interactiveSelector)));
+  }, { passive: true });
 
-  // Handle click animations
-  document.addEventListener('mousedown', () => {
-    dot.classList.add('clicking');
-    ring.classList.add('clicking');
-  });
-
-  document.addEventListener('mouseup', () => {
-    dot.classList.remove('clicking');
-    ring.classList.remove('clicking');
-  });
+  document.addEventListener('pointerdown', () => cursor.classList.add('is-pressed'), { passive: true });
+  document.addEventListener('pointerup', () => cursor.classList.remove('is-pressed'), { passive: true });
 
   // Handle visibility transitions
   document.addEventListener('mouseleave', () => {
-    dot.style.opacity = '0';
-    ring.style.opacity = '0';
+    cursor.hidden = true;
+    cursor.classList.remove('is-clickable', 'is-pressed');
   });
 
   document.addEventListener('mouseenter', () => {
-    if (hasMoved) {
-      dot.style.opacity = '1';
-      ring.style.opacity = '1';
-    }
+    if (hasMoved) cursor.hidden = false;
   });
 
   function updateCursor() {
-    // Dot stays attached directly to mouse coordinates
-    dot.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0)`;
-    
-    // Ring trails behind with lerp
-    ringX += (mouseX - ringX) * 0.15;
-    ringY += (mouseY - ringY) * 0.15;
-    ring.style.transform = `translate3d(${ringX}px, ${ringY}px, 0)`;
+    animationFrame = 0;
 
-    requestAnimationFrame(updateCursor);
+    cursor.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0)`;
   }
-
-  requestAnimationFrame(updateCursor);
 }
