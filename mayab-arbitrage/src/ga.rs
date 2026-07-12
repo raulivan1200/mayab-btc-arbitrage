@@ -10,17 +10,17 @@ use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{EstadoGenetico, Operacion};
+use crate::types::{EstadoGenetico, MoneyUnits, Operacion, QtyUnits};
 
 /// Score canónico compartido por ejecución, explicación y entrenamiento GA.
 /// Mantener esta transformación en un solo sitio evita que el campeón se
 /// evalúe con features distintas de las que gobiernan el motor.
 pub struct FeaturesScore {
-    pub utilidad_usd: f64,
+    pub utilidad_usd: MoneyUnits,
     pub latencia_ms: i64,
     pub tolerancia_latencia_ms: i64,
-    pub cantidad_btc: f64,
-    pub max_operacion_btc: f64,
+    pub cantidad_btc: QtyUnits,
+    pub max_operacion_btc: QtyUnits,
     pub confiabilidad: f64,
     pub z_score: f64,
 }
@@ -74,17 +74,20 @@ impl Default for ConfigGa {
 pub struct EstrategiaGa {
     pub pesos: [f64; 5],
     pub umbral_min_spread_bps: f64,
-    pub max_operacion_btc: f64,
+    pub max_operacion_btc: QtyUnits,
     pub tolerancia_latencia_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Genoma {
+pub(crate) struct Genoma {
     pesos: [f64; 5],
     umbral_min_spread_bps: f64,
-    max_operacion_btc: f64,
+    max_operacion_btc: QtyUnits,
     tolerancia_latencia_ms: i64,
     fitness: f64,
+    objetivos: [f64; 4],
+    rank: usize,
+    crowding_distance: f64,
 }
 
 impl Genoma {
@@ -92,9 +95,12 @@ impl Genoma {
         Self {
             pesos: [0.40, 0.20, 0.20, 0.10, 0.10],
             umbral_min_spread_bps: 0.65,
-            max_operacion_btc: 0.18,
+            max_operacion_btc: (0.18),
             tolerancia_latencia_ms: 4500,
             fitness: 0.0,
+            objetivos: [0.0; 4],
+            rank: 0,
+            crowding_distance: 0.0,
         }
     }
 
@@ -108,9 +114,12 @@ impl Genoma {
                 rng.gen_range(0.03..0.35),
             ],
             umbral_min_spread_bps: rng.gen_range(0.20..4.50),
-            max_operacion_btc: rng.gen_range(0.03..0.60),
+            max_operacion_btc: (rng.gen_range(0.03..0.60)),
             tolerancia_latencia_ms: rng.gen_range(900..7000),
             fitness: 0.0,
+            objetivos: [0.0; 4],
+            rank: 0,
+            crowding_distance: 0.0,
         };
         g.normalizar();
         g
@@ -134,6 +143,105 @@ impl Genoma {
         self.max_operacion_btc = self.max_operacion_btc.clamp(0.01, 1.25);
         self.tolerancia_latencia_ms = self.tolerancia_latencia_ms.clamp(250, 15_000);
     }
+
+    fn domina(&self, otro: &Genoma) -> bool {
+        let mut estricto = false;
+        for i in 0..4 {
+            if self.objetivos[i] < otro.objetivos[i] {
+                return false;
+            }
+            if self.objetivos[i] > otro.objetivos[i] {
+                estricto = true;
+            }
+        }
+        estricto
+    }
+}
+
+fn fast_non_dominated_sort(poblacion: &mut [Genoma]) -> Vec<Vec<usize>> {
+    let n = poblacion.len();
+    if n == 0 {
+        return vec![];
+    }
+    let mut fronts: Vec<Vec<usize>> = vec![vec![]];
+    let mut domination_count = vec![0; n];
+    let mut dominated_list: Vec<Vec<usize>> = vec![vec![]; n];
+
+    for p in 0..n {
+        for q in 0..n {
+            if p == q {
+                continue;
+            }
+            if poblacion[p].domina(&poblacion[q]) {
+                dominated_list[p].push(q);
+            } else if poblacion[q].domina(&poblacion[p]) {
+                domination_count[p] += 1;
+            }
+        }
+        if domination_count[p] == 0 {
+            poblacion[p].rank = 0;
+            fronts[0].push(p);
+        }
+    }
+
+    let mut i = 0;
+    while !fronts[i].is_empty() {
+        let mut next_front = vec![];
+        for &p in &fronts[i] {
+            for &q in &dominated_list[p] {
+                domination_count[q] -= 1;
+                if domination_count[q] == 0 {
+                    poblacion[q].rank = i + 1;
+                    next_front.push(q);
+                }
+            }
+        }
+        i += 1;
+        if next_front.is_empty() {
+            break;
+        }
+        fronts.push(next_front);
+    }
+
+    if fronts.last().map(|f| f.is_empty()).unwrap_or(false) {
+        fronts.pop();
+    }
+    fronts
+}
+
+fn crowding_distance_assignment(poblacion: &mut [Genoma], front: &[usize]) {
+    let l = front.len();
+    if l == 0 {
+        return;
+    }
+    for &idx in front {
+        poblacion[idx].crowding_distance = 0.0;
+    }
+    for m in 0..4 {
+        let mut front_sorted = front.to_vec();
+        front_sorted.sort_by(|&a, &b| {
+            poblacion[a].objetivos[m]
+                .partial_cmp(&poblacion[b].objetivos[m])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        poblacion[front_sorted[0]].crowding_distance = f64::INFINITY;
+        poblacion[front_sorted[l - 1]].crowding_distance = f64::INFINITY;
+
+        let obj_min = poblacion[front_sorted[0]].objetivos[m];
+        let obj_max = poblacion[front_sorted[l - 1]].objetivos[m];
+        let diff = (obj_max - obj_min).max(1e-9);
+
+        for i in 1..(l.saturating_sub(1)) {
+            let prev = front_sorted[i - 1];
+            let next = front_sorted[i + 1];
+            let current = front_sorted[i];
+            if poblacion[current].crowding_distance != f64::INFINITY {
+                poblacion[current].crowding_distance +=
+                    (poblacion[next].objetivos[m] - poblacion[prev].objetivos[m]) / diff;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -151,13 +259,15 @@ pub struct EstadoGa {
     pub diversidad: f64,
     pub mejores_pesos: [f64; 5],
     pub umbral_optimizado: f64,
-    pub max_operacion_optimizada_btc: f64,
+    pub max_operacion_optimizada_btc: QtyUnits,
     pub tolerancia_latencia_ms: i64,
     pub operaciones_evaluadas: usize,
     pub fallos_evaluados: usize,
     pub mejora_generacional: f64,
     pub temperatura_annealing: f64,
     pub inyecciones_diferenciales: usize,
+    islas: [Vec<Genoma>; 4],
+    config_islas: [ConfigGa; 4],
     poblacion: Vec<Genoma>,
     rng: StdRng,
 }
@@ -171,6 +281,36 @@ impl Default for EstadoGa {
         while poblacion.len() < config.tamano_poblacion {
             poblacion.push(Genoma::random(&mut rng));
         }
+
+        // Inicializar 4 islas
+        let mut islas: [Vec<Genoma>; 4] = core::array::from_fn(|_| Vec::new());
+        for (i, genoma) in poblacion.iter().enumerate() {
+            islas[i % 4].push(genoma.clone());
+        }
+
+        // Configuraciones base (Meta-GA mutará esto)
+        let config_islas = [
+            ConfigGa {
+                tasa_mutacion: 0.1,
+                tasa_cruce: 0.8,
+                ..config
+            }, // Nicho 0: Tendencia
+            ConfigGa {
+                tasa_mutacion: 0.2,
+                tasa_cruce: 0.7,
+                ..config
+            }, // Nicho 1: Rango
+            ConfigGa {
+                tasa_mutacion: 0.3,
+                tasa_cruce: 0.6,
+                ..config
+            }, // Nicho 2: Volátil
+            ConfigGa {
+                tasa_mutacion: 0.05,
+                tasa_cruce: 0.9,
+                ..config
+            }, // Nicho 3: Calmo
+        ];
         Self {
             config,
             generacion: 0,
@@ -180,13 +320,15 @@ impl Default for EstadoGa {
             diversidad: 1.0,
             mejores_pesos: [0.40, 0.20, 0.20, 0.10, 0.10],
             umbral_optimizado: 0.65,
-            max_operacion_optimizada_btc: 0.18,
+            max_operacion_optimizada_btc: (0.18),
             tolerancia_latencia_ms: 4500,
             operaciones_evaluadas: 0,
             fallos_evaluados: 0,
             mejora_generacional: 0.0,
             temperatura_annealing: 1.0,
             inyecciones_diferenciales: 0,
+            islas,
+            config_islas,
             poblacion,
             rng,
         }
@@ -225,12 +367,58 @@ impl EstadoGa {
             return;
         }
 
-        for genoma in &mut self.poblacion {
-            let ventana = evaluar_genoma(genoma, operaciones, fallos);
-            genoma.fitness = fitness_genoma(genoma, &ventana);
+        for i in 0..4 {
+            for genoma in &mut self.islas[i] {
+                let ventana = evaluar_genoma(genoma, operaciones, fallos);
+                // Nichos: Alteramos el fitness escalar según el nicho
+                let mut fitness_modificado = fitness_genoma(genoma, &ventana);
+                match i {
+                    0 => fitness_modificado += ventana.pnl_total * 0.5, // Tendencia (busca utilidad)
+                    1 => fitness_modificado += ventana.sharpe * 10.0,   // Rango (busca sharpe)
+                    2 => fitness_modificado += ventana.win_rate * 50.0, // Volátil (busca win rate)
+                    3 => fitness_modificado -= ventana.max_drawdown * 0.1, // Calmo (minimiza riesgo)
+                    _ => {}
+                }
+                genoma.fitness = fitness_modificado;
+                genoma.objetivos[0] = ventana.pnl_total;
+                genoma.objetivos[1] = ventana.sharpe;
+                genoma.objetivos[2] = -ventana.max_drawdown;
+                genoma.objetivos[3] = ventana.win_rate;
+            }
+            let fronts = fast_non_dominated_sort(&mut self.islas[i]);
+            for front in &fronts {
+                crowding_distance_assignment(&mut self.islas[i], front);
+            }
+            self.islas[i].sort_by(|a, b| {
+                if a.rank != b.rank {
+                    a.rank.cmp(&b.rank)
+                } else {
+                    b.crowding_distance
+                        .partial_cmp(&a.crowding_distance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            });
         }
-        self.poblacion
-            .sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
+
+        // Reconstruir la población aplanada (para mantener compatibilidad con otras funciones)
+        self.poblacion.clear();
+        for isla in &self.islas {
+            self.poblacion.extend(isla.iter().cloned());
+        }
+
+        let fronts = fast_non_dominated_sort(&mut self.poblacion);
+        for front in &fronts {
+            crowding_distance_assignment(&mut self.poblacion, front);
+        }
+        self.poblacion.sort_by(|a, b| {
+            if a.rank != b.rank {
+                a.rank.cmp(&b.rank)
+            } else {
+                b.crowding_distance
+                    .partial_cmp(&a.crowding_distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
 
         let fitness_anterior = self.mejor_fitness;
         let mejor = self.poblacion[0].clone();
@@ -271,6 +459,27 @@ impl EstadoGa {
         self.aplicar_recocido_simulado(operaciones, fallos, &mut siguiente, elite);
         self.inyectar_evolucion_diferencial(operaciones, fallos, &mut siguiente, elite);
 
+        // Migración de islas y meta-GA
+        if self.generacion > 0 && self.generacion % 5 == 0 {
+            // Migrar élite entre islas (0->1, 1->2, 2->3, 3->0)
+            for i in 0..4 {
+                if !self.islas[i].is_empty() {
+                    let emigrante = self.islas[i][0].clone();
+                    // Meta-GA: mutar ligeramente las tasas de cruce y mutación
+                    self.config_islas[i].tasa_mutacion = (self.config_islas[i].tasa_mutacion
+                        + self.rng.gen_range(-0.02..0.02))
+                    .clamp(0.01, 0.4);
+                    self.config_islas[i].tasa_cruce = (self.config_islas[i].tasa_cruce
+                        + self.rng.gen_range(-0.05..0.05))
+                    .clamp(0.5, 0.95);
+                    let dest = (i + 1) % 4;
+                    if let Some(last) = self.islas[dest].last_mut() {
+                        *last = emigrante;
+                    }
+                }
+            }
+        }
+
         if self.diversidad < 0.04 {
             for genoma in siguiente.iter_mut().skip(elite).step_by(3) {
                 *genoma = Genoma::random(&mut self.rng);
@@ -280,8 +489,24 @@ impl EstadoGa {
         for genoma in &mut siguiente {
             let ventana = evaluar_genoma(genoma, operaciones, fallos);
             genoma.fitness = fitness_genoma(genoma, &ventana);
+            genoma.objetivos[0] = ventana.pnl_total;
+            genoma.objetivos[1] = ventana.sharpe;
+            genoma.objetivos[2] = -ventana.max_drawdown;
+            genoma.objetivos[3] = ventana.win_rate;
         }
-        siguiente.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
+        let fronts = fast_non_dominated_sort(&mut siguiente);
+        for front in &fronts {
+            crowding_distance_assignment(&mut siguiente, front);
+        }
+        siguiente.sort_by(|a, b| {
+            if a.rank != b.rank {
+                a.rank.cmp(&b.rank)
+            } else {
+                b.crowding_distance
+                    .partial_cmp(&a.crowding_distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
         let mejor_hibrido = siguiente[0].clone();
         let fitness_antes_hibrido = self.mejor_fitness;
         self.mejor_fitness = mejor_hibrido.fitness;
@@ -326,6 +551,7 @@ impl EstadoGa {
             mejora_generacional: self.mejora_generacional,
             temperatura_annealing: self.temperatura_annealing,
             inyecciones_diferenciales: self.inyecciones_diferenciales,
+            frontera_pareto: vec![],
             metaheuristicas: vec![
                 "GA + recocido simulado".into(),
                 "GA + evolucion diferencial".into(),
@@ -384,15 +610,20 @@ impl EstadoGa {
         }
     }
 
-    fn torneo(&mut self, n: usize) -> Genoma {
-        let mut mejor = self.poblacion[self.rng.gen_range(0..self.poblacion.len())].clone();
-        for _ in 1..n {
-            let candidato = self.poblacion[self.rng.gen_range(0..self.poblacion.len())].clone();
-            if candidato.fitness > mejor.fitness {
-                mejor = candidato;
+    fn torneo(&mut self, k: usize) -> Genoma {
+        let mut mejor = &self.poblacion[self.rng.gen_range(0..self.poblacion.len())];
+        for _ in 1..k {
+            let retador = &self.poblacion[self.rng.gen_range(0..self.poblacion.len())];
+            let gana = if retador.rank != mejor.rank {
+                retador.rank < mejor.rank
+            } else {
+                retador.crowding_distance > mejor.crowding_distance
+            };
+            if gana {
+                mejor = retador;
             }
         }
-        mejor
+        mejor.clone()
     }
 
     fn cruzar(&mut self, a: &Genoma, b: &Genoma) -> Genoma {
@@ -507,9 +738,17 @@ impl EstadoGa {
                     * (poblacion[b].tolerancia_latencia_ms - poblacion[c].tolerancia_latencia_ms)
                         as f64) as i64;
             candidato.normalizar();
+            candidato.normalizar();
             let ventana = evaluar_genoma(&candidato, operaciones, fallos);
             candidato.fitness = fitness_genoma(&candidato, &ventana);
-            if candidato.fitness > poblacion[destino].fitness {
+            candidato.objetivos[0] = ventana.pnl_total;
+            candidato.objetivos[1] = ventana.sharpe;
+            candidato.objetivos[2] = -ventana.max_drawdown;
+            candidato.objetivos[3] = ventana.win_rate;
+            if candidato.domina(&poblacion[destino])
+                || (!poblacion[destino].domina(&candidato)
+                    && candidato.fitness > poblacion[destino].fitness)
+            {
                 poblacion[destino] = candidato;
             }
         }
@@ -663,11 +902,12 @@ fn fitness_genoma(g: &Genoma, base: &VentanaFitness) -> f64 {
 }
 
 fn utilidad_esperada(op: &Operacion) -> f64 {
-    if op.utilidad_esperada_usd.is_finite() && op.utilidad_esperada_usd.abs() > f64::EPSILON {
+    if op.utilidad_esperada_usd.abs() > 0.0 {
         op.utilidad_esperada_usd
     } else {
-        (op.precio_venta - op.precio_compra) * op.cantidad_btc
-            - (op.costos.total_usd - op.costos.seleccion_adversa_usd).max(0.0)
+        let spread = (op.precio_venta - op.precio_compra) * op.cantidad_btc;
+        let costos = op.costos.total_usd - op.costos.seleccion_adversa_usd;
+        spread - costos.max(0.0)
     }
 }
 
@@ -687,8 +927,8 @@ fn evaluar_pesos(g: &Genoma, operaciones: &[Operacion]) -> (f64, f64) {
         let entry = rutas.entry(ruta).or_insert((0, 0));
         entry.0 += usize::from(op.utilidad_usd > 0.0);
         entry.1 += 1;
-        let capital = (op.precio_compra * op.cantidad_btc).max(0.00000001);
-        netos_bps.push(utilidad_esperada(op) / capital * 10_000.0);
+        let capital = op.precio_compra * op.cantidad_btc;
+        netos_bps.push(utilidad_esperada(op) / capital.max(0.00000001) * 10_000.0);
     }
     let media = netos_bps.iter().sum::<f64>() / netos_bps.len() as f64;
     let desv = if netos_bps.len() > 1 {
@@ -712,11 +952,11 @@ fn evaluar_pesos(g: &Genoma, operaciones: &[Operacion]) -> (f64, f64) {
         let prediccion = score_canonico(
             &g.pesos,
             FeaturesScore {
-                utilidad_usd: utilidad_esperada(op),
+                utilidad_usd: (utilidad_esperada(op)),
                 latencia_ms: op.latencia_max_ms,
                 tolerancia_latencia_ms: g.tolerancia_latencia_ms,
                 cantidad_btc: op.cantidad_btc,
-                max_operacion_btc: max_cantidad,
+                max_operacion_btc: (max_cantidad),
                 confiabilidad: wins as f64 / total.max(1) as f64,
                 z_score,
             },
@@ -766,6 +1006,8 @@ mod tests {
 
     fn op(utilidad: f64, parcial: bool) -> Operacion {
         Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: format!("{utilidad}"),
             compra_en: "A".into(),
             venta_en: "B".into(),

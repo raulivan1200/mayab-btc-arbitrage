@@ -2,11 +2,32 @@
 //!
 //! Los nombres Rust se mantienen en `snake_case`; los nombres JSON usan el
 //! contrato camelCase esperado por el frontend mediante atributos Serde.
+//!
+//! El contrato público conserva números JSON. El order book interno sí usa
+//! enteros escalados y tipos distintos para precio/cantidad; el resto del
+//! dominio mantiene aliases semánticos `f64` mientras la migración financiera
+//! se completa por módulo, sin afirmar una precisión que todavía no existe.
 
 use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+
+// ---------------------------------------------------------------------------
+// Alias financieros del contrato
+// ---------------------------------------------------------------------------
+
+/// Alias semánticos temporales. Aclaran firmas del dominio, pero aún no
+/// impiden operaciones entre unidades en tiempo de compilación.
+pub type PriceUnits = f64;
+pub type QtyUnits = f64;
+pub type MoneyUnits = f64;
+pub type RatePpb = f64;
+
+// ---------------------------------------------------------------------------
+// NivelOrden (se mantiene f64 para JSON bids/asks arrays)
+// ---------------------------------------------------------------------------
 
 /// Nivel individual de un libro de órdenes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -20,16 +41,16 @@ pub struct NivelOrden {
 pub struct Cotizacion {
     pub exchange: String,
     pub par: String,
-    pub bid: f64,
+    pub bid: PriceUnits,
     #[serde(rename = "bidCantidad")]
-    pub bid_cantidad: f64,
-    pub ask: f64,
+    pub bid_cantidad: QtyUnits,
+    pub ask: PriceUnits,
     #[serde(rename = "askCantidad")]
-    pub ask_cantidad: f64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bids: Vec<NivelOrden>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asks: Vec<NivelOrden>,
+    pub ask_cantidad: QtyUnits,
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub bids: SmallVec<[NivelOrden; 10]>,
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub asks: SmallVec<[NivelOrden; 10]>,
     #[serde(rename = "eventoUnixMs")]
     pub evento_unix_ms: i64,
     #[serde(rename = "recibidaEn")]
@@ -63,54 +84,75 @@ pub struct Cotizacion {
 pub struct ExchangeConfig {
     pub nombre: String,
     #[serde(rename = "feeTaker")]
-    pub fee_taker: f64,
+    pub fee_taker: RatePpb,
     #[serde(rename = "retiroBtc")]
-    pub retiro_btc: f64,
+    pub retiro_btc: QtyUnits,
     pub confiabilidad: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum TipoOportunidad {
+    #[default]
+    Lineal,
+    Triangular,
+}
+
+/// Representa una etapa individual de un arbitraje triangular.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PiernaTriangular {
+    pub exchange: String,
+    pub par: String,
+    pub accion: String, // "COMPRA" o "VENTA"
+    pub precio: PriceUnits,
+    pub cantidad: QtyUnits,
 }
 
 /// Desglose de costos simulados de una operación.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CostosOperacion {
     #[serde(rename = "feeCompraUsd")]
-    pub fee_compra_usd: f64,
+    pub fee_compra_usd: MoneyUnits,
     #[serde(rename = "feeVentaUsd")]
-    pub fee_venta_usd: f64,
+    pub fee_venta_usd: MoneyUnits,
     #[serde(rename = "deslizamientoUsd")]
-    pub deslizamiento_usd: f64,
+    pub deslizamiento_usd: MoneyUnits,
     #[serde(rename = "retiroAmortUsd")]
-    pub retiro_amort_usd: f64,
+    pub retiro_amort_usd: MoneyUnits,
     #[serde(rename = "latenciaRiesgoUsd")]
-    pub latencia_riesgo_usd: f64,
+    pub latencia_riesgo_usd: MoneyUnits,
     #[serde(rename = "seleccionAdversaUsd", default)]
-    pub seleccion_adversa_usd: f64,
+    pub seleccion_adversa_usd: MoneyUnits,
     #[serde(rename = "totalUsd")]
-    pub total_usd: f64,
+    pub total_usd: MoneyUnits,
 }
 
 /// Oportunidad evaluada por el motor, ejecutable o descartada.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Oportunidad {
     pub id: String,
+    #[serde(default)]
+    pub tipo: TipoOportunidad,
     #[serde(rename = "compraEn")]
     pub compra_en: String,
     #[serde(rename = "ventaEn")]
     pub venta_en: String,
     pub par: String,
-    pub ask: f64,
-    pub bid: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub piernas: Vec<PiernaTriangular>,
+    pub ask: PriceUnits,
+    pub bid: PriceUnits,
     #[serde(rename = "diferencialBrutoUsd")]
-    pub diferencial_bruto_usd: f64,
+    pub diferencial_bruto_usd: MoneyUnits,
     #[serde(rename = "diferencialBrutoBps")]
     pub diferencial_bruto_bps: f64,
     #[serde(rename = "diferencialNetoUsd")]
-    pub diferencial_neto_usd: f64,
+    pub diferencial_neto_usd: MoneyUnits,
     #[serde(rename = "diferencialNetoBps")]
     pub diferencial_neto_bps: f64,
     #[serde(rename = "cantidadBtc")]
-    pub cantidad_btc: f64,
+    pub cantidad_btc: QtyUnits,
     #[serde(rename = "utilidadUsd")]
-    pub utilidad_usd: f64,
+    pub utilidad_usd: MoneyUnits,
     pub costos: CostosOperacion,
     #[serde(rename = "latenciaMaxMs")]
     pub latencia_max_ms: i64,
@@ -135,21 +177,25 @@ pub struct Oportunidad {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Operacion {
     pub id: String,
+    #[serde(default)]
+    pub tipo: TipoOportunidad,
     #[serde(rename = "compraEn")]
     pub compra_en: String,
     #[serde(rename = "ventaEn")]
     pub venta_en: String,
     pub par: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub piernas: Vec<PiernaTriangular>,
     #[serde(rename = "cantidadBtc")]
-    pub cantidad_btc: f64,
+    pub cantidad_btc: QtyUnits,
     #[serde(rename = "precioCompra")]
-    pub precio_compra: f64,
+    pub precio_compra: PriceUnits,
     #[serde(rename = "precioVenta")]
-    pub precio_venta: f64,
+    pub precio_venta: PriceUnits,
     #[serde(rename = "utilidadUsd")]
-    pub utilidad_usd: f64,
+    pub utilidad_usd: MoneyUnits,
     #[serde(rename = "utilidadEsperadaUsd", default)]
-    pub utilidad_esperada_usd: f64,
+    pub utilidad_esperada_usd: MoneyUnits,
     pub costos: CostosOperacion,
     pub parcial: bool,
     #[serde(rename = "ejecutadaEn")]
@@ -168,9 +214,9 @@ pub struct EventoEjecucion {
     pub severidad: String,
     pub tiempo: DateTime<Utc>,
     #[serde(rename = "utilidadUsd")]
-    pub utilidad_usd: f64,
+    pub utilidad_usd: MoneyUnits,
     #[serde(rename = "cantidadBtc")]
-    pub cantidad_btc: f64,
+    pub cantidad_btc: QtyUnits,
 }
 
 /// Transición auditable de la máquina de estados de ejecución por piernas.
@@ -186,9 +232,9 @@ pub struct TransicionEjecucion {
     pub pierna: String,
     pub detalle: String,
     #[serde(rename = "exposicionBtc")]
-    pub exposicion_btc: f64,
+    pub exposicion_btc: QtyUnits,
     #[serde(rename = "pnlRealizadoUsd")]
-    pub pnl_realizado_usd: f64,
+    pub pnl_realizado_usd: MoneyUnits,
     pub tiempo: DateTime<Utc>,
 }
 
@@ -199,9 +245,9 @@ pub struct Rebalanceo {
     pub desde: String,
     pub hacia: String,
     pub activo: String,
-    pub cantidad: f64,
+    pub cantidad: QtyUnits,
     #[serde(rename = "costoUsd")]
-    pub costo_usd: f64,
+    pub costo_usd: MoneyUnits,
     pub razon: String,
     pub tiempo: DateTime<Utc>,
 }
@@ -216,11 +262,11 @@ pub struct TransferenciaInventario {
     pub hacia: String,
     pub activo: String,
     #[serde(rename = "cantidadBruta")]
-    pub cantidad_bruta: f64,
+    pub cantidad_bruta: QtyUnits,
     #[serde(rename = "cantidadNeta")]
-    pub cantidad_neta: f64,
+    pub cantidad_neta: QtyUnits,
     #[serde(rename = "costoUsd")]
-    pub costo_usd: f64,
+    pub costo_usd: MoneyUnits,
     pub estado: String,
     #[serde(rename = "creadaEn")]
     pub creada_en: DateTime<Utc>,
@@ -249,21 +295,21 @@ pub struct AuditoriaDecision {
     #[serde(rename = "pesosGa")]
     pub pesos_ga: Vec<f64>,
     #[serde(rename = "utilidadUsd")]
-    pub utilidad_usd: f64,
+    pub utilidad_usd: MoneyUnits,
     #[serde(rename = "diferencialNetoBps")]
     pub diferencial_neto_bps: f64,
     #[serde(rename = "cantidadBtc")]
-    pub cantidad_btc: f64,
+    pub cantidad_btc: QtyUnits,
     #[serde(rename = "costoTotalUsd")]
-    pub costo_total_usd: f64,
+    pub costo_total_usd: MoneyUnits,
     #[serde(rename = "latenciaMaxMs")]
     pub latencia_max_ms: i64,
     #[serde(rename = "zScore")]
     pub z_score: f64,
     #[serde(rename = "compraUsdAntes")]
-    pub compra_usd_antes: f64,
+    pub compra_usd_antes: MoneyUnits,
     #[serde(rename = "ventaBtcAntes")]
-    pub venta_btc_antes: f64,
+    pub venta_btc_antes: QtyUnits,
     pub tiempo: DateTime<Utc>,
 }
 
@@ -288,7 +334,7 @@ pub struct EstadoMlEdge {
     #[serde(rename = "confianza")]
     pub confianza: f64,
     #[serde(rename = "expectedValueUsd")]
-    pub expected_value_usd: f64,
+    pub expected_value_usd: MoneyUnits,
     #[serde(rename = "survivalProbability")]
     pub survival_probability: f64,
     #[serde(rename = "fillProbability")]
@@ -304,9 +350,9 @@ pub struct EstadoMlEdge {
 pub struct Balance {
     pub exchange: String,
     #[serde(rename = "usd")]
-    pub usd: f64,
+    pub usd: MoneyUnits,
     #[serde(rename = "btc")]
-    pub btc: f64,
+    pub btc: QtyUnits,
 }
 
 /// Punto temporal usado en series de PnL y diferenciales.
@@ -380,11 +426,11 @@ pub struct Metricas {
     pub oportunidades: u64,
     pub operaciones: u64,
     #[serde(rename = "utilidadAcumuladaUsd")]
-    pub utilidad_acumulada_usd: f64,
+    pub utilidad_acumulada_usd: MoneyUnits,
     #[serde(rename = "capitalInicialUsd")]
-    pub capital_inicial_usd: f64,
+    pub capital_inicial_usd: MoneyUnits,
     #[serde(rename = "capitalActualUsd")]
-    pub capital_actual_usd: f64,
+    pub capital_actual_usd: MoneyUnits,
     #[serde(rename = "retornoBps")]
     pub retorno_bps: f64,
     #[serde(rename = "latenciaPromedioMs")]
@@ -397,7 +443,7 @@ pub struct Metricas {
     #[serde(rename = "winRate")]
     pub win_rate: f64,
     #[serde(rename = "maxDrawdownUsd")]
-    pub max_drawdown_usd: f64,
+    pub max_drawdown_usd: MoneyUnits,
     #[serde(rename = "operacionesTotales")]
     pub operaciones_totales: usize,
     #[serde(rename = "operacionesFallidas")]
@@ -405,22 +451,30 @@ pub struct Metricas {
     #[serde(rename = "rebalanceosTotales")]
     pub rebalanceos_totales: usize,
     #[serde(rename = "costoRebalanceoAcumuladoUsd")]
-    pub costo_rebalanceo_acumulado_usd: f64,
+    pub costo_rebalanceo_acumulado_usd: MoneyUnits,
     #[serde(rename = "circuitBreakerActivo")]
     pub circuit_breaker_activo: bool,
     #[serde(rename = "modoConservador")]
     pub modo_conservador: bool,
     #[serde(rename = "ejecucionEnCurso")]
     pub ejecucion_en_curso: bool,
+    #[serde(rename = "sortinoRatio", default)]
+    pub sortino_ratio: f64,
+    #[serde(rename = "kellyCriterion", default)]
+    pub kelly_criterion: f64,
+    #[serde(default)]
+    pub tobi: f64,
+    #[serde(default)]
+    pub bayesian: f64,
 }
 
 /// Configuración de costos, riesgo y parámetros operativos.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MapaCostos {
     #[serde(rename = "maxOperacionBtc")]
-    pub max_operacion_btc: f64,
+    pub max_operacion_btc: QtyUnits,
     #[serde(rename = "minUtilidadUsd")]
-    pub min_utilidad_usd: f64,
+    pub min_utilidad_usd: MoneyUnits,
     #[serde(rename = "minDiferencialNetoBps")]
     pub min_diferencial_neto_bps: f64,
     #[serde(rename = "deslizamientoBps")]
@@ -438,7 +492,7 @@ pub struct MapaCostos {
     #[serde(rename = "permitirCruceUsdUsdt", default)]
     pub permitir_cruce_usd_usdt: bool,
     #[serde(rename = "circuitBreakerPerdidaUsd")]
-    pub circuit_breaker_perdida_usd: f64,
+    pub circuit_breaker_perdida_usd: MoneyUnits,
     #[serde(rename = "circuitBreakerVentanaMin")]
     pub circuit_breaker_ventana_min: i64,
     #[serde(rename = "volatilidadUmbralBps")]
@@ -458,13 +512,20 @@ pub struct MapaCostos {
     #[serde(rename = "rebalanceMaxTransferPct")]
     pub rebalance_max_transfer_pct: f64,
     #[serde(rename = "costoRebalanceoUsd", default)]
-    pub costo_rebalanceo_usd: f64,
+    pub costo_rebalanceo_usd: MoneyUnits,
     #[serde(
         rename = "rebalanceSettlementMs",
         default = "default_rebalance_settlement_ms"
     )]
     pub rebalance_settlement_ms: i64,
     pub exchanges: HashMap<String, ExchangeConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PuntoPareto {
+    pub x: f64,
+    pub y: f64,
+    pub umbral: f64,
 }
 
 /// Estado público del algoritmo genético.
@@ -490,7 +551,7 @@ pub struct EstadoGenetico {
     #[serde(rename = "umbralOptimizado")]
     pub umbral_optimizado: f64,
     #[serde(rename = "maxOperacionOptimizadaBtc")]
-    pub max_operacion_optimizada_btc: f64,
+    pub max_operacion_optimizada_btc: QtyUnits,
     #[serde(rename = "toleranciaLatenciaMs")]
     pub tolerancia_latencia_ms: i64,
     #[serde(rename = "operacionesEvaluadas")]
@@ -503,6 +564,8 @@ pub struct EstadoGenetico {
     pub temperatura_annealing: f64,
     #[serde(rename = "inyeccionesDiferenciales")]
     pub inyecciones_diferenciales: usize,
+    #[serde(rename = "fronteraPareto", default)]
+    pub frontera_pareto: Vec<PuntoPareto>,
     #[serde(rename = "metaheuristicas")]
     pub metaheuristicas: Vec<String>,
 }
@@ -522,6 +585,24 @@ pub struct EstadoPersistencia {
     pub db_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl EstadoPersistencia {
+    #[allow(dead_code)]
+    pub fn inactiva(ruta: &str) -> Self {
+        Self {
+            activa: false,
+            backend: "timescaledb".to_string(),
+            ruta: ruta.to_string(),
+            operaciones: 0,
+            oportunidades: 0,
+            eventos: 0,
+            auditorias: 0,
+            rebalanceos: 0,
+            db_bytes: 0,
+            error: Some("backend no disponible".to_string()),
+        }
+    }
 }
 
 /// Proveniencia de la corrida visible para separar mercado live de PnL demo.

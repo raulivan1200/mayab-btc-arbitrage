@@ -15,6 +15,7 @@ use crate::types::{ExchangeConfig, MapaCostos};
 pub struct Config {
     pub port: String,
     pub par_base: String,
+    pub pares_extra: Vec<String>,
     pub token_admin: Option<String>,
     pub auditoria_db_path: String,
     pub intervalo_analisis: Duration,
@@ -76,10 +77,55 @@ impl Config {
                 0.95,
             ),
         );
+        exchanges.insert(
+            "Bitfinex".to_string(),
+            exchange(
+                "Bitfinex",
+                env_f64("FEE_BITFINEX", 0.0020),
+                env_f64("RETIRO_BTC_BITFINEX", 0.00010),
+                0.95,
+            ),
+        );
+        exchanges.insert(
+            "KuCoin".to_string(),
+            exchange(
+                "KuCoin",
+                env_f64("FEE_KUCOIN", 0.0010),
+                env_f64("RETIRO_BTC_KUCOIN", 0.00010),
+                0.94,
+            ),
+        );
+        exchanges.insert(
+            "Gate.io".to_string(),
+            exchange(
+                "Gate.io",
+                env_f64("FEE_GATEIO", 0.0020),
+                env_f64("RETIRO_BTC_GATEIO", 0.00010),
+                0.93,
+            ),
+        );
+        exchanges.insert(
+            "Bitstamp".to_string(),
+            exchange(
+                "Bitstamp",
+                env_f64("FEE_BITSTAMP", 0.0025),
+                env_f64("RETIRO_BTC_BITSTAMP", 0.00010),
+                0.96,
+            ),
+        );
+        exchanges.insert(
+            "Gemini".to_string(),
+            exchange(
+                "Gemini",
+                env_f64("FEE_GEMINI", 0.0035),
+                env_f64("RETIRO_BTC_GEMINI", 0.00010),
+                0.97,
+            ),
+        );
 
         let costos = MapaCostos {
-            max_operacion_btc: positive(env_f64("MAX_OPERACION_BTC", 0.18), 0.18),
-            min_utilidad_usd: non_negative(env_f64("MIN_UTILIDAD_USD", 1.25), 1.25),
+            max_operacion_btc: (positive(env_f64("MAX_OPERACION_BTC", 0.18), 0.18)),
+            min_utilidad_usd: (non_negative(env_f64("MIN_UTILIDAD_USD", 1.25), 1.25)),
             min_diferencial_neto_bps: non_negative(
                 env_f64_alias(&["MIN_DIFERENCIAL_NETO_BPS", "MIN_SPREAD_NETO_BPS"], 0.65),
                 0.65,
@@ -97,10 +143,10 @@ impl Config {
             ),
             usdt_usd_premium_bps: non_negative(env_f64("USDT_USD_PREMIUM_BPS", 3.0), 3.0),
             permitir_cruce_usd_usdt: env_bool("PERMITIR_CRUCE_USD_USDT", false),
-            circuit_breaker_perdida_usd: non_negative(
+            circuit_breaker_perdida_usd: (non_negative(
                 env_f64("CIRCUIT_BREAKER_PERDIDA_USD", 500.0),
                 500.0,
-            ),
+            )),
             circuit_breaker_ventana_min: positive_i64(
                 env_i64("CIRCUIT_BREAKER_VENTANA_MIN", 10),
                 10,
@@ -113,7 +159,7 @@ impl Config {
             movimiento_brusco_bps: non_negative(env_f64("MOVIMIENTO_BRUSCO_BPS", 7.0), 7.0),
             rebalance_umbral_pct: non_negative(env_f64("REBALANCE_UMBRAL_PCT", 35.0), 35.0),
             rebalance_max_transfer_pct: prob_pct(env_f64("REBALANCE_MAX_TRANSFER_PCT", 35.0), 35.0),
-            costo_rebalanceo_usd: non_negative(env_f64("COSTO_REBALANCEO_USD", 5.0), 5.0),
+            costo_rebalanceo_usd: (non_negative(env_f64("COSTO_REBALANCEO_USD", 5.0), 5.0)),
             rebalance_settlement_ms: non_negative_i64(
                 env_i64("REBALANCE_SETTLEMENT_MS", 1800),
                 1800,
@@ -124,6 +170,11 @@ impl Config {
         Self {
             port: env_string("PORT", "8080"),
             par_base: env_string("PAR_BASE", "BTC/USD"),
+            pares_extra: env_string("PARES_EXTRA", "ETH/USD,SOL/USD,BTC/USDT,ETH/BTC")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             token_admin: env_optional("ADMIN_TOKEN"),
             auditoria_db_path: env_string("AUDITORIA_DB_PATH", "/tmp/mayab-auditoria.sqlite"),
             intervalo_analisis: Duration::from_millis(positive_i64(
@@ -141,8 +192,8 @@ impl Config {
 fn exchange(nombre: &str, fee_taker: f64, retiro_btc: f64, confiabilidad: f64) -> ExchangeConfig {
     ExchangeConfig {
         nombre: nombre.to_string(),
-        fee_taker: non_negative(fee_taker, 0.001),
-        retiro_btc: non_negative(retiro_btc, 0.0001),
+        fee_taker: (non_negative(fee_taker, 0.001)),
+        retiro_btc: (non_negative(retiro_btc, 0.0001)),
         confiabilidad,
     }
 }

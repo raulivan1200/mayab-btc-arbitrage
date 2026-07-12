@@ -19,6 +19,8 @@ const formatoHoraGrafica = new Intl.DateTimeFormat("es-MX", {
 let ultimoPreflightMs = 0;
 let preflightCache = null;
 let preflightEnCurso = false;
+let wsReconnectMs = 600;
+const WS_RECONNECT_MAX = 15_000;
 
 const metricasPrevias = {
   pnl: 0,
@@ -330,7 +332,10 @@ async function conectar() {
   const socket = new WebSocket(`${protocolo}://${location.host}/tiempo-real`);
   cambiarSocket("conectando");
 
-  socket.addEventListener("open", () => cambiarSocket("dashboard conectado", true));
+  socket.addEventListener("open", () => {
+    cambiarSocket("dashboard conectado", true);
+    wsReiniciarBackoff();
+  });
 
   socket.addEventListener("message", (evento) => {
     try {
@@ -341,6 +346,7 @@ async function conectar() {
         metricasDebug.wsBytes += evento.data.length || 0;
       }
       debugMeasure("ws-parse", inicio);
+      wsReiniciarBackoff();
       ultimoEstado = datos;
       estado.ultimoMensaje = Date.now();
       cambiarSocket("en vivo", true);
@@ -353,14 +359,20 @@ async function conectar() {
 
   socket.addEventListener("close", () => {
     cambiarSocket("reconectando");
-    debugWarn("websocket cerrado; reconectando");
-    setTimeout(conectar, 1200);
+    debugWarn("websocket cerrado; reconectando en %dms", wsReconnectMs);
+    const ms = wsReconnectMs;
+    wsReconnectMs = Math.min(Math.round(wsReconnectMs * 1.8), WS_RECONNECT_MAX);
+    setTimeout(conectar, ms);
   });
 
   socket.addEventListener("error", (err) => {
     cambiarSocket("sin enlace", false);
     debugError("error de websocket", err);
   });
+}
+
+function wsReiniciarBackoff() {
+  wsReconnectMs = 600;
 }
 
 const estado = {
@@ -507,7 +519,30 @@ function iniciarAjusteMetricas() {
   document.querySelectorAll(".metricas article").forEach((card) => observer.observe(card));
 }
 
+let parActivo = "ALL";
+
 function renderizar(datos) {
+  // Selector de par
+  const selector = $("parSelector");
+  if (selector && datos.paresActivos) {
+    const paresActuales = new Set([...selector.options].map(o => o.value));
+    datos.paresActivos.forEach(par => {
+      if (!paresActuales.has(par)) {
+        const option = document.createElement("option");
+        option.value = par;
+        option.textContent = par;
+        selector.appendChild(option);
+      }
+    });
+    if (!selector.dataset.listener) {
+      selector.addEventListener("change", (e) => {
+        parActivo = e.target.value;
+        if (ultimoEstado) renderizar(ultimoEstado);
+      });
+      selector.dataset.listener = "true";
+    }
+  }
+
   // Métricas principales
   const pnlVal = datos.metricas.utilidadAcumuladaUsd;
   const pnlEl = $("pnl");
@@ -540,6 +575,34 @@ function renderizar(datos) {
   const winRateEl = $("winRate");
   renderCantidadMetrica(winRateEl, formato(winRateVal * 100, 1));
   aplicarAnimacionCambio(winRateEl, winRateVal, "winRate");
+
+  const sortinoVal = datos.metricas.sortinoRatio || 0.0;
+  const sortinoEl = $("sortinoRatio");
+  if (sortinoEl) {
+    renderCantidadMetrica(sortinoEl, formato(sortinoVal, 2));
+    aplicarAnimacionCambio(sortinoEl, sortinoVal, "sortinoRatio");
+  }
+
+  const kellyVal = datos.metricas.kellyCriterion || 0.0;
+  const kellyEl = $("kellyCriterion");
+  if (kellyEl) {
+    renderCantidadMetrica(kellyEl, formato(kellyVal * 100, 1));
+    aplicarAnimacionCambio(kellyEl, kellyVal, "kellyCriterion");
+  }
+
+  const tobiVal = datos.metricas.tobi || 0.0;
+  const tobiEl = $("tobi");
+  if (tobiEl) {
+    renderCantidadMetrica(tobiEl, formato(tobiVal, 2));
+    aplicarAnimacionCambio(tobiEl, tobiVal, "tobi");
+  }
+
+  const bayesianVal = datos.metricas.bayesian || 0.0;
+  const bayesianEl = $("bayesian");
+  if (bayesianEl) {
+    renderCantidadMetrica(bayesianEl, formato(bayesianVal * 100, 1));
+    aplicarAnimacionCambio(bayesianEl, bayesianVal, "bayesian");
+  }
 
   const drawdownVal = datos.metricas.maxDrawdownUsd;
   const drawdownEl = $("maxDrawdown");
@@ -585,6 +648,8 @@ function renderizar(datos) {
 
   // Renderizado de paneles secundarios.
   renderMercado(datos);
+  renderHeatmapOportunidades(datos);
+  dibujarPnlLive(datos);
   renderLatencias(datos);
   renderPipeline(datos.telemetriaPipeline);
   renderJudgeReadiness(datos);
@@ -1878,7 +1943,11 @@ function renderOportunidades(datos) {
     });
 
     const tdRuta = document.createElement("td");
-    tdRuta.textContent = `${o.compraEn} -> ${o.ventaEn}`;
+    let ruta = escapeHtml(`${o.compraEn} -> ${o.ventaEn}`);
+    if (o.tipo === "Triangular") {
+      ruta = `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span> ${ruta}`;
+    }
+    tdRuta.innerHTML = ruta;
 
     const tdNeto = document.createElement("td");
     tdNeto.className = o.diferencialNetoBps >= 0 ? "positivo" : "negativo";
@@ -1941,12 +2010,32 @@ function renderDetalleOportunidad(datos) {
   const decisionReason = auditoria?.decisionReason || seleccionada.decisionReason || seleccionada.razon || "";
   const decisionActual = auditoria?.decisionActual ?? seleccionada.decisionActual;
   const decisionThreshold = auditoria?.decisionThreshold ?? seleccionada.decisionThreshold;
+  const esTriangular = seleccionada.tipo === "Triangular";
+  const badgeTriangular = esTriangular ? `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span>` : "";
+
+  let piernasHtml = "";
+  if (esTriangular && seleccionada.piernas) {
+    piernasHtml = `
+      <div class="piernas-stack">
+        <span class="ceja">Piernas del Ciclo</span>
+        ${seleccionada.piernas.map(p => `
+          <div class="pierna">
+            <span>${escapeHtml(p.exchange)} (${escapeHtml(p.par)})</span>
+            <strong>${escapeHtml(p.accion)} @ ${Number.isFinite(p.precio) ? formato(p.precio, 2) : "—"}</strong>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
   panel.innerHTML = `
     <div class="detalle-header">
       <span class="ceja">Forense</span>
-      <strong>${escapeHtml(seleccionada.compraEn)} -> ${escapeHtml(seleccionada.ventaEn)}</strong>
+      <strong>${badgeTriangular} ${escapeHtml(seleccionada.compraEn)} -> ${escapeHtml(seleccionada.ventaEn)}</strong>
       <span class="${seleccionada.ejecutable ? "chip-ok" : "chip-no"}">${escapeHtml(estado)}</span>
     </div>
+    ${piernasHtml}
+
     <div class="detalle-grid">
       <div><span>Bruto</span><strong>${formato(seleccionada.diferencialBrutoBps, 2)} bps</strong></div>
       <div><span>Neto</span><strong>${formato(seleccionada.diferencialNetoBps, 2)} bps</strong></div>
@@ -1985,7 +2074,9 @@ function renderOperaciones(datos) {
     const tr = document.createElement("tr");
 
     const tdBuy = document.createElement("td");
-    tdBuy.innerHTML = `${escapeHtml(o.compraEn)}<br><span>${dinero.format(o.precioCompra)}</span>`;
+    const esTriangular = o.tipo === "Triangular";
+    const badgeTri = esTriangular ? `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span> ` : "";
+    tdBuy.innerHTML = `${badgeTri}${escapeHtml(o.compraEn)}<br><span>${dinero.format(o.precioCompra)}</span>`;
 
     const tdSell = document.createElement("td");
     tdSell.innerHTML = `${escapeHtml(o.ventaEn)}<br><span>${dinero.format(o.precioVenta)}</span>`;
@@ -2431,7 +2522,7 @@ function lanzarNotificacion(o) {
     container.firstElementChild?.remove();
   }
 
-  // Auto-dismiss
+  // Oculta la notificación después de cinco segundos.
   setTimeout(() => {
     if (div.parentNode) {
       div.style.animation = "slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards";
@@ -2440,6 +2531,341 @@ function lanzarNotificacion(o) {
       }, 300);
     }
   }, 8000);
+}
+
+function iniciarVisualizacionesLive() {
+  let framePendiente = false;
+  const redibujar = () => {
+    if (framePendiente) return;
+    framePendiente = true;
+    requestAnimationFrame(() => {
+      framePendiente = false;
+      if (ultimoEstado) dibujarPnlLive(ultimoEstado);
+    });
+  };
+  window.addEventListener("resize", redibujar, { passive: true });
+  window.addEventListener("mayab:tab-visible", redibujar);
+}
+
+function renderHeatmapOportunidades(datos) {
+  const table = $("heatmapOportunidades");
+  const head = $("heatmapHead");
+  const body = $("heatmapBody");
+  const empty = $("heatmapEmpty");
+  const status = $("heatmapStatus");
+  const summary = $("heatmapSummary");
+  const scroll = table?.closest(".heatmap-scroll");
+  if (!table || !head || !body || !empty || !scroll) return;
+
+  const oportunidades = oportunidadesVigentes(datos);
+  const cotizaciones = (datos?.cotizaciones || []).filter(
+    (cotizacion) => parActivo === "ALL" || cotizacion.par === parActivo,
+  );
+  const exchanges = [...new Set([
+    ...cotizaciones.map((cotizacion) => cotizacion.exchange),
+    ...oportunidades.flatMap((oportunidad) => [oportunidad.compraEn, oportunidad.ventaEn]),
+  ].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es-MX"));
+
+  head.replaceChildren();
+  body.replaceChildren();
+  const matrizDisponible = exchanges.length >= 2;
+  scroll.hidden = !matrizDisponible;
+  empty.hidden = matrizDisponible;
+
+  const etiquetaPar = parActivo === "ALL" ? "todos los pares" : parActivo;
+  if (!matrizDisponible) {
+    empty.textContent = `Se necesitan al menos dos exchanges con datos para ${etiquetaPar}.`;
+    if (status) status.textContent = "Sin matriz disponible";
+    const texto = `Heatmap sin datos: hay ${exchanges.length} exchange con cotización para ${etiquetaPar}.`;
+    if (summary && summary.textContent !== texto) summary.textContent = texto;
+    return;
+  }
+
+  const rutas = new Map();
+  oportunidades.forEach((oportunidad) => {
+    const valor = Number(oportunidad.diferencialNetoBps);
+    if (!Number.isFinite(valor) || !oportunidad.compraEn || !oportunidad.ventaEn) return;
+    const clave = `${oportunidad.compraEn}\u0000${oportunidad.ventaEn}`;
+    const actual = rutas.get(clave);
+    if (!actual) {
+      rutas.set(clave, {
+        mejor: oportunidad,
+        valor,
+        cantidad: 1,
+        ejecutables: oportunidad.ejecutable ? 1 : 0,
+      });
+      return;
+    }
+    actual.cantidad += 1;
+    if (oportunidad.ejecutable) actual.ejecutables += 1;
+    if (valor > actual.valor) {
+      actual.mejor = oportunidad;
+      actual.valor = valor;
+    }
+  });
+
+  const maxAbs = Math.max(1, ...[...rutas.values()].map((ruta) => Math.abs(ruta.valor)));
+  const headerRow = document.createElement("tr");
+  const corner = document.createElement("th");
+  corner.scope = "col";
+  corner.textContent = "Compra ↓ / Venta →";
+  headerRow.appendChild(corner);
+  exchanges.forEach((exchange) => {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = exchange;
+    headerRow.appendChild(th);
+  });
+  head.appendChild(headerRow);
+
+  exchanges.forEach((compra) => {
+    const row = document.createElement("tr");
+    const rowHeader = document.createElement("th");
+    rowHeader.scope = "row";
+    rowHeader.textContent = compra;
+    row.appendChild(rowHeader);
+
+    exchanges.forEach((venta) => {
+      const td = document.createElement("td");
+      td.className = "heatmap-cell";
+      if (compra === venta) {
+        td.classList.add("heat-diagonal");
+        td.textContent = "—";
+        td.setAttribute("aria-label", `${compra}: compra y venta en el mismo exchange no aplica.`);
+        row.appendChild(td);
+        return;
+      }
+
+      const ruta = rutas.get(`${compra}\u0000${venta}`);
+      if (!ruta) {
+        td.classList.add("heat-empty-cell");
+        td.textContent = "·";
+        td.setAttribute("aria-label", `Sin ruta vigente para comprar en ${compra} y vender en ${venta}.`);
+        row.appendChild(td);
+        return;
+      }
+
+      const intensidad = Math.min(1, Math.abs(ruta.valor) / maxAbs);
+      const mezcla = Math.round(20 + intensidad * 66);
+      td.style.setProperty("--heat-mix", `${mezcla}%`);
+      td.classList.add(ruta.valor >= 0 ? "heat-positive-cell" : "heat-negative-cell");
+      if (intensidad >= 0.68) td.classList.add("heat-strong");
+      if (ruta.ejecutables > 0) td.classList.add("heat-executable");
+
+      const value = document.createElement("span");
+      value.className = "heatmap-value";
+      value.textContent = `${ruta.valor > 0 ? "+" : ""}${formato(ruta.valor, 2)} bps`;
+      const count = document.createElement("small");
+      count.className = "heatmap-count";
+      count.textContent = ruta.ejecutables > 0
+        ? `${ruta.cantidad} ruta${ruta.cantidad === 1 ? "" : "s"} · ejecutable`
+        : `${ruta.cantidad} ruta${ruta.cantidad === 1 ? "" : "s"}`;
+      td.append(value, count);
+      const ejecucion = ruta.ejecutables > 0 ? " Hay al menos una ruta ejecutable." : " Ninguna es ejecutable.";
+      td.setAttribute(
+        "aria-label",
+        `Comprar en ${compra} y vender en ${venta}: mejor diferencial neto ${value.textContent} en ${ruta.cantidad} ruta${ruta.cantidad === 1 ? "" : "s"}.${ejecucion}`,
+      );
+      td.title = `${compra} → ${venta} · ${value.textContent} · ${ruta.mejor.par || etiquetaPar}`;
+      row.appendChild(td);
+    });
+    body.appendChild(row);
+  });
+
+  const ejecutables = oportunidades.filter((oportunidad) => oportunidad.ejecutable).length;
+  if (status) status.textContent = `${oportunidades.length} rutas · ${exchanges.length} exchanges`;
+  const mejor = [...rutas.values()].sort((a, b) => b.valor - a.valor)[0];
+  const textoResumen = mejor
+    ? `Heatmap de ${oportunidades.length} rutas vigentes para ${etiquetaPar} entre ${exchanges.length} exchanges. ${ejecutables} son ejecutables. La mejor compra es ${mejor.mejor.compraEn} y la mejor venta es ${mejor.mejor.ventaEn}, con ${formato(mejor.valor, 2)} puntos base netos.`
+    : `Heatmap para ${etiquetaPar} entre ${exchanges.length} exchanges, sin rutas vigentes en el último lote.`;
+  if (summary && summary.textContent !== textoResumen) summary.textContent = textoResumen;
+}
+
+function dibujarPnlLive(datos) {
+  const canvas = $("canvasPnlLive");
+  if (!canvas) return;
+
+  const puntos = normalizarSerieTemporal(datos?.seriePnl);
+  const valorMetrica = Number(datos?.metricas?.utilidadAcumuladaUsd);
+  const valorActual = Number.isFinite(valorMetrica) ? valorMetrica : (puntos.at(-1)?.valor || 0);
+  const primerValor = puntos[0]?.valor ?? valorActual;
+  const delta = valorActual - primerValor;
+  setText("pnlLiveValue", dinero.format(valorActual));
+  setText("pnlLiveDelta", `${delta > 0 ? "+" : ""}${dinero.format(delta)}`);
+  setText("pnlLiveSamples", numero.format(puntos.length));
+
+  const deltaEl = $("pnlLiveDelta");
+  if (deltaEl) {
+    deltaEl.classList.toggle("positivo", delta > 0);
+    deltaEl.classList.toggle("negativo", delta < 0);
+  }
+  const status = $("pnlLiveStatus");
+  if (status) status.textContent = puntos.length
+    ? `WS · ${puntos.length} muestra${puntos.length === 1 ? "" : "s"}`
+    : "Esperando historial";
+
+  const summary = $("pnlLiveSummary");
+  const minimo = puntos.length ? Math.min(...puntos.map((punto) => punto.valor)) : valorActual;
+  const maximo = puntos.length ? Math.max(...puntos.map((punto) => punto.valor)) : valorActual;
+  const textoResumen = puntos.length
+    ? `PnL acumulado actual ${dinero.format(valorActual)}. Cambio en la ventana visible ${dinero.format(delta)}. Mínimo ${dinero.format(minimo)}, máximo ${dinero.format(maximo)}, con ${puntos.length} muestras entre ${formatoHoraGrafica.format(new Date(puntos[0].tiempo))} y ${formatoHoraGrafica.format(new Date(puntos.at(-1).tiempo))}.`
+    : `PnL acumulado actual ${dinero.format(valorActual)}. El motor todavía no ha publicado puntos en la serie temporal.`;
+  if (summary && summary.textContent !== textoResumen) summary.textContent = textoResumen;
+
+  if (canvas.getBoundingClientRect().width < 2) return;
+  const ctx = prepararCanvas(canvas);
+  const w = canvas._anchoLogico;
+  const h = canvas._altoLogico;
+  const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
+  const fondo = temaOscuro ? "#171717" : "#f9f7f2";
+  const tinta = temaOscuro ? "#f4f0e6" : "#141414";
+  const muted = temaOscuro ? "#a7a096" : "#6b625b";
+  const grid = temaOscuro ? "rgba(244,240,230,0.12)" : "rgba(20,20,20,0.12)";
+  const positivo = temaOscuro ? "#7ee787" : "#0b6b35";
+  const negativo = temaOscuro ? "#ff8a70" : "#c83b20";
+  const colorLinea = valorActual >= 0 ? positivo : negativo;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = fondo;
+  ctx.fillRect(0, 0, w, h);
+
+  const margen = {
+    top: 22,
+    right: w < 480 ? 12 : 22,
+    bottom: 38,
+    left: w < 480 ? 54 : 66,
+  };
+  const plotW = Math.max(1, w - margen.left - margen.right);
+  const plotH = Math.max(1, h - margen.top - margen.bottom);
+
+  if (!puntos.length) {
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+      const y = margen.top + (i / 4) * plotH;
+      ctx.beginPath();
+      ctx.moveTo(margen.left, y);
+      ctx.lineTo(w - margen.right, y);
+      ctx.stroke();
+    }
+    ctx.fillStyle = tinta;
+    ctx.font = "800 15px Aeonik Pro, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Esperando historial de PnL", margen.left + plotW / 2, margen.top + plotH / 2 - 4, plotW - 12);
+    ctx.fillStyle = muted;
+    ctx.font = "700 12px Aeonik Pro, sans-serif";
+    ctx.fillText("Aparece con la primera operación simulada", margen.left + plotW / 2, margen.top + plotH / 2 + 18, plotW - 12);
+    return;
+  }
+
+  const tiempoPrimero = puntos[0].tiempo;
+  const tiempoUltimo = puntos.at(-1).tiempo;
+  const tiempoMin = puntos.length === 1 ? tiempoPrimero - 30_000 : tiempoPrimero;
+  const tiempoMax = puntos.length === 1 ? tiempoUltimo + 30_000 : Math.max(tiempoUltimo, tiempoPrimero + 1);
+  const brutoMin = Math.min(0, minimo);
+  const brutoMax = Math.max(0, maximo);
+  const amplitudBruta = brutoMax - brutoMin;
+  const paddingY = Math.max(amplitudBruta * 0.1, Math.max(Math.abs(brutoMin), Math.abs(brutoMax)) * 0.04, 0.5);
+  let yMin = brutoMin < 0 ? brutoMin - paddingY : 0;
+  let yMax = brutoMax > 0 ? brutoMax + paddingY : 0;
+  if (yMax - yMin < 1) {
+    yMin = -1;
+    yMax = 1;
+  }
+
+  const x = (tiempo) => margen.left + ((tiempo - tiempoMin) / (tiempoMax - tiempoMin)) * plotW;
+  const y = (valor) => margen.top + ((yMax - valor) / (yMax - yMin)) * plotH;
+
+  ctx.font = "700 11px Aeonik Pro, sans-serif";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i += 1) {
+    const proporcion = i / 4;
+    const valorTick = yMax - proporcion * (yMax - yMin);
+    const yTick = margen.top + proporcion * plotH;
+    ctx.strokeStyle = grid;
+    ctx.beginPath();
+    ctx.moveTo(margen.left, yTick);
+    ctx.lineTo(w - margen.right, yTick);
+    ctx.stroke();
+    ctx.fillStyle = muted;
+    ctx.textAlign = "right";
+    ctx.fillText(formatoEjeUsd(valorTick), margen.left - 9, yTick + 4);
+  }
+
+  [0, 0.5, 1].forEach((proporcion, indice) => {
+    const tiempo = tiempoMin + proporcion * (tiempoMax - tiempoMin);
+    const xTick = margen.left + proporcion * plotW;
+    ctx.strokeStyle = grid;
+    ctx.beginPath();
+    ctx.moveTo(xTick, margen.top);
+    ctx.lineTo(xTick, margen.top + plotH);
+    ctx.stroke();
+    ctx.fillStyle = muted;
+    ctx.textAlign = indice === 0 ? "left" : indice === 2 ? "right" : "center";
+    ctx.fillText(formatoHoraGrafica.format(new Date(tiempo)), xTick, h - 13);
+  });
+
+  const ceroY = y(0);
+  ctx.save();
+  ctx.setLineDash([6, 5]);
+  ctx.strokeStyle = temaOscuro ? "rgba(244,240,230,0.55)" : "rgba(20,20,20,0.5)";
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.moveTo(margen.left, ceroY);
+  ctx.lineTo(w - margen.right, ceroY);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(margen.left, margen.top, plotW, plotH);
+  ctx.clip();
+  const gradiente = ctx.createLinearGradient(0, margen.top, 0, margen.top + plotH);
+  gradiente.addColorStop(0, `${colorLinea}5c`);
+  gradiente.addColorStop(1, `${colorLinea}05`);
+  ctx.fillStyle = gradiente;
+  ctx.beginPath();
+  ctx.moveTo(x(puntos[0].tiempo), ceroY);
+  puntos.forEach((punto) => ctx.lineTo(x(punto.tiempo), y(punto.valor)));
+  ctx.lineTo(x(puntos.at(-1).tiempo), ceroY);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = colorLinea;
+  ctx.lineWidth = 3.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  puntos.forEach((punto, indice) => {
+    const px = x(punto.tiempo);
+    const py = y(punto.valor);
+    if (indice === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+  ctx.restore();
+
+  const ultimo = puntos.at(-1);
+  const ultimoX = x(ultimo.tiempo);
+  const ultimoY = y(ultimo.valor);
+  ctx.fillStyle = colorLinea;
+  ctx.beginPath();
+  ctx.arc(ultimoX, ultimoY, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = colorLinea;
+  ctx.globalAlpha = 0.35;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(ultimoX, ultimoY, 9, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function formatoEjeUsd(valor) {
+  const absoluto = Math.abs(valor);
+  if (absoluto >= 1_000_000) return `${valor < 0 ? "−" : ""}$${formato(absoluto / 1_000_000, 1)}M`;
+  if (absoluto >= 1_000) return `${valor < 0 ? "−" : ""}$${formato(absoluto / 1_000, 1)}k`;
+  return `${valor < 0 ? "−" : ""}$${formato(absoluto, absoluto < 10 ? 1 : 0)}`;
 }
 
 /**
@@ -2597,70 +3023,71 @@ function dibujarGa(g) {
   const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
   ctx.fillStyle = temaOscuro ? "#171717" : "#f9f7f2";
   ctx.fillRect(0, 0, w, h);
+
   ctx.strokeStyle = temaOscuro ? "#333333" : "#dcd7cc";
   ctx.lineWidth = 1;
-  for (let x = 20; x < w; x += 46) {
+  for (let x = 40; x < w; x += 60) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
-    ctx.lineTo(x + 32, h);
+    ctx.lineTo(x, h);
     ctx.stroke();
   }
-  for (let y = 28; y < h; y += 42) {
+  for (let y = 30; y < h; y += 40) {
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(w, y);
     ctx.stroke();
   }
 
-  if (g && gaHistorial.length === 0) registrarPulsoGa(g);
-  const datos = gaHistorial.length > 1 ? gaHistorial : [
-    { generacion: 0, mejor: 0, promedio: 0, diversidad: 1, mejora: 0 },
-    { generacion: 1, mejor: g?.mejorFitness || 0, retador: g?.retadorFitness ?? g?.fitnessPromedio ?? 0, promedio: g?.fitnessPromedio || 0, diversidad: g?.diversidad || 1, mejora: g?.mejoraGeneracional || 0 },
-  ];
-
-  const valores = datos.flatMap((p) => [p.mejor, p.retador ?? p.promedio, p.promedio]);
-  const min = Math.min(...valores, 0);
-  const max = Math.max(...valores, 1);
-  const rango = Math.max(max - min, 1);
-  const px = (i) => 34 + (i / Math.max(datos.length - 1, 1)) * (w - 68);
-  const py = (valor) => h - 34 - ((valor - min) / rango) * (h - 72);
-
-  const ahora = performance.now();
-  const firmaGa = `${datos.length}:${datos.at(-1)?.generacion || 0}:${datos.at(-1)?.mejor || 0}`;
-  if (firmaGa !== animacionGa.firma) {
-    animacionGa.firma = firmaGa;
-    animacionGa.inicio = ahora;
+  const frontera = g?.fronteraPareto || [];
+  if (frontera.length === 0) {
+    ctx.fillStyle = temaOscuro ? "#f4f0e6" : "#141414";
+    ctx.font = "900 13px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Esperando evaluación de Pareto", w / 2, h / 2);
+    return;
   }
-  const progresoGa = reducirMovimiento ? 1 : easeOutCubic(Math.min(1, (ahora - animacionGa.inicio) / 680));
-  trazarSerieGa(ctx, datos.map((p) => p.mejor), px, py, "#ffd43b", 5, progresoGa);
-  trazarSerieGa(ctx, datos.map((p) => p.retador ?? p.promedio), px, py, "#ff4d8d", 4, progresoGa);
-  trazarSerieGa(ctx, datos.map((p) => p.promedio), px, py, "#00c8ff", 4, progresoGa);
 
-  datos.slice(-18).forEach((p, i, arr) => {
-    const x = px(datos.length - arr.length + i);
-    const y = h - 20 - p.diversidad * 42;
-    ctx.fillStyle = `rgba(32, 230, 154, ${0.22 + p.diversidad * 0.55})`;
-    ctx.fillRect(x - 3, y, 6, Math.max(8, p.diversidad * 42));
+  const xs = frontera.map(p => p.x);
+  const ys = frontera.map(p => p.y);
+
+  const minX = Math.min(...xs, 0);
+  const maxX = Math.max(...xs, 1);
+  const minY = Math.min(...ys, 0);
+  const maxY = Math.max(...ys, 1);
+
+  const rangeX = Math.max(maxX - minX, 0.1);
+  const rangeY = Math.max(maxY - minY, 0.1);
+
+  const px = (val) => 40 + ((val - minX) / rangeX) * (w - 80);
+  const py = (val) => h - 40 - ((val - minY) / rangeY) * (h - 80);
+
+  frontera.forEach((p) => {
+    const x = px(p.x);
+    const y = py(p.y);
+
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = temaOscuro ? "rgba(32, 230, 154, 0.8)" : "rgba(10, 180, 100, 0.8)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = temaOscuro ? "#111" : "#fff";
+    ctx.stroke();
   });
 
-  const ultimo = datos[datos.length - 1];
-  const ultimoRetador = ultimo.retador ?? ultimo.promedio;
-  const ultimoDelta = ultimo.mejor - ultimoRetador;
-  const resumenDuelo = Math.abs(ultimoDelta) < 0.005
-    ? `empate técnico ${formato(ultimo.mejor, 2)}`
-    : `delta ${ultimoDelta >= 0 ? "+" : ""}${formato(ultimoDelta, 2)}`;
   ctx.fillStyle = temaOscuro ? "#f4f0e6" : "#141414";
-  ctx.font = "900 13px Aeonik Pro, sans-serif";
+  ctx.font = "900 13px Inter, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText(`Auto Gen ${ultimo.generacion} · ${resumenDuelo}`, 22, 24);
-  ctx.fillStyle = "#ffd43b";
-  ctx.fillText("campeón", 22, h - 14);
-  ctx.fillStyle = "#ff4d8d";
-  ctx.fillText("retador", 112, h - 14);
-  ctx.fillStyle = "#00c8ff";
-  ctx.fillText("promedio", 196, h - 14);
-  ctx.fillStyle = "#20e69a";
-  ctx.fillText("diversidad", 296, h - 14);
+  ctx.fillText(`Frontera de Pareto (NSGA-II) · Sharpe (X) vs Utilidad Media (Y) · ${frontera.length} Puntos`, 20, 22);
+
+  ctx.font = "400 11px Inter, sans-serif";
+  ctx.fillText(`Min Sharpe: ${formato(minX, 2)}`, 40, h - 10);
+  ctx.textAlign = "right";
+  ctx.fillText(`Max Sharpe: ${formato(maxX, 2)}`, w - 20, h - 10);
+
+  ctx.textAlign = "left";
+  ctx.fillText(`Max PnL: ${formato(maxY, 2)}`, 10, 40);
+  ctx.fillText(`Min PnL: ${formato(minY, 2)}`, 10, h - 30);
 }
 
 function trazarSerieGa(ctx, valores, px, py, color, grosor, progreso = 1) {
@@ -2841,19 +3268,30 @@ function actualizarMejorDiferencial(datos) {
 // como LIVE mostramos únicamente el lote del análisis más reciente.
 function oportunidadesVigentes(datos) {
   const oportunidades = Array.isArray(datos?.oportunidades) ? datos.oportunidades : [];
-  if (oportunidades.length < 2) return oportunidades;
+  if (oportunidades.length < 2) {
+    return parActivo === "ALL"
+      ? oportunidades
+      : oportunidades.filter((oportunidad) => oportunidad.par === parActivo);
+  }
 
   let instanteMasReciente = Number.NEGATIVE_INFINITY;
   for (const oportunidad of oportunidades) {
     const instante = Date.parse(oportunidad.detectadaEn || "");
     if (Number.isFinite(instante)) instanteMasReciente = Math.max(instanteMasReciente, instante);
   }
-  if (!Number.isFinite(instanteMasReciente)) return oportunidades;
+  if (!Number.isFinite(instanteMasReciente)) {
+    return parActivo === "ALL"
+      ? oportunidades
+      : oportunidades.filter((oportunidad) => oportunidad.par === parActivo);
+  }
 
-  return oportunidades.filter((oportunidad) => {
+  const vigentes = oportunidades.filter((oportunidad) => {
     const instante = Date.parse(oportunidad.detectadaEn || "");
     return Number.isFinite(instante) && instante === instanteMasReciente;
   });
+  return parActivo === "ALL"
+    ? vigentes
+    : vigentes.filter((oportunidad) => oportunidad.par === parActivo);
 }
 
 function formato(valor, decimales) {
@@ -2878,6 +3316,7 @@ document.addEventListener("DOMContentLoaded", () => {
   iniciarAjusteMetricas();
   iniciarDiccionario();
   iniciarHerramientasTablas();
+  iniciarVisualizacionesLive();
 
   const mobileNavToggle = document.querySelector(".mobile-nav-toggle");
   const tabsNav = document.querySelector(".tabs-nav");

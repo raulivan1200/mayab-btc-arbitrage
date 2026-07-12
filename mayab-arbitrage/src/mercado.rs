@@ -4,6 +4,7 @@
 //! tolerantes a mensajes no relevantes y devuelven `None` cuando el payload no
 //! contiene un snapshot útil.
 
+use smallvec::SmallVec;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
@@ -34,16 +35,99 @@ struct RestFallback {
     parser: fn(&[u8], &str) -> Option<Cotizacion>,
 }
 
+/// Contrato común para cualquier feed de exchange (WebSocket + REST fallback).
+///
+/// Permite agregar venues sin tocar el loop de conexión: basta implementar
+/// este trait (o reutilizar [`Adaptador`], que ya lo implementa con los parsers
+/// por función) y registrarlo en [`adaptadores`].
+pub(crate) trait ExchangeAdapter: Send + Sync {
+    /// Nombre canónico del exchange (p. ej. "Binance").
+    fn nombre(&self) -> &str;
+    /// Par de negociación normalizado (p. ej. "BTC/USD").
+    fn par(&self) -> &str;
+    /// URL del WebSocket público.
+    fn ws_url(&self) -> &str;
+    /// Mensaje de suscripción opcional enviado tras conectar.
+    fn suscripcion(&self) -> Option<&Value>;
+    /// Parsea un frame WebSocket a una [`Cotizacion`] usando el libro incremental.
+    fn parse_ws(&self, bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion>;
+    /// URL del snapshot REST público de respaldo, si existe.
+    fn rest_url(&self) -> Option<&str>;
+    /// Parsea un snapshot REST a una [`Cotizacion`].
+    fn parse_rest(&self, bytes: &[u8], par: &str) -> Option<Cotizacion>;
+    /// Indica si el adapter tiene fallback REST.
+    fn tiene_rest(&self) -> bool {
+        self.rest_url().is_some()
+    }
+    /// Clona el adapter detrás de un trait object.
+    fn clonar(&self) -> Box<dyn ExchangeAdapter>;
+}
+
+impl ExchangeAdapter for Adaptador {
+    fn nombre(&self) -> &str {
+        self.nombre
+    }
+    fn par(&self) -> &str {
+        &self.par
+    }
+    fn ws_url(&self) -> &str {
+        &self.url
+    }
+    fn suscripcion(&self) -> Option<&Value> {
+        self.suscripcion.as_ref()
+    }
+    fn parse_ws(&self, bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+        (self.parser)(bytes, libro)
+    }
+    fn rest_url(&self) -> Option<&str> {
+        self.rest.as_ref().map(|r| r.url.as_str())
+    }
+    fn parse_rest(&self, bytes: &[u8], par: &str) -> Option<Cotizacion> {
+        self.rest.as_ref().and_then(|r| (r.parser)(bytes, par))
+    }
+    fn clonar(&self) -> Box<dyn ExchangeAdapter> {
+        Box::new(self.clone())
+    }
+}
+
 #[derive(Default)]
-struct LibroEstado {
+pub(crate) struct LibroEstado {
     par: String,
-    bids: BTreeMap<i64, f64>,
-    asks: BTreeMap<i64, f64>,
+    bids: BTreeMap<BookPriceUnits, BookQtyUnits>,
+    asks: BTreeMap<BookPriceUnits, BookQtyUnits>,
     ultima_secuencia: Option<u64>,
     integrity_status: String,
     resyncs: u64,
     requiere_snapshot: bool,
     timestamp_confiable: bool,
+}
+
+const BOOK_SCALE: f64 = 100_000_000.0;
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct BookPriceUnits(i64);
+
+impl BookPriceUnits {
+    fn from_f64(value: f64) -> Self {
+        Self((value * BOOK_SCALE).round() as i64)
+    }
+
+    fn to_f64(self) -> f64 {
+        self.0 as f64 / BOOK_SCALE
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct BookQtyUnits(i64);
+
+impl BookQtyUnits {
+    fn from_f64(value: f64) -> Self {
+        Self((value * BOOK_SCALE).round() as i64)
+    }
+
+    fn to_f64(self) -> f64 {
+        self.0 as f64 / BOOK_SCALE
+    }
 }
 
 impl LibroEstado {
@@ -74,25 +158,25 @@ impl LibroEstado {
         actualizar_lado(&mut self.asks, niveles);
     }
 
-    fn snapshot_bids(&self, max: usize) -> Vec<NivelOrden> {
+    fn snapshot_bids(&self, max: usize) -> SmallVec<[NivelOrden; 10]> {
         self.bids
             .iter()
             .rev()
             .take(max)
             .map(|(p, c)| NivelOrden {
-                precio: escala_precio(*p),
-                cantidad: *c,
+                precio: p.to_f64(),
+                cantidad: c.to_f64(),
             })
             .collect()
     }
 
-    fn snapshot_asks(&self, max: usize) -> Vec<NivelOrden> {
+    fn snapshot_asks(&self, max: usize) -> SmallVec<[NivelOrden; 10]> {
         self.asks
             .iter()
             .take(max)
             .map(|(p, c)| NivelOrden {
-                precio: escala_precio(*p),
-                cantidad: *c,
+                precio: p.to_f64(),
+                cantidad: c.to_f64(),
             })
             .collect()
     }
@@ -212,10 +296,10 @@ pub async fn start_feeds(motor: Arc<Motor>, par_base: String) {
         .build()
         .unwrap_or_else(|_| Client::new());
     for adaptador in adaptadores(&par_base) {
-        if adaptador.rest.is_some() {
+        if adaptador.tiene_rest() {
             let motor = motor.clone();
             let client = client.clone();
-            let rest_adaptador = adaptador.clone();
+            let rest_adaptador = adaptador.clonar();
             tokio::spawn(async move {
                 run_rest_fallback(rest_adaptador, motor, client).await;
             });
@@ -227,35 +311,31 @@ pub async fn start_feeds(motor: Arc<Motor>, par_base: String) {
     }
 }
 
-async fn run_rest_fallback(adaptador: Adaptador, motor: Arc<Motor>, client: Client) {
+async fn run_rest_fallback(adaptador: Box<dyn ExchangeAdapter>, motor: Arc<Motor>, client: Client) {
+    let nombre = adaptador.nombre().to_string();
+    let par = adaptador.par().to_string();
     let inicio_jitter = rand::thread_rng().gen_range(0..=2_000);
     tokio::time::sleep(Duration::from_millis(inicio_jitter)).await;
     let mut backoff = Duration::from_secs(5);
     loop {
-        if !motor
-            .feed_necesita_fallback(adaptador.nombre, &adaptador.par)
-            .await
-        {
+        if !motor.feed_necesita_fallback(&nombre, &par).await {
             backoff = Duration::from_secs(5);
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         }
-        match obtener_rest(&adaptador, &client).await {
+        match obtener_rest(adaptador.as_ref(), &client).await {
             Ok(mut cotizacion) => {
-                cotizacion.exchange = adaptador.nombre.to_string();
+                cotizacion.exchange = nombre.clone();
                 cotizacion.recibida_en = Utc::now();
                 cotizacion.conectado = false;
                 cotizacion.ultimo_mensaje = "rest_fallback".to_string();
                 motor.recibir_cotizacion(cotizacion).await;
                 backoff = Duration::from_secs(5);
-                tracing::info!(
-                    exchange = adaptador.nombre,
-                    "snapshot REST usado como fallback"
-                );
+                tracing::info!(exchange = nombre, "snapshot REST usado como fallback");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
             Err(err) => {
-                tracing::warn!(exchange = adaptador.nombre, error = %err, "fallback REST fallo");
+                tracing::warn!(exchange = nombre, error = %err, "fallback REST fallo");
                 let jitter =
                     rand::thread_rng().gen_range(0..=backoff.as_millis().max(1) as u64 / 2);
                 tokio::time::sleep(backoff + Duration::from_millis(jitter)).await;
@@ -265,28 +345,33 @@ async fn run_rest_fallback(adaptador: Adaptador, motor: Arc<Motor>, client: Clie
     }
 }
 
-async fn obtener_rest(adaptador: &Adaptador, client: &Client) -> anyhow::Result<Cotizacion> {
-    let Some(rest) = &adaptador.rest else {
+async fn obtener_rest(
+    adaptador: &dyn ExchangeAdapter,
+    client: &Client,
+) -> anyhow::Result<Cotizacion> {
+    let Some(url) = adaptador.rest_url() else {
         anyhow::bail!("adaptador sin REST fallback");
     };
     let bytes = client
-        .get(&rest.url)
+        .get(url)
         .send()
         .await?
         .error_for_status()?
         .bytes()
         .await?;
-    (rest.parser)(&bytes, &adaptador.par)
+    adaptador
+        .parse_rest(&bytes, adaptador.par())
         .ok_or_else(|| anyhow::anyhow!("payload REST sin libro util"))
 }
 
-async fn run_feed(adaptador: Adaptador, motor: Arc<Motor>) {
+async fn run_feed(adaptador: Box<dyn ExchangeAdapter>, motor: Arc<Motor>) {
+    let nombre = adaptador.nombre().to_string();
     let mut backoff = Duration::from_millis(650);
     loop {
-        match conectar(&adaptador, motor.clone()).await {
+        match conectar(adaptador.as_ref(), motor.clone()).await {
             Ok(_) => backoff = Duration::from_millis(650),
             Err(err) => {
-                tracing::warn!(exchange = adaptador.nombre, error = %err, "feed desconectado")
+                tracing::warn!(exchange = nombre, error = %err, "feed desconectado")
             }
         }
         let jitter = rand::thread_rng().gen_range(0..=backoff.as_millis().max(1) as u64 / 2);
@@ -295,11 +380,11 @@ async fn run_feed(adaptador: Adaptador, motor: Arc<Motor>) {
     }
 }
 
-async fn conectar(adaptador: &Adaptador, motor: Arc<Motor>) -> anyhow::Result<()> {
-    let (mut ws, _) = connect_async(&adaptador.url).await?;
-    let mut libro = LibroEstado::new(&adaptador.par);
-    tracing::info!(exchange = adaptador.nombre, "feed conectado");
-    if let Some(payload) = &adaptador.suscripcion {
+async fn conectar(adaptador: &dyn ExchangeAdapter, motor: Arc<Motor>) -> anyhow::Result<()> {
+    let (mut ws, _) = connect_async(adaptador.ws_url()).await?;
+    let mut libro = LibroEstado::new(adaptador.par());
+    tracing::info!(exchange = adaptador.nombre(), "feed conectado");
+    if let Some(payload) = adaptador.suscripcion() {
         ws.send(Message::Text(payload.to_string())).await?;
     }
     let mut ping = tokio::time::interval(Duration::from_secs(20));
@@ -322,90 +407,172 @@ async fn conectar(adaptador: &Adaptador, motor: Arc<Motor>) -> anyhow::Result<()
     }
 }
 
-async fn recibir(adaptador: &Adaptador, bytes: &[u8], motor: &Motor, libro: &mut LibroEstado) {
-    if let Some(mut cotizacion) = (adaptador.parser)(bytes, libro) {
-        cotizacion.exchange = adaptador.nombre.to_string();
+async fn recibir(
+    adaptador: &dyn ExchangeAdapter,
+    bytes: &[u8],
+    motor: &Motor,
+    libro: &mut LibroEstado,
+) {
+    if let Some(mut cotizacion) = adaptador.parse_ws(bytes, libro) {
+        cotizacion.exchange = adaptador.nombre().to_string();
         cotizacion.recibida_en = Utc::now();
         motor.recibir_cotizacion(cotizacion).await;
     }
 }
 
-fn adaptadores(par: &str) -> Vec<Adaptador> {
-    let base = activo_base(par);
-    let usdt = format!("{base}USDT");
-    let usd_dash = format!("{base}-USD");
-    let usdt_dash = format!("{base}-USDT");
-    let usd_slash = format!("{base}/USD");
-    vec![
+fn partes_par(par: &str) -> (String, String) {
+    let binding = par.trim().to_ascii_uppercase();
+    let partes: Vec<&str> = binding.split('/').collect();
+    if partes.len() == 2 {
+        (partes[0].to_string(), partes[1].to_string())
+    } else {
+        ("BTC".to_string(), "USD".to_string())
+    }
+}
+
+fn adaptadores(par: &str) -> Vec<Box<dyn ExchangeAdapter>> {
+    let (base, quote) = partes_par(par);
+    let binance_symbol = format!("{base}{quote}");
+    let dash_symbol = format!("{base}-{quote}");
+    let slash_symbol = format!("{base}/{quote}");
+
+    let lista: Vec<Adaptador> = vec![
         Adaptador {
             nombre: "Binance",
-            par: normalizar_par(&usdt),
+            par: normalizar_par(par),
             url: format!(
                 "wss://data-stream.binance.vision/ws/{}@depth10@100ms",
-                usdt.to_lowercase()
+                binance_symbol.to_lowercase()
             ),
             suscripcion: None,
             parser: parsear_binance,
             rest: Some(RestFallback {
-                url: format!("https://api.binance.com/api/v3/depth?symbol={usdt}&limit=10"),
+                url: format!("https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=10"),
                 parser: parsear_rest_binance,
             }),
         },
         Adaptador {
             nombre: "Kraken",
-            par: normalizar_par(&usd_slash),
+            par: normalizar_par(par),
             url: "wss://ws.kraken.com/v2".to_string(),
             suscripcion: Some(
-                serde_json::json!({"method":"subscribe","params":{"channel":"book","symbol":[usd_slash],"depth":10,"snapshot":true}}),
+                serde_json::json!({"method":"subscribe","params":{"channel":"book","symbol":[slash_symbol],"depth":10,"snapshot":true}}),
             ),
             parser: parsear_kraken,
             rest: Some(RestFallback {
-                url: format!("https://api.kraken.com/0/public/Depth?pair={base}USD&count=10"),
+                url: format!("https://api.kraken.com/0/public/Depth?pair={base}{quote}&count=10"),
                 parser: parsear_rest_kraken,
             }),
         },
         Adaptador {
             nombre: "Coinbase",
-            par: normalizar_par(&usd_dash),
+            par: normalizar_par(par),
             url: "wss://advanced-trade-ws.coinbase.com".to_string(),
             suscripcion: Some(
-                serde_json::json!({"type":"subscribe","product_ids":[usd_dash],"channel":"level2"}),
+                serde_json::json!({"type":"subscribe","product_ids":[dash_symbol],"channel":"level2"}),
             ),
             parser: parsear_coinbase,
             rest: Some(RestFallback {
-                url: format!("https://api.exchange.coinbase.com/products/{usd_dash}/book?level=2"),
+                url: format!("https://api.exchange.coinbase.com/products/{dash_symbol}/book?level=2"),
                 parser: parsear_rest_coinbase,
             }),
         },
         Adaptador {
             nombre: "OKX",
-            par: normalizar_par(&usdt_dash),
+            par: normalizar_par(par),
             url: "wss://ws.okx.com:8443/ws/v5/public".to_string(),
             suscripcion: Some(
-                serde_json::json!({"op":"subscribe","args":[{"channel":"books5","instId":usdt_dash}]}),
+                serde_json::json!({"op":"subscribe","args":[{"channel":"books5","instId":&dash_symbol}]}),
             ),
             parser: parsear_okx,
             rest: Some(RestFallback {
-                url: format!("https://www.okx.com/api/v5/market/books?instId={usdt_dash}&sz=10"),
+                url: format!("https://www.okx.com/api/v5/market/books?instId={dash_symbol}&sz=10"),
                 parser: parsear_rest_okx,
             }),
         },
         Adaptador {
             nombre: "Bybit",
-            par: normalizar_par(&usdt),
+            par: normalizar_par(par),
             url: "wss://stream.bybit.com/v5/public/spot".to_string(),
             suscripcion: Some(
-                serde_json::json!({"op":"subscribe","args":[format!("orderbook.50.{usdt}")]}),
+                serde_json::json!({"op":"subscribe","args":[format!("orderbook.50.{binance_symbol}")]}),
             ),
             parser: parsear_bybit,
             rest: Some(RestFallback {
                 url: format!(
-                    "https://api.bybit.com/v5/market/orderbook?category=spot&symbol={usdt}&limit=10"
+                    "https://api.bybit.com/v5/market/orderbook?category=spot&symbol={binance_symbol}&limit=10"
                 ),
                 parser: parsear_rest_bybit,
             }),
         },
-    ]
+        Adaptador {
+            nombre: "Bitfinex",
+            par: normalizar_par(par),
+            url: "wss://api-pub.bitfinex.com/ws/2".to_string(),
+            suscripcion: Some(
+                serde_json::json!({"event":"subscribe","channel":"book","symbol":format!("t{base}{quote}"),"prec":"P0","len":10}),
+            ),
+            parser: parsear_bitfinex,
+            rest: Some(RestFallback {
+                url: format!("https://api-pub.bitfinex.com/v2/book/t{base}{quote}/P0?len=10"),
+                parser: parsear_rest_bitfinex,
+            }),
+        },
+        Adaptador {
+            nombre: "KuCoin",
+            par: normalizar_par(par),
+            url: "wss://ws-api-spot.kucoin.com/".to_string(),
+            suscripcion: Some(
+                serde_json::json!({"id":1,"type":"subscribe","topic":format!("/market/level2:{}", dash_symbol),"response":true}),
+            ),
+            parser: parsear_kucoin,
+            rest: Some(RestFallback {
+                url: format!("https://api.kucoin.com/api/v1/market/orderbook/level2_10?symbol={dash_symbol}"),
+                parser: parsear_rest_kucoin,
+            }),
+        },
+        Adaptador {
+            nombre: "Gate.io",
+            par: normalizar_par(par),
+            url: "wss://api.gateio.ws/ws/v4/".to_string(),
+            suscripcion: Some(
+                serde_json::json!({"id":1,"method":"order_book.subscribe","params":[dash_symbol,10,100]}),
+            ),
+            parser: parsear_gateio,
+            rest: Some(RestFallback {
+                url: format!("https://api.gateio.ws/api/v4/spot/order_book?currency_pair={dash_symbol}&limit=10"),
+                parser: parsear_rest_gateio,
+            }),
+        },
+        Adaptador {
+            nombre: "Bitstamp",
+            par: normalizar_par(par),
+            url: "wss://ws.bitstamp.net".to_string(),
+            suscripcion: Some(
+                serde_json::json!({"event":"bts:subscribe","data":{"channel":format!("order_book_{}", dash_symbol.to_lowercase())}}),
+            ),
+            parser: parsear_bitstamp,
+            rest: Some(RestFallback {
+                url: format!("https://www.bitstamp.net/api/v2/order_book/{}/?group=1", dash_symbol.to_lowercase()),
+                parser: parsear_rest_bitstamp,
+            }),
+        },
+        Adaptador {
+            nombre: "Gemini",
+            par: normalizar_par(par),
+            url: format!("wss://api.gemini.com/v1/marketdata/{}", dash_symbol),
+            suscripcion: None,
+            parser: parsear_gemini,
+            rest: Some(RestFallback {
+                url: format!("https://api.gemini.com/v1/book/{dash_symbol}"),
+                parser: parsear_rest_gemini,
+            }),
+        },
+    ];
+    lista
+        .into_iter()
+        .map(|a| Box::new(a) as Box<dyn ExchangeAdapter>)
+        .collect()
 }
 
 fn parsear_binance(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
@@ -616,7 +783,7 @@ fn parsear_rest_binance(bytes: &[u8], par: &str) -> Option<Cotizacion> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let bids = niveles_strings(v.get("bids")?.as_array()?, 10);
     let asks = niveles_strings(v.get("asks")?.as_array()?, 10);
-    marcar_rest(cotizacion(par, bids, asks, 0), false)
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), 0), false)
 }
 
 fn parsear_rest_kraken(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -627,7 +794,7 @@ fn parsear_rest_kraken(bytes: &[u8], par: &str) -> Option<Cotizacion> {
     let book = v.get("result")?.as_object()?.values().next()?;
     let bids = niveles_strings(book.get("bids")?.as_array()?, 10);
     let asks = niveles_strings(book.get("asks")?.as_array()?, 10);
-    marcar_rest(cotizacion(par, bids, asks, 0), false)
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), 0), false)
 }
 
 fn parsear_rest_coinbase(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -639,7 +806,7 @@ fn parsear_rest_coinbase(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         .and_then(Value::as_str)
         .and_then(rfc3339_ms)
         .unwrap_or_default();
-    marcar_rest(cotizacion(par, bids, asks, ts), ts > 0)
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), ts > 0)
 }
 
 fn parsear_rest_okx(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -655,7 +822,7 @@ fn parsear_rest_okx(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         .and_then(Value::as_str)
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
-    marcar_rest(cotizacion(par, bids, asks, ts), true)
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), true)
 }
 
 fn parsear_rest_bybit(bytes: &[u8], par: &str) -> Option<Cotizacion> {
@@ -674,7 +841,239 @@ fn parsear_rest_bybit(bytes: &[u8], par: &str) -> Option<Cotizacion> {
         })
         .or_else(|| v.get("time").and_then(Value::as_i64))
         .unwrap_or_else(|| Utc::now().timestamp_millis());
-    marcar_rest(cotizacion(par, bids, asks, ts), true)
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), true)
+}
+
+fn parsear_bitfinex(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if v.is_array() {
+        let arr = v.as_array()?;
+        if arr.len() < 2 {
+            return None;
+        }
+        let _channel_id = arr[0].as_i64()?;
+        let data = &arr[1];
+        if data.is_string() && data.as_str() == Some("hb") {
+            return None;
+        }
+        if let Some(snapshot_data) = data.as_array() {
+            if snapshot_data.is_empty() {
+                return None;
+            }
+            let is_snapshot = snapshot_data[0].as_str() == Some("snapshot");
+            if is_snapshot {
+                libro.registrar_snapshot(None, "snapshot", true);
+                for level in snapshot_data.iter().skip(1) {
+                    let level = level.as_array()?;
+                    let price = parse_num(level.first()?)?;
+                    let amount = parse_num(level.get(2)?)?;
+                    if amount > 0.0 {
+                        libro.actualizar_bids(&[NivelOrden {
+                            precio: price,
+                            cantidad: amount,
+                        }]);
+                    } else {
+                        libro.actualizar_asks(&[NivelOrden {
+                            precio: price,
+                            cantidad: amount.abs(),
+                        }]);
+                    }
+                }
+            } else {
+                // Delta: [price, count, amount]
+                let price = parse_num(snapshot_data.first()?)?;
+                let count = snapshot_data.get(1)?.as_i64()?;
+                let amount = parse_num(snapshot_data.get(2)?)?;
+                if count == 0 {
+                    if amount == 1.0 {
+                        libro.actualizar_bids(&[]);
+                    } else {
+                        libro.actualizar_asks(&[]);
+                    }
+                } else if amount > 0.0 {
+                    libro.actualizar_bids(&[NivelOrden {
+                        precio: price,
+                        cantidad: amount,
+                    }]);
+                } else {
+                    libro.actualizar_asks(&[NivelOrden {
+                        precio: price,
+                        cantidad: amount.abs(),
+                    }]);
+                }
+            }
+            libro.cotizacion(Utc::now().timestamp_millis())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn parsear_rest_bitfinex(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let arr = v.as_array()?;
+    let mut bids = Vec::new();
+    let mut asks = Vec::new();
+    for level in arr {
+        let level = level.as_array()?;
+        let price = parse_num(level.first()?)?;
+        let amount = parse_num(level.get(2)?)?;
+        if amount > 0.0 {
+            bids.push(NivelOrden {
+                precio: price,
+                cantidad: amount,
+            });
+        } else {
+            asks.push(NivelOrden {
+                precio: price,
+                cantidad: amount.abs(),
+            });
+        }
+    }
+    bids.sort_by(|a, b| b.precio.partial_cmp(&a.precio).unwrap());
+    asks.sort_by(|a, b| a.precio.partial_cmp(&b.precio).unwrap());
+    marcar_rest(
+        cotizacion(
+            par,
+            bids.into_iter().take(10).collect(),
+            asks.into_iter().take(10).collect(),
+            0,
+        ),
+        false,
+    )
+}
+
+fn parsear_kucoin(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if v.get("type").and_then(Value::as_str) == Some("welcome") {
+        return None;
+    }
+    let subject = v.get("subject").and_then(Value::as_str)?;
+    let data = v.get("data")?;
+    let secuencia = data.get("sequence").and_then(Value::as_u64);
+    let is_snapshot = subject == "trade.l2snapshot";
+    if is_snapshot {
+        libro.reset("BTC/USD");
+        libro.registrar_snapshot(secuencia, "snapshot_seq", true);
+    } else if !libro.registrar_incremental_monotono(secuencia) {
+        return None;
+    }
+    let bids = niveles_strings(data.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(data.get("asks")?.as_array()?, 10);
+    libro.actualizar_bids(&bids);
+    libro.actualizar_asks(&asks);
+    libro.cotizacion(
+        data.get("timestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+    )
+}
+
+fn parsear_rest_kucoin(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if v.get("code").and_then(Value::as_str) != Some("200000") {
+        return None;
+    }
+    let data = v.get("data")?;
+    let bids = niveles_strings(data.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(data.get("asks")?.as_array()?, 10);
+    let ts = data.get("time").and_then(Value::as_i64).unwrap_or_default();
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), ts > 0)
+}
+
+fn parsear_gateio(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if v.get("method").and_then(Value::as_str) != Some("order_book.update") {
+        return None;
+    }
+    let data = v.get("params")?.as_array()?.get(3)?.as_object()?;
+    let bids = niveles_strings(data.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(data.get("asks")?.as_array()?, 10);
+    let ts = v
+        .get("params")?
+        .as_array()?
+        .get(1)?
+        .as_i64()
+        .unwrap_or_else(|| Utc::now().timestamp_millis());
+    libro.actualizar_bids(&bids);
+    libro.actualizar_asks(&asks);
+    libro.cotizacion(ts)
+}
+
+fn parsear_rest_gateio(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let data = v.as_array()?.first()?;
+    let bids = niveles_strings(data.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(data.get("asks")?.as_array()?, 10);
+    let ts = data.get("t").and_then(Value::as_i64).unwrap_or_default();
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), ts > 0)
+}
+
+fn parsear_bitstamp(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let event = v.get("event").and_then(Value::as_str)?;
+    if event == "bts:subscription_succeeded" {
+        return None;
+    }
+    let data = v.get("data")?;
+    let bids = niveles_strings(data.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(data.get("asks")?.as_array()?, 10);
+    let ts = data
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or_else(|| Utc::now().timestamp_millis());
+    libro.actualizar_bids(&bids);
+    libro.actualizar_asks(&asks);
+    libro.cotizacion(ts)
+}
+
+fn parsear_rest_bitstamp(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let bids = niveles_strings(v.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(v.get("asks")?.as_array()?, 10);
+    let ts = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or_else(|| Utc::now().timestamp_millis());
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), ts > 0)
+}
+
+fn parsear_gemini(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let events = v.as_array()?;
+    for event in events {
+        let event_type = event.get("type").and_then(Value::as_str)?;
+        let price = parse_num(event.get("price")?)?;
+        let amount = parse_num(event.get("remaining")?)?;
+        let side = event.get("side").and_then(Value::as_str)?;
+        if side == "bid" {
+            libro.actualizar_bids(&[NivelOrden {
+                precio: price,
+                cantidad: amount,
+            }]);
+        } else if side == "ask" {
+            libro.actualizar_asks(&[NivelOrden {
+                precio: price,
+                cantidad: amount,
+            }]);
+        }
+        if event_type == "update" || event_type == "snapshot" {
+            // El heartbeat no contiene datos de mercado.
+        }
+    }
+    libro.cotizacion(Utc::now().timestamp_millis())
+}
+
+fn parsear_rest_gemini(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let bids = niveles_strings(v.get("bids")?.as_array()?, 10);
+    let asks = niveles_strings(v.get("asks")?.as_array()?, 10);
+    let ts = Utc::now().timestamp_millis();
+    marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), false)
 }
 
 fn marcar_rest(cotizacion: Option<Cotizacion>, timestamp_confiable: bool) -> Option<Cotizacion> {
@@ -733,32 +1132,27 @@ fn parse_u64(v: &Value) -> Option<u64> {
         .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
 }
 
-fn actualizar_lado(lado: &mut BTreeMap<i64, f64>, niveles: &[NivelOrden]) {
+fn actualizar_lado(lado: &mut BTreeMap<BookPriceUnits, BookQtyUnits>, niveles: &[NivelOrden]) {
     for nivel in niveles {
-        let precio = llave_precio(nivel.precio);
-        if precio <= 0 {
+        if !nivel.precio.is_finite() {
+            continue;
+        }
+        let precio = BookPriceUnits::from_f64(nivel.precio);
+        if precio.0 <= 0 {
             continue;
         }
         if nivel.cantidad <= 0.0 || !nivel.cantidad.is_finite() {
             lado.remove(&precio);
         } else {
-            lado.insert(precio, nivel.cantidad);
+            lado.insert(precio, BookQtyUnits::from_f64(nivel.cantidad));
         }
     }
 }
 
-fn llave_precio(precio: f64) -> i64 {
-    (precio * 100_000_000.0).round() as i64
-}
-
-fn escala_precio(precio: i64) -> f64 {
-    precio as f64 / 100_000_000.0
-}
-
 fn cotizacion(
     par: &str,
-    bids: Vec<NivelOrden>,
-    asks: Vec<NivelOrden>,
+    bids: SmallVec<[NivelOrden; 10]>,
+    asks: SmallVec<[NivelOrden; 10]>,
     evento_unix_ms: i64,
 ) -> Option<Cotizacion> {
     let bid = bids.first()?;
@@ -766,10 +1160,10 @@ fn cotizacion(
     Some(Cotizacion {
         exchange: String::new(),
         par: normalizar_par(par),
-        bid: bid.precio,
-        bid_cantidad: bid.cantidad,
-        ask: ask.precio,
-        ask_cantidad: ask.cantidad,
+        bid: (bid.precio),
+        bid_cantidad: (bid.cantidad),
+        ask: (ask.precio),
+        ask_cantidad: (ask.cantidad),
         bids,
         asks,
         evento_unix_ms,
@@ -797,15 +1191,6 @@ fn normalizar_par(par: &str) -> String {
     }
 }
 
-fn activo_base(par: &str) -> String {
-    let compact = par.trim().to_ascii_uppercase().replace(['/', '-'], "");
-    compact
-        .strip_suffix("USDT")
-        .or_else(|| compact.strip_suffix("USD"))
-        .unwrap_or("BTC")
-        .to_string()
-}
-
 fn rfc3339_ms(value: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(value)
         .ok()
@@ -822,8 +1207,8 @@ mod tests {
         let mut libro = LibroEstado::new("BTC/USD");
         let c = parsear_binance(msg, &mut libro).unwrap();
         assert_eq!(c.par, "BTC/USD");
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -832,8 +1217,8 @@ mod tests {
         let mut libro = LibroEstado::new("BTC/USD");
         let c = parsear_coinbase(msg, &mut libro).unwrap();
         assert_eq!(c.par, "BTC/USD");
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -842,8 +1227,8 @@ mod tests {
         let mut libro = LibroEstado::new("BTC/USD");
         let c = parsear_bybit(msg, &mut libro).unwrap();
         assert_eq!(c.par, "BTC/USD");
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -855,8 +1240,8 @@ mod tests {
 
         let c = parsear_bybit(delta, &mut libro).unwrap();
 
-        assert_eq!(c.bid, 100.5);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.5));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -892,8 +1277,8 @@ mod tests {
 
         let c = parsear_kraken(delta, &mut libro).unwrap();
 
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 100.8);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (100.8));
     }
 
     #[test]
@@ -905,8 +1290,8 @@ mod tests {
 
         let c = parsear_okx(delta, &mut libro).unwrap();
 
-        assert_eq!(c.bid, 100.5);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.5));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -925,16 +1310,16 @@ mod tests {
     fn parsea_rest_depth_binance() {
         let msg = br#"{"lastUpdateId":1,"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]]}"#;
         let c = parsear_rest_binance(msg, "BTC/USD").unwrap();
-        assert_eq!(c.bid_cantidad, 2.0);
-        assert_eq!(c.ask_cantidad, 1.5);
+        assert_eq!(c.bid_cantidad, (2.0));
+        assert_eq!(c.ask_cantidad, (1.5));
     }
 
     #[test]
     fn parsea_rest_depth_kraken() {
         let msg = br#"{"error":[],"result":{"XXBTZUSD":{"bids":[["100.0","2.0","1"]],"asks":[["101.0","1.5","1"]]}}}"#;
         let c = parsear_rest_kraken(msg, "BTC/USD").unwrap();
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
@@ -942,22 +1327,194 @@ mod tests {
         let msg = br#"{"bids":[["100.0","2.0",1]],"asks":[["101.0","1.5",1]],"time":"2024-03-09T00:00:00Z"}"#;
         let c = parsear_rest_coinbase(msg, "BTC/USD").unwrap();
         assert_eq!(c.par, "BTC/USD");
-        assert_eq!(c.bid, 100.0);
+        assert_eq!(c.bid, (100.0));
     }
 
     #[test]
     fn parsea_rest_books_okx() {
         let msg = br#"{"code":"0","data":[{"bids":[["100.0","2.0","0","1"]],"asks":[["101.0","1.5","0","1"]],"ts":"1710000000000"}]}"#;
         let c = parsear_rest_okx(msg, "BTC/USD").unwrap();
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
     }
 
     #[test]
     fn parsea_rest_orderbook_bybit() {
         let msg = br#"{"retCode":0,"result":{"b":[["100.0","2.0"]],"a":[["101.0","1.5"]],"ts":"1710000000000"}}"#;
         let c = parsear_rest_bybit(msg, "BTC/USD").unwrap();
-        assert_eq!(c.bid, 100.0);
-        assert_eq!(c.ask, 101.0);
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_bitfinex_ws_snapshot() {
+        let msg = br#"[1,["snapshot",[100.0,2,2.0],[100.5,3,-1.5]]]"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        let c = parsear_bitfinex(msg, &mut libro).unwrap();
+        assert_eq!(c.par, "BTC/USD");
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (100.5));
+    }
+
+    #[test]
+    fn parsea_bitfinex_ws_heartbeat_ignorado() {
+        let msg = br#"[1,"hb"]"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        assert!(parsear_bitfinex(msg, &mut libro).is_none());
+    }
+
+    #[test]
+    fn parsea_kucoin_ws_snapshot() {
+        let msg = br#"{"type":"message","subject":"trade.l2snapshot","topic":"/market/level2:BTC-USDT","data":{"sequence":"1","bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"timestamp":1710000000000}}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        let c = parsear_kucoin(msg, &mut libro).unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_kucoin_ws_welcome_ignorado() {
+        let msg = br#"{"type":"welcome","id":"abc"}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        assert!(parsear_kucoin(msg, &mut libro).is_none());
+    }
+
+    #[test]
+    fn parsea_gateio_ws_snapshot() {
+        let msg = br#"{"method":"order_book.update","params":[null,null,false,{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]]}],"id":1}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        let c = parsear_gateio(msg, &mut libro).unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_gateio_ws_ignora_otros_metodos() {
+        let msg = br#"{"method":"channel.subscribe","params":["book.BTC_USDT"],"id":1}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        assert!(parsear_gateio(msg, &mut libro).is_none());
+    }
+
+    #[test]
+    fn parsea_bitstamp_ws_snapshot() {
+        let msg = br#"{"event":"data","data":{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"timestamp":"1710000000000"}}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        let c = parsear_bitstamp(msg, &mut libro).unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_bitstamp_ws_subscription_ignorada() {
+        let msg = br#"{"event":"bts:subscription_succeeded"}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        assert!(parsear_bitstamp(msg, &mut libro).is_none());
+    }
+
+    #[test]
+    fn parsea_gemini_ws_snapshot() {
+        let msg = br#"[{"type":"snapshot","event_id":1,"price":"100.0","remaining":"2.0","side":"bid"},{"type":"snapshot","event_id":2,"price":"101.0","remaining":"1.5","side":"ask"}]"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+        let c = parsear_gemini(msg, &mut libro).unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_rest_bitfinex_devuelve_cotizacion() {
+        let msg = br#"[[100.0,2,2.0],[101.0,3,-1.5]]"#;
+        let c = parsear_rest_bitfinex(msg, "BTC/USD").unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_rest_kucoin_devuelve_cotizacion() {
+        let msg = br#"{"code":"200000","data":{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"time":1710000000000}}"#;
+        let c = parsear_rest_kucoin(msg, "BTC/USD").unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_rest_gateio_devuelve_cotizacion() {
+        let msg = br#"[{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"t":1710000000000}]"#;
+        let c = parsear_rest_gateio(msg, "BTC/USD").unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_rest_bitstamp_devuelve_cotizacion() {
+        let msg =
+            br#"{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]],"timestamp":"1710000000000"}"#;
+        let c = parsear_rest_bitstamp(msg, "BTC/USD").unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn parsea_rest_gemini_devuelve_cotizacion() {
+        let msg = br#"{"bids":[["100.0","2.0"]],"asks":[["101.0","1.5"]]}"#;
+        let c = parsear_rest_gemini(msg, "BTC/USD").unwrap();
+        assert_eq!(c.bid, (100.0));
+        assert_eq!(c.ask, (101.0));
+    }
+
+    #[test]
+    fn adaptadores_exportan_trait_object_por_venue() {
+        let lista = adaptadores("BTC/USD");
+        // Diez venues vía el trait ExchangeAdapter (polimorfismo uniforme).
+        assert_eq!(lista.len(), 10);
+        let nombres: Vec<&str> = lista.iter().map(|a| a.nombre()).collect();
+        assert!(nombres.contains(&"Binance"));
+        assert!(nombres.contains(&"Gate.io"));
+        assert!(nombres.contains(&"Gemini"));
+        for a in &lista {
+            assert!(!a.ws_url().is_empty());
+            assert!(a.tiene_rest(), "{} debe tener REST fallback", a.nombre());
+            assert!(a
+                .parse_ws(br#"{"ignorado":true}"#, &mut LibroEstado::new("BTC/USD"))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn libro_escalado_preserva_orden_y_elimina_niveles_en_64_casos() {
+        let mut libro = LibroEstado::new("BTC/USD");
+        for caso in 1..=64 {
+            let base = 50_000.0 + caso as f64 / 100.0;
+            libro.actualizar_bids(&[
+                NivelOrden {
+                    precio: base,
+                    cantidad: 0.25,
+                },
+                NivelOrden {
+                    precio: base + 0.01,
+                    cantidad: 0.50,
+                },
+            ]);
+            libro.actualizar_asks(&[
+                NivelOrden {
+                    precio: base + 1.00,
+                    cantidad: 0.30,
+                },
+                NivelOrden {
+                    precio: base + 1.01,
+                    cantidad: 0.60,
+                },
+            ]);
+            let snapshot = libro.cotizacion(1).expect("snapshot ordenado");
+            assert!((snapshot.bid - (base + 0.01)).abs() < 1e-8);
+            assert!((snapshot.ask - (base + 1.00)).abs() < 1e-8);
+
+            libro.actualizar_bids(&[NivelOrden {
+                precio: base + 0.01,
+                cantidad: 0.0,
+            }]);
+            let sin_nivel = libro.cotizacion(2).expect("snapshot tras borrar nivel");
+            assert!((sin_nivel.bid - base).abs() < 1e-8);
+            libro.reset("BTC/USD");
+        }
     }
 }

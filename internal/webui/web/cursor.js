@@ -64,7 +64,7 @@ function initCursor() {
     if (document.hidden) hideCursor();
   });
 
-  // Handle visibility transitions
+  // Sincroniza la visibilidad al entrar o salir de la ventana.
   document.addEventListener('mouseleave', hideCursor);
 
   function hideCursor() {

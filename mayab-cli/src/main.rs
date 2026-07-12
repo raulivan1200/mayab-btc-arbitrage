@@ -5,19 +5,15 @@
 //! optimización genética, API Axum y dashboard estático. No firma órdenes reales,
 //! no custodia fondos y no maneja secretos de exchanges.
 
-mod config;
-mod ga;
-mod mercado;
-mod motor;
-mod persistencia;
-mod server;
-mod types;
-
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[cfg(feature = "timescaledb")]
+use mayab_arbitrage::persistencia_timescale;
+use mayab_arbitrage::{auditoria, config, mercado, motor, persistencia, server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,14 +30,32 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = config::Config::from_env();
-    let persistencia = match persistencia::Persistencia::abrir(&cfg.auditoria_db_path) {
-        Ok(persistencia) => {
-            tracing::info!(ruta = %cfg.auditoria_db_path, "auditoria SQLite activa");
-            Some(Arc::new(persistencia))
-        }
-        Err(err) => {
-            tracing::warn!(ruta = %cfg.auditoria_db_path, error = %err, "auditoria SQLite desactivada");
-            None
+    let persistencia: Option<Arc<dyn auditoria::Auditoria>> =
+        match persistencia::Persistencia::abrir(&cfg.auditoria_db_path) {
+            Ok(persistencia) => {
+                tracing::info!(ruta = %cfg.auditoria_db_path, "auditoria SQLite activa");
+                Some(Arc::new(persistencia))
+            }
+            Err(err) => {
+                tracing::warn!(ruta = %cfg.auditoria_db_path, error = %err, "auditoria SQLite desactivada");
+                None
+            }
+        };
+    #[cfg(feature = "timescaledb")]
+    let persistencia: Option<Arc<dyn auditoria::Auditoria>> = {
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            match persistencia_timescale::TimescaleDbAuditoria::abrir(&url).await {
+                Ok(ts) => {
+                    tracing::info!(ruta = %url, "auditoria TimescaleDB activa");
+                    Some(Arc::new(ts))
+                }
+                Err(err) => {
+                    tracing::warn!(ruta = %url, error = %err, "auditoria TimescaleDB no disponible, usando SQLite");
+                    persistencia
+                }
+            }
+        } else {
+            persistencia
         }
     };
     let motor = Arc::new(motor::Motor::new(
@@ -49,9 +63,13 @@ async fn main() -> anyhow::Result<()> {
         cfg.capital_inicial_usd,
         cfg.balance_inicial_btc,
         cfg.par_base.clone(),
-        persistencia,
+        cfg.pares_extra.clone(),
+        persistencia.map(|p| p as Arc<dyn auditoria::Auditoria>),
     ));
-    mercado::start_feeds(motor.clone(), cfg.par_base.clone()).await;
+    let estado = motor.estado().await;
+    for par in &estado.pares_activos {
+        mercado::start_feeds(motor.clone(), par.clone()).await;
+    }
     motor.clone().start(cfg.intervalo_analisis).await;
     if cfg.demo_rentable_inicial {
         let ga = motor.evolucionar_ga(true, 96).await;

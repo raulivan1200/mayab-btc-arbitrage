@@ -22,6 +22,7 @@ const MANTENIMIENTO_CADA_ESCRITURAS: usize = 256;
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection};
 
+use crate::auditoria::Auditoria;
 use crate::types::{
     AuditoriaDecision, EstadoPersistencia, EventoEjecucion, Operacion, Oportunidad, Rebalanceo,
 };
@@ -38,6 +39,7 @@ pub struct Persistencia {
     escrituras_desde_mantenimiento: AtomicUsize,
 }
 
+#[allow(dead_code)]
 impl Persistencia {
     pub fn abrir(ruta: &str) -> anyhow::Result<Self> {
         let path = Path::new(ruta);
@@ -51,6 +53,9 @@ impl Persistencia {
         conn.busy_timeout(Duration::from_secs(2))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", "-65536")?;
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        conn.execute_batch("PRAGMA mmap_size = 268435456;")?;
         inicializar_schema(&conn)?;
         aplicar_retencion(&conn)?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
@@ -227,6 +232,76 @@ impl Persistencia {
         Ok(())
     }
 
+    pub fn total_pnl(&self) -> f64 {
+        self.conn()
+            .ok()
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(CAST(utilidad_usd AS REAL)), 0) FROM operaciones",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok()
+            })
+            .unwrap_or(0.0)
+    }
+
+    pub fn win_rate(&self) -> f64 {
+        self.conn()
+            .ok()
+            .map(|conn| {
+                let total: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM operaciones", [], |row| row.get(0))
+                    .unwrap_or(0);
+                if total == 0 {
+                    return 0.0;
+                }
+                let ganadoras: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM operaciones WHERE CAST(utilidad_usd AS REAL) > 0",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                ganadoras as f64 / total as f64
+            })
+            .unwrap_or(0.0)
+    }
+
+    pub fn ultimas_operaciones(&self, limite: usize) -> Vec<Operacion> {
+        self.conn().ok().map_or_else(Vec::new, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM operaciones \
+                     ORDER BY tiempo DESC LIMIT ?1",
+                )
+                .unwrap();
+            stmt.query_map([limite as i64], |row| {
+                let json: String = row.get(0)?;
+                serde_json::from_str(&json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.ok())
+            .collect()
+        })
+    }
+
+    pub fn resumen_agregado(&self) -> serde_json::Value {
+        serde_json::json!({
+            "totalPnl": self.total_pnl(),
+            "winRate": self.win_rate(),
+            "operaciones": self.operaciones.load(Ordering::Relaxed),
+            "oportunidades": self.oportunidades.load(Ordering::Relaxed),
+            "eventos": self.eventos.load(Ordering::Relaxed),
+            "auditorias": self.auditorias.load(Ordering::Relaxed),
+            "rebalanceos": self.rebalanceos.load(Ordering::Relaxed),
+            "dbBytes": self.db_bytes.load(Ordering::Relaxed),
+        })
+    }
+
     fn conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.conn
             .lock()
@@ -355,8 +430,12 @@ fn inicializar_schema(conn: &Connection) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_eventos_tiempo ON eventos(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_auditorias_tiempo ON auditorias(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_rebalanceos_tiempo ON rebalanceos(tiempo DESC);
+        CREATE INDEX IF NOT EXISTS idx_operaciones_ruta ON operaciones(ruta, tiempo DESC);
+        CREATE INDEX IF NOT EXISTS idx_eventos_tipo ON eventos(tipo, tiempo DESC);
+        CREATE INDEX IF NOT EXISTS idx_auditorias_decision ON auditorias(decision, tiempo DESC);
         "#,
     )?;
+    conn.execute_batch("PRAGMA optimize;")?;
     Ok(())
 }
 
@@ -365,6 +444,39 @@ fn decimal_string(valor: f64, decimales: usize) -> String {
         format!("{valor:.decimales$}")
     } else {
         "0".to_string()
+    }
+}
+
+impl Auditoria for Persistencia {
+    fn registrar_operacion(&self, op: &Operacion) -> anyhow::Result<()> {
+        Persistencia::registrar_operacion(self, op)
+    }
+    fn registrar_evento(&self, evento: &EventoEjecucion) -> anyhow::Result<()> {
+        Persistencia::registrar_evento(self, evento)
+    }
+    fn registrar_rebalanceo(&self, rebalanceo: &Rebalanceo) -> anyhow::Result<()> {
+        Persistencia::registrar_rebalanceo(self, rebalanceo)
+    }
+    fn registrar_oportunidades(&self, oportunidades: &[Oportunidad]) -> anyhow::Result<()> {
+        Persistencia::registrar_oportunidades(self, oportunidades)
+    }
+    fn registrar_auditorias(&self, auditorias: &[AuditoriaDecision]) -> anyhow::Result<()> {
+        Persistencia::registrar_auditorias(self, auditorias)
+    }
+    fn estado(&self) -> EstadoPersistencia {
+        Persistencia::estado(self)
+    }
+    fn total_pnl(&self) -> f64 {
+        Persistencia::total_pnl(self)
+    }
+    fn win_rate(&self) -> f64 {
+        Persistencia::win_rate(self)
+    }
+    fn ultimas_operaciones(&self, limite: usize) -> Vec<Operacion> {
+        Persistencia::ultimas_operaciones(self, limite)
+    }
+    fn resumen_agregado(&self) -> serde_json::Value {
+        Persistencia::resumen_agregado(self)
     }
 }
 

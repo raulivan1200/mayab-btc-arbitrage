@@ -16,9 +16,10 @@ use axum::{
     extract::{
         rejection::JsonRejection,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Request, State,
     },
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -33,6 +34,7 @@ use tower_http::{
 
 use crate::{
     ga::ConfigGa,
+    metricas::Metricas,
     motor::{EscenarioDemo, Motor},
     types::{Cotizacion, EstadoPublico, ExchangeConfig, MapaCostos},
 };
@@ -42,15 +44,18 @@ struct EstadoApp {
     motor: Arc<Motor>,
     token_admin: Option<String>,
     ws_tx: tokio::sync::broadcast::Sender<String>,
+    metricas: Metricas,
 }
 
 /// Construye el router Axum completo del binario.
 pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
     let (ws_tx, _) = tokio::sync::broadcast::channel(16);
+    let metricas = Metricas::new();
     let state = EstadoApp {
         motor: motor.clone(),
         token_admin,
         ws_tx: ws_tx.clone(),
+        metricas: metricas.clone(),
     };
 
     tokio::spawn(async move {
@@ -85,6 +90,8 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/lab/sweep", get(lab_sweep))
         .route("/api/export/json", get(exportar_json))
         .route("/api/export/csv", get(exportar_csv))
+        .route("/metrics", get(metrics))
+        .route("/api/metrics", get(metrics))
         .route("/api/config", post(actualizar_config_http))
         .route("/api/demo", post(demo_escenario))
         .route("/api/demo/caos", post(demo_caos_http))
@@ -96,6 +103,10 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/exchanges", post(alternar_exchange_http))
         .route("/tiempo-real", get(tiempo_real))
         .fallback_service(archivos_estaticos)
+        .layer(axum::middleware::from_fn_with_state(
+            metricas,
+            contar_peticiones,
+        ))
         .layer(CompressionLayer::new())
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
@@ -124,6 +135,33 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "ok": true }))
+}
+
+async fn contar_peticiones(State(metricas): State<Metricas>, req: Request, next: Next) -> Response {
+    let ruta = req.uri().path().to_string();
+    let metodo = req.method().clone();
+    let inicio = Metricas::ahora();
+    let resp = next.run(req).await;
+    metricas.registrar_peticion(
+        &ruta,
+        metodo.as_str(),
+        resp.status().as_u16(),
+        inicio.elapsed(),
+    );
+    resp
+}
+
+async fn metrics(State(app): State<EstadoApp>) -> Response {
+    let estado = app.motor.estado().await;
+    let texto = app.metricas.render(&estado);
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        texto,
+    )
+        .into_response()
 }
 
 async fn estado(State(app): State<EstadoApp>) -> Json<crate::types::EstadoPublico> {
@@ -459,6 +497,7 @@ async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ParcheConfig {
     #[serde(rename = "maxOperacionBtc")]
     max_operacion_btc: Option<f64>,
@@ -508,6 +547,7 @@ struct ParcheConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SolicitudDemo {
     escenario: EscenarioDemoApi,
 }
@@ -541,6 +581,7 @@ impl From<EscenarioDemoApi> for EscenarioDemo {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SolicitudEvolucionGa {
     #[serde(rename = "usarReplaySiVacio", default = "default_true")]
     usar_replay_si_vacio: bool,
@@ -548,6 +589,7 @@ struct SolicitudEvolucionGa {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SolicitudMcp {
     tool: String,
     #[serde(default)]
@@ -816,6 +858,7 @@ async fn evolucionar_ga_http(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SolicitudExchange {
     exchange: String,
     activo: bool,
@@ -1740,6 +1783,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             "demoCaos": "/api/demo/caos",
             "exportJson": "/api/export/json",
             "exportCsv": "/api/export/csv",
+            "metrics": "/metrics",
             "websocket": "/tiempo-real"
         },
         "notas": [
@@ -2552,7 +2596,7 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
     let base_mediana = validacion_base["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     let ga_mediana = validacion_ga["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     json!({
-        "ticks": 1200,
+        "ticks": 240,
         "seedPrincipal": 42,
         "fuenteOptimizada": fuente_ga,
         "parametrosOptimizados": {
@@ -2628,16 +2672,78 @@ fn lab_sweep_reproducible(estado: &EstadoPublico) -> serde_json::Value {
         .cloned()
         .unwrap_or_else(|| json!("sin_ganador"));
 
+    let sensibilidad = sensibilidad_parametros(cfg, umbral_ga, max_btc_ga);
+
     json!({
         "generadoEn": chrono::Utc::now(),
         "tipo": "research_lab_sweep",
-        "ticks": 1200,
+        "ticks": 240,
         "seed": 11,
         "semillasValidacion": semillas,
         "ganador": ganador,
         "resultados": resultados,
+        "sensibilidad": sensibilidad,
         "lectura": "Sweep reproducible: el resultado principal usa la misma semilla y la robustez usa 24 semillas comunes. GA Edge consume el campeon publicado, no parametros inventados para el reporte.",
         "limitacion": "No prueba rentabilidad real; prueba sensibilidad del motor y parametros bajo un replay deterministico."
+    })
+}
+
+/// Barre el umbral de diferencial neto y el slippage para medir la respuesta
+/// del PnL (análisis de sensitividad). Cada punto usa la semilla base para
+/// aislar el efecto del parámetro.
+fn sensibilidad_parametros(
+    cfg: &MapaCostos,
+    umbral_base: f64,
+    max_btc_base: f64,
+) -> serde_json::Value {
+    let umbrales = [0.25, 0.5, 1.0, 1.5, 2.0];
+    let puntos_umbral = umbrales
+        .iter()
+        .map(|mult| {
+            let u = (umbral_base * mult).clamp(0.05, 5.0);
+            let r = simular_backtest(cfg, u, max_btc_base, 11);
+            json!({
+                "parametro": "umbralDiferencialNetoBps",
+                "multiplicador": mult,
+                "valor": u,
+                "pnlUsd": r.pnl_usd,
+                "trades": r.trades_ejecutados,
+                "winRate": r.win_rate,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let slippages = [0.0, 0.5, 1.0, 2.0, 4.0];
+    let puntos_slippage = slippages
+        .iter()
+        .map(|mult| {
+            let r = simular_backtest_factor(cfg, umbral_base, max_btc_base, 11, *mult);
+            json!({
+                "parametro": "slippageMultiplicador",
+                "multiplicador": mult,
+                "pnlUsd": r.pnl_usd,
+                "trades": r.trades_ejecutados,
+                "winRate": r.win_rate,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Elasticidad: cambio relativo de PnL por cambio unitario del multiplicador.
+    let pnls: Vec<f64> = puntos_umbral
+        .iter()
+        .map(|p| p.get("pnlUsd").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .collect();
+    let elasticidad = if pnls.len() >= 2 && pnls[0].abs() > 1e-9 {
+        (pnls[pnls.len() - 1] - pnls[0]) / pnls[0]
+    } else {
+        0.0
+    };
+
+    json!({
+        "umbral": puntos_umbral,
+        "slippage": puntos_slippage,
+        "elasticidadPnlVsUmbral": elasticidad,
+        "lectura": "Muestra cuánto se mueve el PnL al variar el umbral y el slippage bajo replay deterministico.",
     })
 }
 
@@ -2721,7 +2827,22 @@ fn simular_backtest(
     max_btc: f64,
     seed: u64,
 ) -> ResultadoBacktest {
-    let exchanges = ["Binance", "Kraken", "Coinbase", "OKX", "Bybit"];
+    simular_backtest_factor(cfg, umbral_bps, max_btc, seed, 1.0)
+}
+
+fn simular_backtest_factor(
+    cfg: &MapaCostos,
+    umbral_bps: f64,
+    max_btc: f64,
+    seed: u64,
+    slippage_mult: f64,
+) -> ResultadoBacktest {
+    let mut cfg = cfg.clone();
+    cfg.deslizamiento_bps *= slippage_mult;
+    let exchanges = [
+        "Binance", "Kraken", "Coinbase", "OKX", "Bybit", "Bitfinex", "KuCoin", "Gate.io",
+        "Bitstamp", "Gemini",
+    ];
     let mut rng = StdRng::seed_from_u64(seed);
     let mut precio = 100_000.0;
     let mut rutas = 0;
@@ -2733,7 +2854,9 @@ fn simular_backtest(
     let mut suma_spread = 0.0;
     let mut utilidades = Vec::new();
 
-    for _ in 0..1200 {
+    // 240 ticks × 90 rutas × 24 semillas conservan una muestra amplia sin
+    // convertir el endpoint interactivo del laboratorio en un trabajo largo.
+    for _ in 0..240 {
         precio *= 1.0 + rng.gen_range(-0.0009..0.0009);
         let mut libros = Vec::new();
         for exchange in exchanges {
@@ -2889,6 +3012,7 @@ mod tests {
         EstadoPersistencia, EventoEjecucion, FeatureMlEdge, LatenciaExchange, Metricas, NivelOrden,
         Operacion, PuntoSerie, Rebalanceo, TelemetriaPipeline, TransicionEjecucion,
     };
+    use smallvec::SmallVec;
 
     #[test]
     fn preflight_exige_evidencia_forense_y_fill_parcial() {
@@ -2923,7 +3047,7 @@ mod tests {
         let backtest = backtest_reproducible(&estado);
         let lab = lab_sweep_reproducible(&estado);
 
-        assert_eq!(backtest["ticks"], 1200);
+        assert_eq!(backtest["ticks"], 240);
         assert!(backtest["base"]["rutasEvaluadas"].as_u64().unwrap_or(0) > 0);
         assert!(matches!(
             backtest["comparacion"]["ganador"].as_str(),
@@ -2935,6 +3059,23 @@ mod tests {
         assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));
         assert!(lab["ganador"].as_str().is_some_and(|v| !v.is_empty()));
         assert_eq!(lab["resultados"][0]["validacion"]["corridas"], 24);
+
+        // Fase 9: análisis de sensibilidad (umbral y slippage).
+        assert!(
+            lab["sensibilidad"]["umbral"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+                >= 5
+        );
+        assert!(
+            lab["sensibilidad"]["slippage"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+                >= 5
+        );
+        assert!(lab["sensibilidad"]["elasticidadPnlVsUmbral"].is_number());
     }
 
     #[test]
@@ -3064,15 +3205,17 @@ mod tests {
         let mut operaciones = VecDeque::new();
         if con_fill_parcial {
             operaciones.push_front(Operacion {
+                tipo: crate::types::TipoOportunidad::Lineal,
+                piernas: vec![],
                 id: "op-parcial-test".to_string(),
                 compra_en: "Binance".to_string(),
                 venta_en: "Kraken".to_string(),
                 par: "BTC/USD".to_string(),
-                cantidad_btc: 0.04,
-                precio_compra: 100_000.0,
-                precio_venta: 100_090.0,
-                utilidad_usd: 2.4,
-                utilidad_esperada_usd: 2.4,
+                cantidad_btc: (0.04),
+                precio_compra: (100_000.0),
+                precio_venta: (100_090.0),
+                utilidad_usd: (2.4),
+                utilidad_esperada_usd: (2.4),
                 costos: CostosOperacion::default(),
                 parcial: true,
                 ejecutada_en: ahora,
@@ -3094,14 +3237,14 @@ mod tests {
                 razon: "ruta rentable".to_string(),
                 score: 0.82,
                 pesos_ga: vec![0.4, 0.2, 0.2, 0.1, 0.1],
-                utilidad_usd: 2.4,
+                utilidad_usd: (2.4),
                 diferencial_neto_bps: 1.4,
-                cantidad_btc: 0.04,
-                costo_total_usd: 0.8,
+                cantidad_btc: (0.04),
+                costo_total_usd: (0.8),
                 latencia_max_ms: 12,
                 z_score: 1.2,
-                compra_usd_antes: 10_000.0,
-                venta_btc_antes: 0.2,
+                compra_usd_antes: (10_000.0),
+                venta_btc_antes: (0.2),
                 tiempo: ahora,
             });
         }
@@ -3125,8 +3268,8 @@ mod tests {
                 detalle: "evento QA".to_string(),
                 severidad: "normal".to_string(),
                 tiempo: ahora,
-                utilidad_usd: 2.4,
-                cantidad_btc: 0.04,
+                utilidad_usd: (2.4),
+                cantidad_btc: (0.04),
             }]),
             trazas_ejecucion: if con_auditoria {
                 VecDeque::from([TransicionEjecucion {
@@ -3138,7 +3281,7 @@ mod tests {
                     pierna: "ambas".to_string(),
                     detalle: "ledger conciliado".to_string(),
                     exposicion_btc: 0.0,
-                    pnl_realizado_usd: 2.4,
+                    pnl_realizado_usd: (2.4),
                     tiempo: ahora,
                 }])
             } else {
@@ -3150,8 +3293,8 @@ mod tests {
                 desde: "Binance".to_string(),
                 hacia: "Kraken".to_string(),
                 activo: "BTC".to_string(),
-                cantidad: 0.01,
-                costo_usd: 5.0,
+                cantidad: (0.01),
+                costo_usd: (5.0),
                 razon: "QA rebalanceo".to_string(),
                 tiempo: ahora,
             }]),
@@ -3159,18 +3302,18 @@ mod tests {
             balances: vec![
                 Balance {
                     exchange: "Binance".to_string(),
-                    usd: 10_000.0,
-                    btc: 0.2,
+                    usd: (10_000.0),
+                    btc: (0.2),
                 },
                 Balance {
                     exchange: "Kraken".to_string(),
-                    usd: 10_000.0,
-                    btc: 0.2,
+                    usd: (10_000.0),
+                    btc: (0.2),
                 },
                 Balance {
                     exchange: "Coinbase".to_string(),
-                    usd: 10_000.0,
-                    btc: 0.2,
+                    usd: (10_000.0),
+                    btc: (0.2),
                 },
             ],
             latencias_exchange: vec![LatenciaExchange {
@@ -3195,7 +3338,7 @@ mod tests {
             metricas: Metricas {
                 estado_riesgo: "normal".to_string(),
                 operaciones: if con_fill_parcial { 1 } else { 0 },
-                utilidad_acumulada_usd: if con_fill_parcial { 2.4 } else { 0.0 },
+                utilidad_acumulada_usd: (if con_fill_parcial { 2.4 } else { 0.0 }),
                 rebalanceos_totales: 1,
                 ..Metricas::default()
             },
@@ -3213,13 +3356,14 @@ mod tests {
                 convergente: false,
                 mejores_pesos: vec![0.4, 0.2, 0.2, 0.1, 0.1],
                 umbral_optimizado: 0.65,
-                max_operacion_optimizada_btc: 0.18,
+                max_operacion_optimizada_btc: (0.18),
                 tolerancia_latencia_ms: 4500,
                 operaciones_evaluadas: 24,
                 fallos_evaluados: 1,
                 mejora_generacional: 1.2,
                 temperatura_annealing: 0.9,
                 inyecciones_diferenciales: 1,
+                frontera_pareto: vec![],
                 metaheuristicas: vec!["torneo".to_string(), "annealing".to_string()],
             }),
             ml_edge: Some(EstadoMlEdge {
@@ -3229,7 +3373,7 @@ mod tests {
                 decision: "aceptar".to_string(),
                 score_actual: 0.82,
                 confianza: 0.76,
-                expected_value_usd: 2.4,
+                expected_value_usd: (2.4),
                 survival_probability: 0.91,
                 fill_probability: 0.88,
                 adverse_selection_bps: 0.2,
@@ -3270,18 +3414,18 @@ mod tests {
         Cotizacion {
             exchange: exchange.to_string(),
             par: par.to_string(),
-            bid,
-            bid_cantidad: 1.0,
-            ask,
-            ask_cantidad: 1.0,
-            bids: vec![NivelOrden {
+            bid: (bid),
+            bid_cantidad: (1.0),
+            ask: (ask),
+            ask_cantidad: (1.0),
+            bids: SmallVec::from_vec(vec![NivelOrden {
                 precio: bid,
                 cantidad: 1.0,
-            }],
-            asks: vec![NivelOrden {
+            }]),
+            asks: SmallVec::from_vec(vec![NivelOrden {
                 precio: ask,
                 cantidad: 1.0,
-            }],
+            }]),
             evento_unix_ms: ahora.timestamp_millis(),
             recibida_en: ahora,
             latencia_ms: 12,
@@ -3302,15 +3446,15 @@ mod tests {
                 nombre.to_string(),
                 ExchangeConfig {
                     nombre: nombre.to_string(),
-                    fee_taker: 0.001,
-                    retiro_btc: 0.0001,
+                    fee_taker: (0.001),
+                    retiro_btc: (0.0001),
                     confiabilidad: 0.99,
                 },
             );
         }
         MapaCostos {
-            max_operacion_btc: 0.18,
-            min_utilidad_usd: 1.25,
+            max_operacion_btc: (0.18),
+            min_utilidad_usd: (1.25),
             min_diferencial_neto_bps: 0.65,
             deslizamiento_bps: 0.18,
             latencia_riesgo_bps: 0.08,
@@ -3319,7 +3463,7 @@ mod tests {
             enfriamiento_ms: 800,
             usdt_usd_premium_bps: 3.0,
             permitir_cruce_usd_usdt: true,
-            circuit_breaker_perdida_usd: 80.0,
+            circuit_breaker_perdida_usd: (80.0),
             circuit_breaker_ventana_min: 15,
             volatilidad_umbral_bps: 50.0,
             volatilidad_ventana_seg: 30,
@@ -3329,7 +3473,7 @@ mod tests {
             movimiento_brusco_bps: 7.0,
             rebalance_umbral_pct: 35.0,
             rebalance_max_transfer_pct: 35.0,
-            costo_rebalanceo_usd: 5.0,
+            costo_rebalanceo_usd: (5.0),
             rebalance_settlement_ms: 1_800,
             exchanges,
         }

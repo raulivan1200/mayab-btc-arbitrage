@@ -1,0 +1,23 @@
+[package]
+name = "mayab-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Binario ejecutable de Mayab Arbitraje BTC (ensambla feeds, motor, API y dashboard)."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "mayab-arbitrage"
+path = "src/main.rs"
+
+[dependencies]
+mayab-arbitrage = { path = "../mayab-arbitrage" }
+anyhow = "1.0"
+axum = "0.7"
+rustls = { version = "0.23", features = ["ring"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[features]
+timescaledb = ["mayab-arbitrage/timescaledb"]

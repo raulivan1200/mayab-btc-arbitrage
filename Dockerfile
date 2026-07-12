@@ -1,25 +1,57 @@
-FROM rust:1.96-slim AS build
+# ── Stage 1: Builder ──
+FROM rust:1.96-slim-bookworm AS builder
 
-WORKDIR /src
+RUN rustup set profile minimal
+WORKDIR /build
+
+# Cache dependencies: copy manifests first
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN cargo fetch --locked
-COPY internal/webui/web ./internal/webui/web
-COPY README.md ARCHITECTURE.md DEMO_SCRIPT.md ./
-COPY scripts ./scripts
-RUN cargo build --release --locked
+COPY mayab-arbitrage/Cargo.toml mayab-arbitrage/Cargo.toml
+COPY mayab-cli/Cargo.toml mayab-cli/Cargo.toml
+RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
+    echo '' > mayab-arbitrage/src/lib.rs && \
+    echo 'fn main() {}' > mayab-cli/src/main.rs && \
+    cargo build --release 2>/dev/null; \
+    rm -rf mayab-arbitrage/src mayab-cli/src \
+           target/release/deps/mayab_arbitrage-* \
+           target/release/deps/libmayab_arbitrage-* \
+           target/release/mayab-arbitrage; \
+    find target/release/.fingerprint -maxdepth 1 \
+      \( -name 'mayab-arbitrage-*' -o -name 'mayab-cli-*' \) \
+      -exec rm -rf {} +
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Real source
+COPY mayab-arbitrage/src ./mayab-arbitrage/src
+COPY mayab-cli/src ./mayab-cli/src
+RUN touch mayab-cli/src/main.rs mayab-arbitrage/src/lib.rs && \
+    cargo build --release && \
+    objcopy --compress-debug-sections \
+      target/release/mayab-arbitrage /mayab-arbitrage
+
+# ── Stage 2: Runtime ──
+FROM debian:bookworm-slim
+
+RUN groupadd --system nonroot \
+    && useradd --system --gid nonroot --no-create-home nonroot
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /mayab-arbitrage /app/mayab-arbitrage
+COPY internal/webui /app/internal/webui
+
+RUN mkdir -p /data && chown -R nonroot:nonroot /app /data
 
 WORKDIR /app
-COPY --from=build /src/target/release/mayab-arbitrage /mayab-arbitrage
-COPY --from=build /src/internal/webui/web /app/internal/webui/web
-COPY README.md /app/README.md
-COPY --from=build /src/ARCHITECTURE.md /app/ARCHITECTURE.md
-COPY --from=build /src/DEMO_SCRIPT.md /app/DEMO_SCRIPT.md
-COPY --from=build /src/scripts /app/scripts
-ENV PORT=8080
-ENV RUST_LOG=error
-EXPOSE 8080
 USER nonroot:nonroot
-ENTRYPOINT ["/mayab-arbitrage"]
+
+ENV PORT=8080
+ENV AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 --start-period=10s \
+  CMD curl -sf http://localhost:8080/healthz || exit 1
+
+ENTRYPOINT ["/app/mayab-arbitrage"]

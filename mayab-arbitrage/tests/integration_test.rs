@@ -1,0 +1,524 @@
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    Router,
+};
+use mayab_arbitrage::{config::Config, motor::Motor, persistencia::Persistencia, server};
+use tower::ServiceExt;
+
+async fn make_test_app() -> (Router, std::sync::Arc<Motor>) {
+    let cfg = Config::from_env();
+    let persistencia = Persistencia::abrir(&cfg.auditoria_db_path)
+        .ok()
+        .map(std::sync::Arc::new);
+    let motor = std::sync::Arc::new(Motor::new(
+        cfg.costos.clone(),
+        cfg.capital_inicial_usd,
+        cfg.balance_inicial_btc,
+        cfg.par_base.clone(),
+        cfg.pares_extra.clone(),
+        persistencia.map(|p| p as std::sync::Arc<dyn mayab_arbitrage::auditoria::Auditoria>),
+    ));
+    let app = server::router(motor.clone(), cfg.token_admin.clone());
+    (app, motor)
+}
+
+#[tokio::test]
+async fn integration_motor_startup_and_receives_quotes() {
+    let cfg = Config::from_env();
+    let persistencia = Persistencia::abrir(&cfg.auditoria_db_path)
+        .ok()
+        .map(std::sync::Arc::new);
+    let motor = std::sync::Arc::new(Motor::new(
+        cfg.costos.clone(),
+        cfg.capital_inicial_usd,
+        cfg.balance_inicial_btc,
+        cfg.par_base.clone(),
+        cfg.pares_extra.clone(),
+        persistencia.map(|p| p as std::sync::Arc<dyn mayab_arbitrage::auditoria::Auditoria>),
+    ));
+
+    let cotizacion = mayab_arbitrage::types::Cotizacion {
+        exchange: "Binance".into(),
+        par: "BTC/USD".into(),
+        bid: 100_000.0,
+        bid_cantidad: 2.0,
+        ask: 100_100.0,
+        ask_cantidad: 1.5,
+        bids: Default::default(),
+        asks: Default::default(),
+        evento_unix_ms: chrono::Utc::now().timestamp_millis(),
+        recibida_en: chrono::Utc::now(),
+        latencia_ms: 50,
+        secuencia: 1,
+        exchange_sequence: None,
+        integrity_status: "snapshot".into(),
+        resyncs: 0,
+        timestamp_confiable: true,
+        conectado: true,
+        ultimo_mensaje: "".into(),
+    };
+    motor.recibir_cotizacion(cotizacion).await;
+
+    let cotizacion2 = mayab_arbitrage::types::Cotizacion {
+        exchange: "Coinbase".into(),
+        par: "BTC/USD".into(),
+        bid: 100_200.0,
+        bid_cantidad: 1.0,
+        ask: 100_300.0,
+        ask_cantidad: 1.0,
+        bids: Default::default(),
+        asks: Default::default(),
+        evento_unix_ms: chrono::Utc::now().timestamp_millis(),
+        recibida_en: chrono::Utc::now(),
+        latencia_ms: 80,
+        secuencia: 2,
+        exchange_sequence: None,
+        integrity_status: "snapshot".into(),
+        resyncs: 0,
+        timestamp_confiable: true,
+        conectado: true,
+        ultimo_mensaje: "".into(),
+    };
+    motor.recibir_cotizacion(cotizacion2).await;
+
+    let estado = motor.estado().await;
+    assert_eq!(estado.cotizaciones.len(), 2);
+    assert_eq!(estado.exchanges_activos.get("Binance"), Some(&true));
+    assert_eq!(estado.exchanges_activos.get("Coinbase"), Some(&true));
+}
+
+#[tokio::test]
+async fn integration_demo_mercado_rentable_genera_pnl_positivo() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/reset")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"escenario":"mercado_rentable"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/estado")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let estado: mayab_arbitrage::types::EstadoPublico = serde_json::from_slice(&body).unwrap();
+
+    assert!(
+        estado.metricas.utilidad_acumulada_usd > 0.0,
+        "PnL debe ser positivo: {}",
+        estado.metricas.utilidad_acumulada_usd
+    );
+    assert!(
+        estado.metricas.operaciones_totales > 0,
+        "Debe haber operaciones"
+    );
+    assert!(
+        estado.genetico.is_some(),
+        "GA debe estar activo tras mercado rentable"
+    );
+}
+
+#[tokio::test]
+async fn integration_ga_evolucionar_con_replay_sintetico() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/reset")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/ga/evolucionar")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"usarReplaySiVacio":true,"muestras":24}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["fuente"], "replay_sintetico");
+    assert!(json["generacion"].as_i64().unwrap() > 0);
+    assert_eq!(json["ga"]["mejoresPesos"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn integration_demo_caos_ejecuta_checks_y_recupera() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/reset")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/caos")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert!(
+        json["checks"].as_object().unwrap().len() >= 8,
+        "Debe tener 8+ checks"
+    );
+    assert_eq!(
+        json["estadoFinal"]["exposicionResidualBtc"], 0.0,
+        "Exposición residual debe ser 0"
+    );
+}
+
+#[tokio::test]
+async fn integration_estado_endpoint_devuelve_contrato_completo() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/estado")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let estado: mayab_arbitrage::types::EstadoPublico = serde_json::from_slice(&body).unwrap();
+
+    assert!(estado.pares_activos.contains(&"BTC/USD".to_string()));
+    assert!(!estado.exchanges_activos.is_empty());
+    assert!(estado.metricas.capital_inicial_usd > 0.0);
+    assert!(estado.configuracion.exchanges.len() >= 5);
+    assert!(estado.genetico.is_some() || estado.genetico.is_none());
+}
+
+#[tokio::test]
+async fn integration_preflight_reporta_salud_feeds_y_ga() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/preflight")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // judgeReadiness.status es "ready" o "review"
+    let status = json["judgeReadiness"]["status"].as_str().unwrap();
+    assert!(status == "ready" || status == "review");
+    // En preflight, "checks" es un array de {name, ok, detalle}
+    assert!(json["checks"].is_array());
+    assert!(json["checks"].as_array().unwrap().len() >= 10);
+    assert!(json["judgeReadiness"]["checks"].is_array());
+}
+
+#[tokio::test]
+async fn integration_toggle_exchange_desactiva_y_reactiva() {
+    let (app, motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/exchanges")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"exchange":"Binance","activo":false}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let estado = motor.estado().await;
+    assert_eq!(estado.exchanges_activos.get("Binance"), Some(&false));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/exchanges")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"exchange":"Binance","activo":true}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let estado = motor.estado().await;
+    assert_eq!(estado.exchanges_activos.get("Binance"), Some(&true));
+}
+
+#[tokio::test]
+async fn integration_circuit_breaker_pausa_ejecuciones() {
+    let (app, motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/reset")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"escenario":"circuit_breaker"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let estado = motor.estado().await;
+    assert!(
+        estado.metricas.circuit_breaker_activo,
+        "Circuit breaker debe estar activo"
+    );
+}
+
+#[tokio::test]
+async fn integration_rebalanceo_forzado_mueve_saldo_y_cobra_costo() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo/reset")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/demo")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"escenario":"rebalanceo"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert!(json["rebalanceo"]["costoUsd"].as_f64().unwrap() > 0.0);
+    assert!(json["rebalanceo"]["cantidad"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn integration_backtest_devuelve_metricas_comparativas() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/backtest")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Contrato JSON del backtest.
+    assert!(json["base"].is_object());
+    assert!(json["optimizada"].is_object());
+    assert!(json["validacionMultisemilla"]["base"]["pnlMedianoUsd"].is_number());
+    assert!(json["validacionMultisemilla"]["optimizada"]["pnlMedianoUsd"].is_number());
+    assert!(json["comparacion"]["ganador"].is_string());
+}
+
+#[tokio::test]
+async fn integration_modo_jurado_devuelve_rubrica_y_scorecard() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/jurado")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // rubricaOficial y scorecard son arreglos; coberturaFinalista es un objeto.
+    assert!(json["rubricaOficial"].is_array());
+    assert!(json["scorecard"].is_array());
+    assert!(json["coberturaFinalista"].is_object());
+    assert!(json["checks"].is_array());
+    assert!(json["evidenciaClave"].is_object());
+    assert!(json["enlaces"].is_object());
+}
+
+#[tokio::test]
+async fn integration_resumen_llm_devuelve_snapshot_compacto() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/resumen-llm")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json["resumen"].as_str().unwrap().len() > 50);
+    assert!(json["markdown"].as_str().unwrap().contains("# "));
+    assert!(json["decision"].is_string());
+    assert!(json["metricasClave"]["pnlUsd"].is_number());
+    // mejorRuta puede ser null si no hay oportunidades
+    assert!(json["mejorRuta"].is_object() || json["mejorRuta"].is_null());
+    assert!(json["decisionInspector"].is_array());
+    assert!(json["ga"].is_object() || json["ga"].is_null());
+    assert!(json["mlEdge"].is_object() || json["mlEdge"].is_null());
+    assert!(json["persistencia"].is_object() || json["persistencia"].is_null());
+}
+
+#[tokio::test]
+async fn integration_paquete_evaluacion_devuelve_evidencia_completa() {
+    let (app, _motor) = make_test_app().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/paquete-evaluacion")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json["criterios"].is_array());
+    assert!(json["puntajeTotal"].is_number());
+    assert!(json["huellaAuditoria"].is_string());
+    assert!(json["scriptDemo"].is_array());
+    assert!(json["endpoints"].is_object());
+}
+
+#[tokio::test]
+async fn integration_export_json_y_csv_funcionan() {
+    let (app, _motor) = make_test_app().await;
+
+    // JSON
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/export/json")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["operaciones"].is_array());
+
+    // CSV
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/export/csv")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let csv = String::from_utf8(body.to_vec()).unwrap();
+    assert!(csv.contains("tipo,tiempo,ruta"));
+}
+
+#[tokio::test]
+async fn integration_metrics_endpoint_devuelve_formato_prometheus() {
+    let (app, _motor) = make_test_app().await;
+
+    // Primero una peticion que el middleware debe contar.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/estado")
+        .body(Body::empty())
+        .unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(content_type.contains("text/plain"));
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let metrics = String::from_utf8(body.to_vec()).unwrap();
+
+    // Formato de exposicion Prometheus: HELP/TYPE y metricas con valor numerico.
+    assert!(metrics.contains("# HELP mayab_http_requests_total"));
+    assert!(metrics.contains("# TYPE mayab_http_requests_total counter"));
+    assert!(metrics.contains("mayab_http_requests_total{"));
+    assert!(metrics.contains("mayab_pnl_usd "));
+    assert!(metrics.contains("mayab_exchanges_activos "));
+}

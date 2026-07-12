@@ -1,13 +1,20 @@
 services:
-  mayab-btc-arbitrage:
+  mayab:
     build: .
     ports:
       - "8080:8080"
     environment:
-      PORT: "8080"
-      MAX_OPERACION_BTC: "0.18"
-      MIN_UTILIDAD_USD: "1.25"
-      MIN_DIFERENCIAL_NETO_BPS: "0.65"
-      DESLIZAMIENTO_BPS: "0.35"
-      ENFRIAMIENTO_MS: "1400"
-      RETIRO_AMORTIZADO_BPS: "0.12"
+      - PORT=8080
+      - AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite
+      - RUST_LOG=info
+    volumes:
+      - mayab-data:/data
+    healthcheck:
+      test: curl -sf http://localhost:8080/healthz || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mayab-data:

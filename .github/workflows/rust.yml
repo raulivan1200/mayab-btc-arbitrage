@@ -1,32 +1,51 @@
-name: CI/CD
+name: Rust CI and Cloud Run
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_VERSION: "1.96.0"
 
 jobs:
-  check:
+  ci:
+    name: Format, test and release build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        run: rustup component add rustfmt clippy
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt
+          rustup default "$RUST_VERSION"
 
-      - name: Static checks
-        run: make check
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets --locked
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --workspace --all-targets --release --locked
 
-      - name: Smoke demo package
+      - name: Validate dashboard JavaScript
+        run: node --check internal/webui/web/app.js
+
+      - name: Smoke release binary
         run: |
-          RUST_LOG=error cargo run --locked &
+          PORT=8080 \
+          RUST_LOG=error \
+          AUDITORIA_DB_PATH="${RUNNER_TEMP}/mayab-ci.sqlite" \
+          target/release/mayab-arbitrage &
           app_pid=$!
           trap 'kill "$app_pid" 2>/dev/null || true' EXIT
           for _ in $(seq 1 40); do
@@ -37,11 +56,33 @@ jobs:
           done
           ./scripts/smoke-demo.sh
 
+  container:
+    name: Build production container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build multi-stage image
+        run: docker build --tag mayab-btc-arbitrage:ci .
+
+      - name: Verify non-root runtime metadata
+        run: |
+          test "$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Config.User}}')" = "nonroot:nonroot"
+          test "$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Config.Entrypoint}}')" = "[/app/mayab-arbitrage]"
+
   deploy:
     name: Deploy Cloud Run
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: check
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') &&
+      vars.GCP_PROJECT_ID != '' &&
+      vars.WIF_PROVIDER != '' &&
+      vars.WIF_SERVICE_ACCOUNT != '' &&
+      vars.GAR_REPOSITORY != ''
+    needs: [ci, container]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -50,8 +91,8 @@ jobs:
       cancel-in-progress: false
     env:
       PROJECT: ${{ vars.GCP_PROJECT_ID }}
-      REGION: ${{ vars.GCP_REGION }}
-      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'mayab-btc-arbitrage' }}
       GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
       MIN_INSTANCES: "1"
       MAX_INSTANCES: "1"

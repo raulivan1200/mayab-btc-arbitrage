@@ -1,8 +1,8 @@
-# Mayab Arbitraje BTC — AI + Algoritmos Genéticos
+# Mayab Arbitraje BTC — Arbitraje simulado y optimización genética
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
-Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante algoritmos genéticos. Monitorea libros de órdenes de BTC en 5 exchanges simultáneamente, detecta oportunidades de arbitraje, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
+Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros de órdenes de criptomonedas en 10 exchanges simultáneamente, detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
@@ -62,11 +62,14 @@ Contrato HTTP:
 
 ## Virtudes principales
 
-- **Algoritmo Genético integrado**: población en memoria, elitismo, selección por torneo, cruce uniforme y mutación gaussiana para evolucionar pesos, umbral, tamaño de orden y tolerancia a latencia.
+- **Algoritmo Genético Híbrido single-objetivo**: población en memoria, elitismo, torneo, cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo** para evolucionar pesos, umbral, tamaño de orden y tolerancia a latencia.
 - **Scoring adaptativo**: Los pesos de la función de puntuación (utilidad, frescura, liquidez, confiabilidad, Z-Score) son optimizados genéticamente, no fijos.
-- **Selección por torneo, cruce uniforme y mutación gaussiana**: Operadores genéticos clásicos con elitismo.
+- **Metaheurísticas híbridas**: Combina GA clásico con recocido simulado, evolución diferencial y reinicio por convergencia para escapar de óptimos locales.
 - **Detección de convergencia y reinicio adaptativo**: Cuando el fitness deja de mejorar, se inyecta diversidad y se aumenta la tasa de mutación.
-- **Cinco casas de cambio conectadas en paralelo**: Binance, Kraken, Coinbase, OKX y Bybit (activables/desactivables individualmente desde la UI).
+- **Diez casas de cambio conectadas en paralelo**: Binance, Kraken, Coinbase, OKX, Bybit, Bitfinex, KuCoin, Gate.io, Bitstamp, Gemini (activables/desactivables individualmente desde la UI).
+- **Arbitraje Triangular**: Detección y simulación en ciclos de tres monedas.
+- **Métricas Fintech Avanzadas**: Sharpe Ratio, Sortino Ratio, Kelly Criterion, TOBI, y actualización Bayesiana.
+- **Soporte Multi-Par Automático**: Permite añadir pares dinámicos (e.g. ETH, SOL) a través de PARES_EXTRA.
 - **WebSocket-first con REST fallback público**: los WebSockets son la fuente primaria; si un feed queda stale o desconectado, el adaptador toma un snapshot REST de order book y lo marca como `rest_fallback`.
 - **Evaluación de rutas compra-venta en cada ciclo**, no solo comparación entre dos mercados fijos.
 - **Precisión financiera interna con `rust_decimal`**: fees, slippage, retiro amortizado, basis USD/USDT, PnL, tamaño ejecutable y actualización de wallets se calculan con decimal fijo; el JSON público conserva números para compatibilidad con la UI.
@@ -104,7 +107,7 @@ Contrato HTTP:
 
 ## Qué hace
 
-- Conecta feeds públicos WebSocket de Binance, Kraken, Coinbase, OKX y Bybit.
+- Conecta feeds públicos WebSocket de Binance, Kraken, Coinbase, OKX, Bybit, Bitfinex, KuCoin, Gate.io, Bitstamp y Gemini.
 - Usa REST fallback de market data público para rellenar snapshots cuando el WebSocket de un exchange no está fresco.
 - Normaliza compra, venta, cantidad disponible, marca de tiempo y latencia por casa.
 - Evalúa todas las rutas compra-venta posibles entre casas de cambio.
@@ -184,16 +187,18 @@ graph TD
 
 Estructura de archivos:
 ```text
-Cargo.toml                     manifest Rust
-src/main.rs                    entrada del binario
-src/config.rs                  configuración por variables de entorno
-src/mercado.rs                 conectores WebSocket por casa de cambio
-src/motor.rs                   analizador, simulador, carteras, estrategias y métricas
-src/ga.rs                      población, selección, cruce, mutación y fitness genético
-src/server.rs                  API, WebSocket local y servidor estático
-src/types.rs                   contratos JSON del dominio
+Cargo.toml                     workspace virtual (miembros y perfiles)
+mayab-arbitrage/               crate de biblioteca (toda la lógica y tests)
+mayab-cli/                     crate binario que ensambla y arranca el proceso
 internal/webui/web             interfaz web estática servida por el binario Rust
 ```
+
+El crate `mayab-arbitrage` contiene `config`, `mercado` (con el trait
+`ExchangeAdapter`), `motor`, `ga`, `auditoria` (trait de persistencia),
+`persistencia` (SQLite), `persistencia_timescale` (TimescaleDB, feature
+`timescaledb`) y `metricas` (Prometheus), además de
+`server`. El mapa de mantenimiento completo está en
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 Mapa de mantenimiento con responsabilidades por archivo: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -221,7 +226,7 @@ Guion detallado para revisión o videollamada: [docs/defensa-comite.md](docs/def
 
 ## Judge checklist
 
-- Real-time order book monitoring: sí, WebSocket-first en 5 exchanges con REST fallback público.
+- Real-time order book monitoring: sí, WebSocket-first en **10 exchanges** con REST fallback público.
 - Net profitability calculation: sí, spread bruto/neto con fees, slippage, retiro amortizado y haircut de latencia.
 - Partial fills: sí, el tamaño ejecutable se limita por profundidad acumulada, USD disponible y BTC prefundeado.
 - Wallet accounting: sí, balances simulados por exchange, rebalanceos internos y eventos auditables.

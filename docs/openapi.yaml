@@ -1,0 +1,64 @@
+openapi: 3.0.0
+info:
+  title: Mayab Arbitraje BTC
+  description: API del motor simulado de arbitraje BTC.
+  version: 0.1.0
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: OK
+  /api/estado:
+    get:
+      summary: Estado público del motor
+      responses:
+        '200':
+          description: OK
+  /api/preflight:
+    get:
+      summary: Validación y parámetros de la simulación
+      responses:
+        '200':
+          description: OK
+  /api/demo:
+    post:
+      summary: Inyecta escenario demo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                escenario:
+                  type: string
+                  enum: [fallo_orden, mercado_movido, liquidez_insuficiente, fill_parcial, circuit_breaker, rebalanceo, mercado_rentable]
+      responses:
+        '200':
+          description: Resultado del escenario inyectado
+  /api/ga/estado:
+    get:
+      summary: Obtiene el estado del Algoritmo Genético
+      responses:
+        '200':
+          description: OK
+  /api/ga/evolucionar:
+    post:
+      summary: Fuerza la evolución de la población
+      responses:
+        '200':
+          description: OK
+  /api/export/csv:
+    get:
+      summary: Descarga auditoría CSV
+      responses:
+        '200':
+          description: Archivo CSV
+  /api/export/json:
+    get:
+      summary: Descarga todo el estado JSON
+      responses:
+        '200':
+          description: Archivo JSON

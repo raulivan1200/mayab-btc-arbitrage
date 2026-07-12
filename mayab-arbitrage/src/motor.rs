@@ -22,8 +22,8 @@ use rust_decimal::{
 use tokio::sync::RwLock;
 
 use crate::{
+    auditoria::Auditoria,
     ga::{score_canonico, EstadoGa, FeaturesScore},
-    persistencia::Persistencia,
     types::*,
 };
 
@@ -34,7 +34,7 @@ use crate::{
 /// ejecuciones simuladas simultáneas.
 pub struct Motor {
     state: RwLock<State>,
-    persistencia: Option<Arc<Persistencia>>,
+    persistencia: Option<Arc<dyn Auditoria>>,
     eventos: AtomicU64,
     ops_ejecutadas: AtomicU64,
     ops_fallidas: AtomicU64,
@@ -61,12 +61,12 @@ struct State {
     muestras_compute_us: VecDeque<u64>,
     muestras_quote_decision_ms: VecDeque<i64>,
     rebalanceos_total: u64,
-    costo_rebalanceo_acumulado_usd: f64,
+    costo_rebalanceo_acumulado_usd: MoneyUnits,
     serie_pnl: VecDeque<PuntoSerie>,
     serie_diferencial: VecDeque<PuntoSerie>,
     latencias_exchange: HashMap<String, LatenciaEstado>,
     enfriamiento: HashMap<String, DateTime<Utc>>,
-    utilidad: f64,
+    utilidad: MoneyUnits,
     latencia_ewma: f64,
     precios_ref: Vec<PuntoSerie>,
     circuit_breaker_activo: bool,
@@ -127,12 +127,16 @@ impl Motor {
         capital_inicial_usd: f64,
         balance_inicial_btc: f64,
         par_base: String,
-        persistencia: Option<Arc<Persistencia>>,
+        pares_extra: Vec<String>,
+        persistencia: Option<Arc<dyn Auditoria>>,
     ) -> Self {
-        let exchanges: Vec<String> = ["Binance", "Kraken", "Coinbase", "OKX", "Bybit"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let exchanges: Vec<String> = [
+            "Binance", "Kraken", "Coinbase", "OKX", "Bybit", "Bitfinex", "KuCoin", "Gate.io",
+            "Bitstamp", "Gemini",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let carteras = Carteras::new(&exchanges, capital_inicial_usd, balance_inicial_btc);
         let exchanges_activos = exchanges.into_iter().map(|e| (e, true)).collect();
         let ahora = Utc::now();
@@ -178,7 +182,13 @@ impl Motor {
                 ciclos: 0,
                 ga: EstadoGa::default(),
                 exchanges_activos,
-                pares_activos: vec![normalizar_par_operativo(&par_base)],
+                pares_activos: {
+                    let mut pares = vec![normalizar_par_operativo(&par_base)];
+                    for p in pares_extra {
+                        pares.push(normalizar_par_operativo(&p));
+                    }
+                    pares
+                },
                 demo_forzado: None,
             }),
             persistencia,
@@ -267,7 +277,7 @@ impl Motor {
                     }
                     state.rebalanceos_total += eventos.len() as u64;
                     state.costo_rebalanceo_acumulado_usd +=
-                        eventos.iter().map(|e| e.costo_usd).sum::<f64>();
+                        eventos.iter().map(|e| e.costo_usd).sum::<MoneyUnits>();
                     for e in eventos.into_iter().rev() {
                         state.rebalanceos.push_front(e);
                     }
@@ -492,6 +502,7 @@ impl Motor {
         let exito = state.carteras.aplicar_operacion(&op);
         actualizar_historial(&op, &mut state.historial_rutas, exito);
         if exito {
+            registrar_fsm_comprometida(&mut state, &op, ahora);
             self.persistir_operacion(&op);
             state.operaciones.push_front(op.clone());
             state.operaciones.truncate(80);
@@ -555,11 +566,13 @@ impl Motor {
         let capital_inicial = state.carteras.capital_inicial_usd(precio);
         let capital_actual = state.carteras.capital_actual_usd(precio);
         let retorno = if capital_inicial > 0.0 {
-            (capital_actual - capital_inicial) / capital_inicial * 10000.0
+            ((capital_actual - capital_inicial) / capital_inicial) * 10000.0
         } else {
             0.0
         };
         let operaciones_totales = self.ops_ejecutadas.load(Ordering::SeqCst) as usize;
+        let mut ops_vec = state.operaciones.clone();
+        let ops = ops_vec.make_contiguous();
         EstadoPublico {
             generado_en: Utc::now(),
             corrida: state.corrida.clone(),
@@ -577,6 +590,10 @@ impl Motor {
             serie_pnl: state.serie_pnl.clone(),
             serie_diferencial: state.serie_diferencial.clone(),
             metricas: Metricas {
+                sortino_ratio: sortino(ops),
+                kelly_criterion: kelly(ops),
+                tobi: tobi(ops, state.costos.min_utilidad_usd),
+                bayesian: bayesian_win_prob(ops),
                 uptime_segundos: (ahora - state.inicio).num_seconds(),
                 eventos_mercado: self.eventos.load(Ordering::SeqCst),
                 oportunidades: state.oportunidades.len() as u64,
@@ -588,8 +605,8 @@ impl Motor {
                 latencia_promedio_ms: state.latencia_ewma,
                 estado_riesgo: estado_riesgo(state.latencia_ewma, state.costos.stale_ms),
                 trabajadores: 11,
-                sharpe_ratio: sharpe(state.operaciones.clone().make_contiguous()),
-                win_rate: win_rate(state.operaciones.clone().make_contiguous()),
+                sharpe_ratio: sharpe(ops),
+                win_rate: win_rate(ops),
                 max_drawdown_usd: max_drawdown(state.serie_pnl.clone().make_contiguous()),
                 operaciones_totales,
                 operaciones_fallidas: self.ops_fallidas.load(Ordering::SeqCst),
@@ -985,6 +1002,8 @@ impl Motor {
                 state.operaciones_riesgo.insert(
                     0,
                     Operacion {
+                        piernas: vec![],
+                        tipo: crate::types::TipoOportunidad::Lineal,
                         id: format!("demo-circuit-{}", ahora.timestamp_millis()),
                         compra_en: "sistema".to_string(),
                         venta_en: "sistema".to_string(),
@@ -1076,6 +1095,7 @@ impl Motor {
                     state.oportunidades.push_front(oportunidad);
                     state.auditoria_decisiones.push_front(auditoria);
                     state.eventos_ejecucion.push_front(evento);
+                    registrar_fsm_comprometida(&mut state, &op, op.ejecutada_en);
                     insertadas += 1;
                     self.ops_ejecutadas.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1084,6 +1104,7 @@ impl Motor {
                 state.oportunidades.truncate(80);
                 state.auditoria_decisiones.truncate(160);
                 state.eventos_ejecucion.truncate(128);
+                state.trazas_ejecucion.truncate(160);
                 truncar_primeros(&mut state.serie_pnl, 240);
 
                 let mut operaciones = state.operaciones.clone();
@@ -1168,8 +1189,8 @@ impl Carteras {
         for exchange in exchanges {
             let balance = Balance {
                 exchange: exchange.clone(),
-                usd,
-                btc,
+                usd: (usd),
+                btc: (btc),
             };
             balances.insert(exchange.clone(), balance.clone());
             inicial.insert(exchange.clone(), balance);
@@ -1198,32 +1219,29 @@ impl Carteras {
         if op.cantidad_btc <= 0.0 || op.precio_compra <= 0.0 || op.precio_venta <= 0.0 {
             return false;
         }
-        let compra_snapshot = match self.balances.get(&op.compra_en) {
-            Some(b) => b.clone(),
-            None => return false,
+        let Some(compra_snapshot) = self.balances.get(&op.compra_en) else {
+            return false;
         };
-        let venta_snapshot = match self.balances.get(&op.venta_en) {
-            Some(b) => b.clone(),
-            None => return false,
+        let Some(venta_snapshot) = self.balances.get(&op.venta_en) else {
+            return false;
         };
-        let cantidad = dec(op.cantidad_btc);
-        let costos_extra = (dec(op.costos.total_usd)
-            - dec(op.costos.fee_compra_usd)
-            - dec(op.costos.fee_venta_usd))
-        .max(Decimal::ZERO);
-        let costo_compra =
-            cantidad * dec(op.precio_compra) + dec(op.costos.fee_compra_usd) + costos_extra;
-        let ingreso_venta = cantidad * dec(op.precio_venta) - dec(op.costos.fee_venta_usd);
-        if dec(compra_snapshot.usd) < costo_compra || dec(venta_snapshot.btc) < cantidad {
+        let cantidad = op.cantidad_btc;
+        let notional_compra = op.precio_compra * cantidad;
+        let notional_venta = op.precio_venta * cantidad;
+        let costos_extra =
+            (op.costos.total_usd - op.costos.fee_compra_usd - op.costos.fee_venta_usd).max(0.0);
+        let costo_compra = notional_compra + op.costos.fee_compra_usd + costos_extra;
+        let ingreso_venta = notional_venta - op.costos.fee_venta_usd;
+        if compra_snapshot.usd < costo_compra || venta_snapshot.btc < cantidad {
             return false;
         }
         if let Some(compra) = self.balances.get_mut(&op.compra_en) {
-            compra.usd = dec_to_f64(dec(compra.usd) - costo_compra);
-            compra.btc = dec_to_f64(dec(compra.btc) + cantidad);
+            compra.usd -= costo_compra;
+            compra.btc += cantidad;
         }
         if let Some(venta) = self.balances.get_mut(&op.venta_en) {
-            venta.usd = dec_to_f64(dec(venta.usd) + ingreso_venta);
-            venta.btc = dec_to_f64(dec(venta.btc) - cantidad);
+            venta.usd += ingreso_venta;
+            venta.btc -= cantidad;
         }
         true
     }
@@ -1247,7 +1265,7 @@ impl Carteras {
                 Some(v) => v.clone(),
                 None => continue,
             };
-            if init.usd > 0.0 && actual.usd < (1.0 - umbral) * init.usd {
+            if init.usd > 0.0 && actual.usd < init.usd * (1.0 - umbral) {
                 let src = self
                     .balances
                     .iter()
@@ -1272,7 +1290,7 @@ impl Carteras {
                         desde: src,
                         hacia: name.clone(),
                         activo: "USD".to_string(),
-                        cantidad: amount,
+                        cantidad: 0.0,
                         costo_usd: costos.costo_rebalanceo_usd.min(amount),
                         razon: "USD bajo objetivo operativo".to_string(),
                         tiempo: ahora,
@@ -1283,7 +1301,7 @@ impl Carteras {
                 Some(v) => v.clone(),
                 None => continue,
             };
-            if init.btc > 0.0 && actual.btc < (1.0 - umbral) * init.btc {
+            if init.btc > 0.0 && actual.btc < init.btc * (1.0 - umbral) {
                 let src = self
                     .balances
                     .iter()
@@ -1294,7 +1312,7 @@ impl Carteras {
                             .map(|i| (other.clone(), b.btc - i.btc))
                     })
                     .max_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((src, surplus)) = src.filter(|(_, s)| *s > 0.001) {
+                if let Some((src, surplus)) = src.filter(|(_, s)| *s > (0.001)) {
                     let fee = config_exchange(costos, &src).retiro_btc.max(0.00005);
                     let amount = ((init.btc - actual.btc) * max_transfer).min(surplus);
                     if amount > fee {
@@ -1310,7 +1328,7 @@ impl Carteras {
                             hacia: name.clone(),
                             activo: "BTC".to_string(),
                             cantidad: amount - fee,
-                            costo_usd: fee * precio_ref,
+                            costo_usd: precio_ref * fee,
                             razon: "BTC bajo objetivo operativo".to_string(),
                             tiempo: ahora,
                         });
@@ -1350,17 +1368,17 @@ impl Carteras {
         }
     }
 
-    fn capital_inicial_usd(&self, precio_btc: f64) -> f64 {
+    fn capital_inicial_usd(&self, precio_btc: f64) -> MoneyUnits {
         self.inicial
             .values()
-            .map(|b| b.usd + b.btc * precio_btc)
+            .map(|b| b.usd + ((precio_btc) * b.btc))
             .sum()
     }
 
-    fn capital_actual_usd(&self, precio_btc: f64) -> f64 {
+    fn capital_actual_usd(&self, precio_btc: f64) -> MoneyUnits {
         self.balances
             .values()
-            .map(|b| b.usd + b.btc * precio_btc)
+            .map(|b| b.usd + ((precio_btc) * b.btc))
             .sum()
     }
 }
@@ -1443,15 +1461,13 @@ fn calcular_oportunidad(
         ejecutable = false;
         razon = "sin liquidez o balance suficiente".to_string();
         decision_code = "SKIP_THIN_OR_INVENTORY".to_string();
-        decision_threshold = costos
-            .max_operacion_btc
-            .min(liquidez_compra.to_f64().unwrap_or(0.0));
+        decision_threshold = costos.max_operacion_btc.min(dec_to_f64(liquidez_compra));
         decision_actual = cantidad;
         decision_reason = format!(
             "SKIP_THIN_OR_INVENTORY — cantidad ejecutable {:.8} BTC; compra liquidez {:.8}, venta liquidez {:.8}, USD compra {:.2}, BTC venta {:.8}",
             cantidad,
-            liquidez_compra.to_f64().unwrap_or(0.0),
-            liquidez_venta.to_f64().unwrap_or(0.0),
+            dec_to_f64(liquidez_compra),
+            dec_to_f64(liquidez_venta),
             balance_compra.usd,
             balance_venta.btc
         );
@@ -1487,6 +1503,8 @@ fn calcular_oportunidad(
         );
     }
     Oportunidad {
+        piernas: vec![],
+        tipo: crate::types::TipoOportunidad::Lineal,
         id: format!(
             "{}-{}-{}",
             compra.exchange,
@@ -1555,6 +1573,8 @@ fn revalidar_operacion(
     }
 
     Ok(Operacion {
+        piernas: vec![],
+        tipo: crate::types::TipoOportunidad::Lineal,
         id: oportunidad.id.clone(),
         compra_en: actual.compra_en,
         venta_en: actual.venta_en,
@@ -1908,6 +1928,38 @@ fn evento_operacion(
     }
 }
 
+/// Registra la confirmación secuencial de ambas piernas de una operación.
+/// La contabilidad de wallets se aplica atómicamente, pero la traza conserva
+/// los estados que un ejecutor real debe confirmar y reconciliar.
+fn registrar_fsm_comprometida(state: &mut State, op: &Operacion, ahora: DateTime<Utc>) {
+    let ruta = format!("{}->{}", op.compra_en, op.venta_en);
+    state.trazas_ejecucion.push_front(TransicionEjecucion {
+        id: format!("fsm-{}-leg-a", op.id),
+        operacion_id: op.id.clone(),
+        ruta: ruta.clone(),
+        estado_anterior: "PENDING".to_string(),
+        estado: "LEG_A_FILLED".to_string(),
+        pierna: "compra".to_string(),
+        detalle: "primera pierna confirmada".to_string(),
+        exposicion_btc: op.cantidad_btc,
+        pnl_realizado_usd: 0.0,
+        tiempo: ahora,
+    });
+    state.trazas_ejecucion.push_front(TransicionEjecucion {
+        id: format!("fsm-{}-commit", op.id),
+        operacion_id: op.id.clone(),
+        ruta,
+        estado_anterior: "LEG_A_FILLED".to_string(),
+        estado: "COMMITTED".to_string(),
+        pierna: "venta".to_string(),
+        detalle: "segunda pierna confirmada; ledger conciliado".to_string(),
+        exposicion_btc: 0.0,
+        pnl_realizado_usd: op.utilidad_usd,
+        tiempo: ahora,
+    });
+    state.trazas_ejecucion.truncate(160);
+}
+
 fn evento_oportunidad(
     oportunidad: &Oportunidad,
     tipo: &str,
@@ -1944,7 +1996,10 @@ fn operaciones_sinteticas_ga(
     seed: u64,
     ahora: DateTime<Utc>,
 ) -> ReplayGa {
-    let exchanges = ["Binance", "Kraken", "Coinbase", "OKX", "Bybit"];
+    let exchanges = [
+        "Binance", "Kraken", "Coinbase", "OKX", "Bybit", "Bitfinex", "KuCoin", "Gate.io",
+        "Bitstamp", "Gemini",
+    ];
     let mut rng = StdRng::seed_from_u64(seed);
     let precio_base = precio_ref.clamp(20_000.0, 250_000.0);
     let mut operaciones = Vec::with_capacity(muestras);
@@ -1999,6 +2054,8 @@ fn operaciones_sinteticas_ga(
         }
         let tiempo = ahora - chrono::Duration::milliseconds((muestras - i) as i64 * 180);
         operaciones.push(Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: format!("demo-ga-{seed}-{i}"),
             compra_en: compra.to_string(),
             venta_en: venta.to_string(),
@@ -2032,7 +2089,7 @@ fn oportunidad_desde_operacion(op: &Operacion) -> Oportunidad {
     } else {
         0.0
     };
-    Oportunidad {
+    Oportunidad { piernas: vec![], tipo: crate::types::TipoOportunidad::Lineal,
         id: format!("opp-{}", op.id),
         compra_en: op.compra_en.clone(),
         venta_en: op.venta_en.clone(),
@@ -2101,6 +2158,8 @@ fn operacion_demo_fill_parcial(
         + costos_operacion.retiro_amort_usd
         + costos_operacion.latencia_riesgo_usd;
     Operacion {
+        piernas: vec![],
+        tipo: crate::types::TipoOportunidad::Lineal,
         id: format!("demo-partial-{seed}"),
         compra_en: "Binance".to_string(),
         venta_en: "OKX".to_string(),
@@ -2379,9 +2438,9 @@ fn win_rate(operaciones: &[Operacion]) -> f64 {
     }
 }
 
-fn max_drawdown(serie: &[PuntoSerie]) -> f64 {
-    let mut max_pnl = 0.0;
-    let mut max_dd = 0.0;
+fn max_drawdown(serie: &[PuntoSerie]) -> MoneyUnits {
+    let mut max_pnl = 0.0_f64;
+    let mut max_dd = 0.0_f64;
     for punto in serie {
         if punto.valor > max_pnl {
             max_pnl = punto.valor;
@@ -2392,6 +2451,98 @@ fn max_drawdown(serie: &[PuntoSerie]) -> f64 {
         }
     }
     max_dd
+}
+
+/// Retorno neto por operación: utilidad neta sobre el capital comprometido.
+fn retornos_por_operacion(operaciones: &[Operacion]) -> Vec<f64> {
+    operaciones
+        .iter()
+        .filter_map(|op| {
+            let capital = op.cantidad_btc * op.precio_compra;
+            (capital > 0.0).then_some(op.utilidad_usd / capital)
+        })
+        .collect()
+}
+
+/// Sortino ratio: media de retornos sobre desviación downside (solo pérdidas).
+/// Mide la calidad del PnL ignorando la volatilidad "buena" (retornos positivos).
+fn sortino(operaciones: &[Operacion]) -> f64 {
+    let retornos = retornos_por_operacion(operaciones);
+    if retornos.len() < 2 {
+        return 0.0;
+    }
+    let media = retornos.iter().sum::<f64>() / retornos.len() as f64;
+    let downside = retornos
+        .iter()
+        .map(|r| if *r < 0.0 { r * r } else { 0.0 })
+        .sum::<f64>()
+        / retornos.len() as f64;
+    let dd = downside.sqrt();
+    if dd == 0.0 {
+        0.0
+    } else {
+        media / dd
+    }
+}
+
+/// Kelly criterion: fracción óptima de capital a arriesgar dado el historial.
+/// W = tasa de aciertos, R = ratio avg_ganancia / avg_perdida.
+fn kelly(operaciones: &[Operacion]) -> f64 {
+    if operaciones.is_empty() {
+        return 0.0;
+    }
+    let ganancias: Vec<f64> = operaciones
+        .iter()
+        .filter(|op| op.utilidad_usd > 0.0)
+        .map(|op| op.utilidad_usd)
+        .collect();
+    let perdidas: Vec<f64> = operaciones
+        .iter()
+        .filter(|op| op.utilidad_usd <= 0.0)
+        .map(|op| -op.utilidad_usd)
+        .collect();
+    let w = ganancias.len() as f64 / operaciones.len() as f64;
+    if w == 0.0 {
+        return 0.0;
+    }
+    if w == 1.0 || perdidas.is_empty() {
+        return 1.0;
+    }
+    let avg_win = ganancias.iter().sum::<f64>() / ganancias.len() as f64;
+    let avg_loss = perdidas.iter().sum::<f64>() / perdidas.len() as f64;
+    if avg_loss <= 0.0 {
+        return 1.0;
+    }
+    let r = avg_win / avg_loss;
+    let k = w - (1.0 - w) / r;
+    k.clamp(0.0, 1.0)
+}
+
+/// Probabilidad bayesiana de éxito: posterior Beta(1,1) actualizado con el
+/// historial de operaciones (ganancias/pérdidas). Devuelve la media del posterior.
+fn bayesian_win_prob(operaciones: &[Operacion]) -> f64 {
+    let alpha0 = 1.0_f64;
+    let beta0 = 1.0_f64;
+    let wins = operaciones
+        .iter()
+        .filter(|op| op.utilidad_usd > 0.0)
+        .count() as f64;
+    let losses = operaciones.len() as f64 - wins;
+    (alpha0 + wins) / (alpha0 + beta0 + wins + losses)
+}
+
+/// TOBI (Tasa de Oportunidades Bien Ejecutadas): fracción de operaciones cuya
+/// utilidad neta supera el umbral mínimo de rentabilidad configurado. Mide qué
+/// tan a menudo el bot captura realmente valor y no solo "no perdió".
+fn tobi(operaciones: &[Operacion], min_utilidad_usd: MoneyUnits) -> f64 {
+    if operaciones.is_empty() {
+        return 0.0;
+    }
+    let capturadas = operaciones
+        .iter()
+        .filter(|op| op.utilidad_usd >= min_utilidad_usd)
+        .count() as f64;
+    capturadas / operaciones.len() as f64
 }
 
 fn estado_riesgo(latencia: f64, stale_ms: i64) -> String {
@@ -2621,11 +2772,13 @@ mod tests {
             bids: vec![NivelOrden {
                 precio: bid,
                 cantidad: bid_qty,
-            }],
+            }]
+            .into(),
             asks: vec![NivelOrden {
                 precio: ask,
                 cantidad: ask_qty,
-            }],
+            }]
+            .into(),
             evento_unix_ms: 0,
             recibida_en: Utc::now(),
             latencia_ms: 0,
@@ -2649,6 +2802,8 @@ mod tests {
         let exchanges = vec!["A".to_string(), "B".to_string()];
         let mut carteras = Carteras::new(&exchanges, 2000.0, 2.0);
         let ok = carteras.aplicar_operacion(&Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: "1".into(),
             compra_en: "A".into(),
             venta_en: "B".into(),
@@ -2666,6 +2821,46 @@ mod tests {
         assert!(ok);
         assert_relative_eq!(carteras.balance("A").btc, 1.1);
         assert_relative_eq!(carteras.balance("B").btc, 0.9);
+    }
+
+    #[test]
+    fn carteras_conservan_btc_y_contabilizan_pnl_en_multiples_escenarios() {
+        for caso in 1..=64 {
+            let exchanges = vec!["A".to_string(), "B".to_string()];
+            let mut carteras = Carteras::new(&exchanges, 1_000_000.0, 5.0);
+            let cantidad = caso as f64 / 100.0;
+            let compra = 50_000.0 + caso as f64 * 17.0;
+            let venta = compra + 25.0 + caso as f64;
+            let usd_antes = carteras.balances.values().map(|b| b.usd).sum::<f64>();
+            let btc_antes = carteras.balances.values().map(|b| b.btc).sum::<f64>();
+            let op = Operacion {
+                piernas: vec![],
+                tipo: crate::types::TipoOportunidad::Lineal,
+                id: format!("property-{caso}"),
+                compra_en: "A".into(),
+                venta_en: "B".into(),
+                par: "BTC/USDT".into(),
+                cantidad_btc: cantidad,
+                precio_compra: compra,
+                precio_venta: venta,
+                utilidad_usd: (venta - compra) * cantidad,
+                utilidad_esperada_usd: (venta - compra) * cantidad,
+                costos: CostosOperacion::default(),
+                parcial: false,
+                ejecutada_en: Utc::now(),
+                latencia_max_ms: 1,
+            };
+
+            assert!(carteras.aplicar_operacion(&op));
+            let usd_despues = carteras.balances.values().map(|b| b.usd).sum::<f64>();
+            let btc_despues = carteras.balances.values().map(|b| b.btc).sum::<f64>();
+            assert_relative_eq!(btc_despues, btc_antes, epsilon = 1e-10);
+            assert_relative_eq!(usd_despues - usd_antes, op.utilidad_usd, epsilon = 1e-7);
+            assert!(carteras
+                .balances
+                .values()
+                .all(|b| b.usd >= 0.0 && b.btc >= 0.0));
+        }
     }
 
     #[test]
@@ -2707,6 +2902,8 @@ mod tests {
     #[test]
     fn sharpe_por_operacion_no_inventa_frecuencia_anual() {
         let operacion = |id: &str, utilidad_usd: f64| Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: id.to_string(),
             compra_en: "A".into(),
             venta_en: "B".into(),
@@ -2836,6 +3033,8 @@ mod tests {
     #[test]
     fn adversidad_desactivada_no_modifica_operacion() {
         let mut op = Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: "1".into(),
             compra_en: "A".into(),
             venta_en: "B".into(),
@@ -2858,6 +3057,8 @@ mod tests {
     #[test]
     fn demo_forzado_falla_siguiente_orden() {
         let mut op = Operacion {
+            piernas: vec![],
+            tipo: crate::types::TipoOportunidad::Lineal,
             id: "1".into(),
             compra_en: "A".into(),
             venta_en: "B".into(),
@@ -2902,7 +3103,14 @@ mod tests {
 
     #[tokio::test]
     async fn demo_rentable_inyecta_operaciones_y_activa_ga() {
-        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
         let resultado = motor
             .activar_escenario_demo(EscenarioDemo::MercadoRentable)
             .await;
@@ -2913,6 +3121,9 @@ mod tests {
 
         let estado = motor.estado().await;
         assert!(!estado.operaciones.is_empty());
+        assert!(estado.trazas_ejecucion.iter().any(|trace| {
+            trace.estado == "COMMITTED" && trace.exposicion_btc.abs() < 0.00000001
+        }));
         let ga = estado.genetico.expect("estado GA publico");
         assert!(ga.activo);
         assert!(ga.operaciones_evaluadas > 0);
@@ -2925,12 +3136,19 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_mide_scan_y_omite_ticks_sin_eventos_nuevos() {
-        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
         motor
             .recibir_cotizacion(cot("Binance", 100.0, 101.0, 1.0, 1.0))
             .await;
         motor
-            .recibir_cotizacion(cot("OKX", 103.0, 104.0, 1.0, 1.0))
+            .recibir_cotizacion(cot("OKX", 110.0, 111.0, 1.0, 1.0))
             .await;
 
         motor.analizar(Utc::now()).await;
@@ -2939,6 +3157,12 @@ mod tests {
         assert_eq!(medida.muestras, 1);
         assert!(medida.rutas_evaluadas > 0);
         assert!(medida.compute_p99_us > 0);
+        assert!(motor
+            .estado()
+            .await
+            .trazas_ejecucion
+            .iter()
+            .any(|trace| { trace.estado == "COMMITTED" && trace.exposicion_btc.abs() < 1e-8 }));
 
         motor.analizar(Utc::now()).await;
         let omitida = motor.estado().await.telemetria_pipeline;
@@ -2948,7 +3172,14 @@ mod tests {
 
     #[tokio::test]
     async fn reset_jurado_limpia_simulacion_y_conserva_configuracion() {
-        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
         motor
             .activar_escenario_demo(EscenarioDemo::MercadoRentable)
             .await;
@@ -2967,7 +3198,14 @@ mod tests {
 
     #[tokio::test]
     async fn demo_fill_parcial_deja_evidencia_forense() {
-        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
         let resultado = motor
             .activar_escenario_demo(EscenarioDemo::FillParcial)
             .await;
@@ -2990,7 +3228,14 @@ mod tests {
 
     #[tokio::test]
     async fn demo_circuit_breaker_supera_pnl_positivo_previo() {
-        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
         motor
             .activar_escenario_demo(EscenarioDemo::MercadoRentable)
             .await;

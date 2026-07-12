@@ -113,6 +113,19 @@
               <li>Sin llaves, sin custodia, sin trading real</li>
             </ul>
           </article>
+          <article class="landing-card landing-card-blue reveal-card" id="seguridad-card">
+            <span>06</span>
+            <h2>Seguridad y observabilidad</h2>
+            <ul>
+              <li>Ejecución totalmente simulada en memoria</li>
+              <li>Métricas Prometheus en <code>/metrics</code></li>
+              <li>Sin llaves API ni superficie de órdenes privadas</li>
+            </ul>
+            <div class="landing-actions">
+              <a class="btn-link" href="/metrics" target="_blank" rel="noopener">Ver métricas Prometheus</a>
+            </div>
+            <p class="seguridad-estado seguridad-ok">Demo segura: solo datos públicos y estado simulado.</p>
+          </article>
         </div>
 
         <a class="scroll-indicator" href="#dashboard" aria-label="Bajar al dashboard">
@@ -136,6 +149,9 @@
             </div>
           </div>
           <div class="toolbar">
+            <select id="parSelector" class="par-selector" aria-label="Seleccionar par de trading">
+              <option value="ALL">Todos los pares</option>
+            </select>
             <button id="themeToggle" class="tema-toggle" type="button" aria-label="Cambiar a modo oscuro" title="Cambiar a modo oscuro">
               <span class="theme-icon icon-sun" aria-hidden="true"></span>
               <span class="theme-icon icon-moon" aria-hidden="true"></span>
@@ -225,6 +241,57 @@
         </article>
       </section>
 
+      <section class="live-visual-grid" aria-label="Visualizaciones operativas en tiempo real">
+        <article class="panel pnl-live-panel">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Tiempo real</p>
+              <h2 id="pnlLiveTitle">Curva de PnL acumulado</h2>
+            </div>
+            <span id="pnlLiveStatus">Esperando muestras</span>
+          </div>
+          <p class="panel-ayuda" id="pnlLiveHelp">Serie oficial del motor, actualizada por WebSocket. El eje cero permite distinguir utilidad y pérdida sin ocultar el drawdown.</p>
+          <div class="pnl-live-kpis" aria-label="Resumen de la curva de PnL">
+            <div><span>Actual</span><strong id="pnlLiveValue">$0.00</strong></div>
+            <div><span>Cambio visible</span><strong id="pnlLiveDelta">$0.00</strong></div>
+            <div><span>Muestras</span><strong id="pnlLiveSamples">0</strong></div>
+          </div>
+          <div class="pnl-canvas-wrap">
+            <canvas id="canvasPnlLive" width="1200" height="380" role="img" aria-labelledby="pnlLiveTitle" aria-describedby="pnlLiveHelp pnlLiveSummary">Gráfico de la serie temporal de PnL acumulado.</canvas>
+          </div>
+          <p id="pnlLiveSummary" class="sr-only" aria-live="polite">Esperando historial de PnL.</p>
+          <div class="pnl-live-legend" aria-hidden="true">
+            <span><i class="legend-line legend-profit"></i>PnL acumulado</span>
+            <span><i class="legend-line legend-zero"></i>Eje cero</span>
+          </div>
+        </article>
+
+        <article class="panel heatmap-panel">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Rutas dirigidas</p>
+              <h2 id="heatmapTitle">Heatmap de oportunidades</h2>
+            </div>
+            <span id="heatmapStatus">Esperando rutas</span>
+          </div>
+          <p class="panel-ayuda" id="heatmapHelp">Cada celda resume el mejor spread neto del lote vigente: compra en la fila y venta en la columna. Verde es positivo; naranja es negativo.</p>
+          <div class="heatmap-scroll" tabindex="0" aria-label="Matriz desplazable de oportunidades por exchange" hidden>
+            <table id="heatmapOportunidades" class="heatmap-table" aria-labelledby="heatmapTitle" aria-describedby="heatmapHelp heatmapSummary">
+              <caption class="sr-only">Mejor diferencial neto en puntos base por exchange de compra y de venta.</caption>
+              <thead id="heatmapHead"></thead>
+              <tbody id="heatmapBody"></tbody>
+            </table>
+          </div>
+          <div id="heatmapEmpty" class="visual-empty">Esperando el primer lote de oportunidades.</div>
+          <div class="heatmap-legend" aria-label="Escala del heatmap">
+            <span><i class="heat-swatch heat-negative"></i>Pérdida neta</span>
+            <span><i class="heat-swatch heat-neutral"></i>Sin ruta</span>
+            <span><i class="heat-swatch heat-positive"></i>Utilidad neta</span>
+          </div>
+          <p id="heatmapSummary" class="sr-only">Esperando oportunidades por exchange.</p>
+        </article>
+      </section>
+
       <section class="metricas metricas-secundarias" aria-label="Métricas de riesgo y desempeño">
         <article>
           <span>Sharpe por operación</span>
@@ -240,6 +307,26 @@
           <span>Max Drawdown</span>
           <strong id="maxDrawdown" class="metric-value metric-money" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">USD</small></strong>
           <p>Peor caída acumulada desde un máximo de PnL.</p>
+        </article>
+        <article>
+          <span>Sortino Ratio</span>
+          <strong id="sortinoRatio" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
+          <p>Retorno medio ajustado por volatilidad bajista.</p>
+        </article>
+        <article>
+          <span>Kelly Criterion</span>
+          <strong id="kellyCriterion" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">%</small></strong>
+          <p>Tamaño óptimo de la apuesta según riesgo/recompensa.</p>
+        </article>
+        <article>
+          <span>TOBI</span>
+          <strong id="tobi" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
+          <p>Taker Order Book Imbalance.</p>
+        </article>
+        <article>
+          <span>Bayesian Prob</span>
+          <strong id="bayesian" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">%</small></strong>
+          <p>Tasa de éxito con suavizado de Laplace.</p>
         </article>
         <article>
           <span>Trades Ejecutados</span>
@@ -285,7 +372,7 @@
       <section class="panel edge-panel" aria-label="Scoring evolutivo explicable">
         <div class="panel-titulo">
           <div>
-            <p class="ceja">IA / Evidencia</p>
+            <p class="ceja">Modelo / Evidencia</p>
             <h2>Scoring evolutivo</h2>
           </div>
           <span id="edgeEstado" class="edge-status">esperando señal explicable</span>
