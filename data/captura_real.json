@@ -1,0 +1,32 @@
+[
+  {
+    "exchange": "Kraken",
+    "par": "BTC/USD",
+    "bid": 64000.0,
+    "bidCantidad": 1.5,
+    "ask": 64010.0,
+    "askCantidad": 2.0,
+    "eventoUnixMs": 1720857200000,
+    "recibidaEn": "2024-07-13T07:53:20Z",
+    "latenciaMs": 45,
+    "secuencia": 10001,
+    "conectado": true,
+    "bids": [{"precio": 64000.0, "cantidad": 1.5}, {"precio": 63990.0, "cantidad": 0.5}],
+    "asks": [{"precio": 64010.0, "cantidad": 2.0}, {"precio": 64020.0, "cantidad": 1.0}]
+  },
+  {
+    "exchange": "Binance",
+    "par": "BTC/USDT",
+    "bid": 64250.0,
+    "bidCantidad": 3.0,
+    "ask": 64260.0,
+    "askCantidad": 1.2,
+    "eventoUnixMs": 1720857200020,
+    "recibidaEn": "2024-07-13T07:53:20.02Z",
+    "latenciaMs": 35,
+    "secuencia": 10002,
+    "conectado": true,
+    "bids": [{"precio": 64250.0, "cantidad": 3.0}, {"precio": 64240.0, "cantidad": 4.5}],
+    "asks": [{"precio": 64260.0, "cantidad": 1.2}, {"precio": 64270.0, "cantidad": 5.0}]
+  }
+]

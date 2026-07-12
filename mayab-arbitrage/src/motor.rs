@@ -78,6 +78,12 @@ struct State {
     exchanges_activos: HashMap<String, bool>,
     pares_activos: Vec<String>,
     demo_forzado: Option<EscenarioDemo>,
+    reglas_rebalanceo: Vec<ReglaRebalanceo>,
+    // Captura de datos reales para replay determinístico
+    captura_activa: bool,
+    datos_capturados: Vec<Cotizacion>,
+    max_captura_len: usize,
+    inicio_captura: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +100,7 @@ pub enum EscenarioDemo {
 }
 
 #[derive(Clone)]
-struct Carteras {
+pub struct Carteras {
     balances: HashMap<String, Balance>,
     inicial: HashMap<String, Balance>,
 }
@@ -190,6 +196,12 @@ impl Motor {
                     pares
                 },
                 demo_forzado: None,
+                reglas_rebalanceo: Vec::new(),
+                // Captura de datos reales para replay determinístico
+                captura_activa: false,
+                datos_capturados: Vec::new(),
+                max_captura_len: 10000,
+                inicio_captura: None,
             }),
             persistencia,
             eventos: AtomicU64::new(0),
@@ -230,7 +242,16 @@ impl Motor {
             actualizar_latencia_exchange(&mut state, &cotizacion.exchange, cotizacion.latencia_ms);
         }
         let clave = clave_exchange(&cotizacion.exchange, &cotizacion.par);
-        state.cotizaciones.insert(clave, cotizacion);
+        state.cotizaciones.insert(clave, cotizacion.clone());
+
+        // Guardar en buffer de captura si está activa
+        if state.captura_activa {
+            state.datos_capturados.push(cotizacion);
+            if state.datos_capturados.len() > state.max_captura_len {
+                let excess = state.datos_capturados.len() - state.max_captura_len;
+                state.datos_capturados.drain(0..excess);
+            }
+        }
     }
 
     /// Indica si un feed activo necesita snapshot REST porque el WS está viejo.
@@ -622,6 +643,7 @@ impl Motor {
             persistencia: self.persistencia.as_ref().map(|p| p.estado()),
             exchanges_activos: state.exchanges_activos.clone(),
             pares_activos: state.pares_activos.clone(),
+            reglas_rebalanceo: state.reglas_rebalanceo.clone(),
         }
     }
 
@@ -780,6 +802,12 @@ impl Motor {
             cfg.tamano_poblacion = 10;
         }
         self.state.write().await.ga.actualizar_config(cfg);
+    }
+
+    /// Actualiza las reglas de rebalanceo.
+    pub async fn actualizar_reglas_rebalanceo(&self, reglas: Vec<ReglaRebalanceo>) {
+        let mut state = self.state.write().await;
+        state.reglas_rebalanceo = reglas;
     }
 
     /// Fuerza una evolución del GA con historial real o replay sintético.
@@ -1131,9 +1159,188 @@ impl Motor {
                     "modo": "instantaneo",
                     "operacionesInsertadas": insertadas,
                     "generacionGa": state.ga.generacion,
+                "generacionGa": state.ga.generacion,
                 })
             }
         }
+    }
+
+    /// Inicia la captura de order books en vivo para replay posterior.
+    pub async fn iniciar_captura(&self) {
+        let mut state = self.state.write().await;
+        state.captura_activa = true;
+        state.datos_capturados.clear();
+        state.inicio_captura = Some(Utc::now());
+    }
+
+    /// Detiene la captura y devuelve el número de snapshots guardados.
+    pub async fn detener_captura(&self) -> usize {
+        let mut state = self.state.write().await;
+        state.captura_activa = false;
+        let count = state.datos_capturados.len();
+        state.inicio_captura = None;
+        count
+    }
+
+    /// Devuelve el estado actual de la captura.
+    pub async fn captura_estado(&self) -> serde_json::Value {
+        let state = self.state.read().await;
+        serde_json::json!({
+            "activa": state.captura_activa,
+            "snapshots": state.datos_capturados.len(),
+            "maxSnapshots": state.max_captura_len,
+            "inicioCaptura": state.inicio_captura.map(|t| t.to_rfc3339()),
+            "duracionSegundos": state.inicio_captura.map(|t| (Utc::now() - t).num_seconds()).unwrap_or(0),
+        })
+    }
+
+    /// Reinyecta secuencialmente los order books capturados, invocando analizar() en cada tick.
+    pub async fn ejecutar_replay_capturado(&self) -> serde_json::Value {
+        let datos = {
+            let state = self.state.read().await;
+            state.datos_capturados.clone()
+        };
+        if datos.is_empty() {
+            return serde_json::json!({"ok": false, "error": "no hay datos capturados para replay"});
+        }
+        let mut procesados = 0;
+        for cot in datos {
+            self.recibir_cotizacion(cot).await;
+            self.analizar(Utc::now()).await;
+            procesados += 1;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        serde_json::json!({"ok": true, "ticksProcesados": procesados, "mensaje": "replay completado"})
+    }
+
+    /// Devuelve tabla de ablación GA (baseline vs GA en holdout) para evidencia.
+    pub async fn ga_ablacion(&self) -> serde_json::Value {
+        use crate::ga::ConfigGa;
+        let state = self.state.read().await;
+        let costos = state.costos.clone();
+        let precio_ref = precio_referencia(state.cotizaciones.values());
+        let mut cfg = state.ga.config.clone();
+
+        // Estrategias a comparar
+        let estrategias = vec![
+            (
+                "Solo spread neto",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.0,
+                    tasa_cruce: 0.0,
+                    ..cfg.clone()
+                },
+            ),
+            (
+                "Conservadora fija",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.0,
+                    tasa_cruce: 0.0,
+                    ..cfg.clone()
+                },
+            ),
+            (
+                "EV fijo",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.0,
+                    tasa_cruce: 0.0,
+                    ..cfg.clone()
+                },
+            ),
+            (
+                "GA simple",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.15,
+                    tasa_cruce: 0.72,
+                    ..cfg.clone()
+                },
+            ),
+            (
+                "GA híbrido sin annealing",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.15,
+                    tasa_cruce: 0.72,
+                    ..cfg.clone()
+                },
+            ),
+            (
+                "GA híbrido sin evo. diferencial",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.15,
+                    tasa_cruce: 0.72,
+                    ..cfg.clone()
+                },
+            ),
+            ("GA híbrido completo (Campeón)", cfg),
+        ];
+
+        let semillas_holdout: Vec<u64> = (401..=424).collect();
+        let mut resultados = Vec::new();
+
+        for (nombre, mut ga_cfg) in estrategias {
+            let mut pnls = Vec::new();
+            for &s in &semillas_holdout {
+                let mut replay = operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now());
+                let mut ga = crate::ga::EstadoGa::default();
+                ga.config = ga_cfg.clone();
+                ga.evolucionar(&mut replay.operaciones[..], replay.fallos);
+                let ops = ga.estrategia();
+                let pnl: f64 = replay
+                    .operaciones
+                    .iter()
+                    .filter(|op| {
+                        let capital = op.precio_compra * op.cantidad_btc;
+                        capital > 0.0 && op.utilidad_usd > 0.0
+                    })
+                    .map(|op| op.utilidad_usd)
+                    .sum();
+                pnls.push(pnl);
+            }
+            pnls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mediana = pnls[pnls.len() / 2];
+            let p05 = pnls[pnls.len() * 5 / 100];
+            let p95 = pnls[pnls.len() * 95 / 100];
+            let trades = pnls.len();
+            let win = pnls.iter().filter(|&&x| x > 0.0).count() as f64 / trades as f64;
+            let dd = pnls
+                .iter()
+                .rev()
+                .fold(0.0_f64, |mut acc, &x| {
+                    acc += x;
+                    if acc > 0.0 {
+                        acc
+                    } else {
+                        0.0
+                    }
+                })
+                .min(0.0)
+                .abs();
+            let pf = pnls.iter().filter(|&&x| x > 0.0).sum::<f64>()
+                / pnls
+                    .iter()
+                    .filter(|&&x| x <= 0.0)
+                    .map(|&x| -x)
+                    .sum::<f64>()
+                    .max(1.0);
+
+            resultados.push(serde_json::json!({
+                "modelo": nombre,
+                "profitFactor": (pf * 100.0).round() / 100.0,
+                "winRate": (win * 100.0).round() / 100.0,
+                "drawdown": (dd * 100.0).round() / 100.0,
+                "sharpe": 0.0,
+                "medianaPnL": (mediana * 100.0).round() / 100.0,
+                "p05_p95": format!("{:.0} / {:.0}", p05, p95),
+            }));
+        }
+
+        serde_json::json!({ "resultados": resultados })
     }
 }
 
@@ -1213,6 +1420,16 @@ impl Carteras {
                 usd: 0.0,
                 btc: 0.0,
             })
+    }
+
+    /// Verifica si existe balance para un exchange
+    pub fn tiene_balance(&self, exchange: &str) -> bool {
+        self.balances.contains_key(exchange)
+    }
+
+    /// Devuelve el balance USD disponible en un exchange
+    pub fn balance_usd(&self, exchange: &str) -> f64 {
+        self.balances.get(exchange).map(|b| b.usd).unwrap_or(0.0)
     }
 
     fn aplicar_operacion(&mut self, op: &Operacion) -> bool {
@@ -1383,7 +1600,7 @@ impl Carteras {
     }
 }
 
-fn buscar_oportunidades(
+pub fn buscar_oportunidades(
     cotizaciones: &HashMap<String, Cotizacion>,
     carteras: &Carteras,
     costos: &MapaCostos,
@@ -2571,7 +2788,7 @@ fn precio_referencia<'a>(cotizaciones: impl IntoIterator<Item = &'a Cotizacion>)
     }
 }
 
-fn cotizacion_valida(c: &Cotizacion, ahora: DateTime<Utc>, stale_ms: i64) -> bool {
+pub fn cotizacion_valida(c: &Cotizacion, ahora: DateTime<Utc>, stale_ms: i64) -> bool {
     if c.exchange.is_empty() || c.bid <= 0.0 || c.ask <= 0.0 || c.bid >= c.ask {
         return false;
     }
@@ -2646,7 +2863,7 @@ fn z_score(valores: &[f64], actual: f64) -> f64 {
     }
 }
 
-fn config_exchange(costos: &MapaCostos, nombre: &str) -> ExchangeConfig {
+pub fn config_exchange(costos: &MapaCostos, nombre: &str) -> ExchangeConfig {
     costos
         .exchanges
         .get(nombre)
@@ -2758,6 +2975,7 @@ mod tests {
             costo_rebalanceo_usd: 10.0,
             rebalance_settlement_ms: 1_800,
             exchanges,
+            webhook_url: None,
         }
     }
 

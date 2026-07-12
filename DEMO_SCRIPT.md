@@ -4,9 +4,17 @@ Este documento detalla el paso a paso para probar todas las funcionalidades prin
 
 ## Recorrido opcional de 2 minutos
 
-- **Acción:** En el encabezado del dashboard, pulse **Recorrido de 2 min**.
-- **Expectativa:** La guía cambia de pestaña y resalta, en orden, lectura ejecutiva, feeds, cálculo neto, escenarios adversos, validación multisemilla y campeón GA.
-- **Atajo reproducible:** En "Demo controlada", use **Reiniciar corrida de jurado** antes de **Preparar recorrido completo**. El reset conserva feeds públicos y configuración, pero limpia balances, PnL, riesgo y estado GA.
+- **Acción:** En el encabezado del dashboard, pulse el botón flotante **Recorrido 2 min** (`#tutorialToggle`).
+- **Expectativa:** La guía interactiva iniciará y cambiará automáticamente de pestaña, aplicando la clase `.tutorial-highlight` a los siguientes contenedores DOM específicos:
+  
+  1. **Lectura ejecutiva en 15 segundos:** Resalta la franja superior de resumen (`.llm-strip`, `#resumenLlm`), mostrando el estado simulado, PnL, y mejor ruta.
+  2. **Order books públicos en vivo:** Cambia a la pestaña "Mercado y rutas" (`#tab-mercado`) y resalta la cinta de precios (`.mercado`, `#exchangeLista`), donde se mide la latencia de los WebSockets.
+  3. **De spread bruto a utilidad neta:** Resalta el mapa de arbitraje (`.mapa`, `#canvasMapa`), demostrando cómo se calculan las rutas restando fees y slippage.
+  4. **Robustez que se puede provocar:** Cambia a la pestaña "Riesgo y escenarios" (`#tab-riesgo`) y destaca la sala de pruebas (`.demo-panel`), exponiendo controles manuales para inyectar adversidad (`#btnDemoCaos`, `#btnResetDemo`).
+  5. **Baseline vs campeón GA:** Navega a la pestaña "Auditoría y backtest" (`#tab-logs`) y resalta el validador multisemilla (`.replay-panel`), que verifica al motor con intervalos de confianza P05-P95.
+  6. **Optimización evolutiva explicable:** Termina en la pestaña "Optimización GA" (`#tab-galab`) destacando el laboratorio genético (`.ga-panel`), donde los umbrales (tamaño, spread, latencia permitida) se ajustan a la vista.
+
+- **Atajo reproducible:** En la sección "Demo controlada" (`.demo-panel`), use **Reiniciar corrida de jurado** (`#btnResetDemo`) antes de inyectar oportunidades con **Preparar recorrido completo** (`#btnDemoFinal`). El reset conserva feeds públicos, pero limpia carteras (`#balances`), PnL (`#pnlLiveTitle`), riesgo y el estado GA para una evaluación limpia.
 
 ## 1. Validación de Readiness Inicial
 - **Acción:** Al cargar el dashboard (http://127.0.0.1:8080), observe la sección central **"Readiness"** (Modo Jurado).

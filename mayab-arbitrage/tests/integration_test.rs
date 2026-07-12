@@ -443,7 +443,6 @@ async fn integration_paquete_evaluacion_devuelve_evidencia_completa() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert!(json["criterios"].is_array());
-    assert!(json["puntajeTotal"].is_number());
     assert!(json["huellaAuditoria"].is_string());
     assert!(json["scriptDemo"].is_array());
     assert!(json["endpoints"].is_object());

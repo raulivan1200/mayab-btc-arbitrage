@@ -252,6 +252,24 @@ pub struct Rebalanceo {
     pub tiempo: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReglaRebalanceo {
+    pub id: String,
+    #[serde(rename = "activoBase")]
+    pub activo_base: String,
+    #[serde(rename = "condicionBaseMenorA")]
+    pub condicion_base_menor_a: QtyUnits,
+    #[serde(rename = "activoCotizacion")]
+    pub activo_cotizacion: String,
+    #[serde(rename = "condicionCotizacionMayorA")]
+    pub condicion_cotizacion_mayor_a: MoneyUnits,
+    #[serde(rename = "montoTransferencia")]
+    pub monto_transferencia: QtyUnits,
+    pub desde: String,
+    pub hacia: String,
+    pub activa: bool,
+}
+
 /// Capital de rebalanceo debitado pero todavía no disponible en destino.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransferenciaInventario {
@@ -408,6 +426,12 @@ pub struct TelemetriaPipeline {
     pub compute_p95_us: u64,
     #[serde(rename = "computeP99Us")]
     pub compute_p99_us: u64,
+    #[serde(rename = "schedulingP50Us")]
+    pub scheduling_p50_us: u64,
+    #[serde(rename = "schedulingP95Us")]
+    pub scheduling_p95_us: u64,
+    #[serde(rename = "schedulingP99Us")]
+    pub scheduling_p99_us: u64,
     #[serde(rename = "quoteToDecisionP50Ms")]
     pub quote_to_decision_p50_ms: i64,
     #[serde(rename = "quoteToDecisionP95Ms")]
@@ -519,6 +543,12 @@ pub struct MapaCostos {
     )]
     pub rebalance_settlement_ms: i64,
     pub exchanges: HashMap<String, ExchangeConfig>,
+    #[serde(
+        rename = "webhookUrl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -657,6 +687,8 @@ pub struct EstadoPublico {
     pub exchanges_activos: HashMap<String, bool>,
     #[serde(rename = "paresActivos")]
     pub pares_activos: Vec<String>,
+    #[serde(rename = "reglasRebalanceo", default)]
+    pub reglas_rebalanceo: Vec<ReglaRebalanceo>,
 }
 
 fn default_rebalance_settlement_ms() -> i64 {

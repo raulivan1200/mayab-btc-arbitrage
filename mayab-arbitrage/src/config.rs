@@ -122,6 +122,24 @@ impl Config {
                 0.97,
             ),
         );
+        exchanges.insert(
+            "Jupiter".to_string(),
+            exchange(
+                "Jupiter",
+                env_f64("FEE_JUPITER", 0.0010),
+                env_f64("RETIRO_BTC_JUPITER", 0.00000),
+                0.92,
+            ),
+        );
+        exchanges.insert(
+            "Raydium".to_string(),
+            exchange(
+                "Raydium",
+                env_f64("FEE_RAYDIUM", 0.0025),
+                env_f64("RETIRO_BTC_RAYDIUM", 0.00000),
+                0.90,
+            ),
+        );
 
         let costos = MapaCostos {
             max_operacion_btc: (positive(env_f64("MAX_OPERACION_BTC", 0.18), 0.18)),
@@ -165,6 +183,7 @@ impl Config {
                 1800,
             ),
             exchanges,
+            webhook_url: env_optional("WEBHOOK_URL"),
         };
 
         Self {

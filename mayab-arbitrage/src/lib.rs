@@ -2,6 +2,7 @@
 
 pub mod auditoria;
 pub mod config;
+pub mod estrategia;
 pub mod ga;
 pub mod mercado;
 pub mod metricas;

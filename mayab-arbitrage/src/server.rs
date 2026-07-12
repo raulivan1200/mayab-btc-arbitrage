@@ -90,6 +90,7 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/lab/sweep", get(lab_sweep))
         .route("/api/export/json", get(exportar_json))
         .route("/api/export/csv", get(exportar_csv))
+        .route("/api/export/evidence", get(exportar_evidence))
         .route("/metrics", get(metrics))
         .route("/api/metrics", get(metrics))
         .route("/api/config", post(actualizar_config_http))
@@ -97,10 +98,16 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/demo/caos", post(demo_caos_http))
         .route("/api/demo/final", post(demo_final_http))
         .route("/api/demo/reset", post(reset_demo_http))
+        .route("/api/demo/capturar/iniciar", post(captura_iniciar_http))
+        .route("/api/demo/capturar/detener", post(captura_detener_http))
+        .route("/api/demo/capturar/estado", get(captura_estado_http))
+        .route("/api/demo/capturar/replay", post(captura_replay_http))
         .route("/api/ga/estado", get(ga_estado))
         .route("/api/ga/config", get(obtener_config_ga).post(actualizar_config_ga_http))
         .route("/api/ga/evolucionar", post(evolucionar_ga_http))
         .route("/api/exchanges", post(alternar_exchange_http))
+        .route("/api/rebalance/rules", post(actualizar_reglas_rebalanceo_http))
+        .route("/api/adverso", post(trigger_adverso_http))
         .route("/tiempo-real", get(tiempo_real))
         .fallback_service(archivos_estaticos)
         .layer(axum::middleware::from_fn_with_state(
@@ -397,6 +404,102 @@ async fn exportar_json(State(app): State<EstadoApp>) -> Response {
         .into_response()
 }
 
+async fn exportar_evidence(State(app): State<EstadoApp>) -> Response {
+    let estado = app.motor.estado().await;
+    let ablacion = app.motor.ga_ablacion().await;
+
+    let commit_sha = std::env::var("COMMIT_SHA").unwrap_or_else(|_| "desconocido".into());
+    let config_json = serde_json::to_string(&estado.configuracion).unwrap_or_default();
+
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    config_json.hash(&mut hasher);
+    let config_hash = hasher.finish();
+
+    let mut hasher_eventos = DefaultHasher::new();
+    let eventos_json = serde_json::to_string(&estado.eventos_ejecucion).unwrap_or_default();
+    eventos_json.hash(&mut hasher_eventos);
+    let cinta_hash = hasher_eventos.finish();
+
+    let md = format!(
+        "# Evidencia y Reproducibilidad (FINAL_EVIDENCE)\n\n\
+        Generado en: {}\n\n\
+        ## Entorno\n\
+        - Commit SHA: `{}`\n\
+        - Config Hash: `{}`\n\
+        - Modo: {}\n\
+        \n\
+        ## Cobertura\n\
+        - Exchanges: {:?}\n\
+        - Pares: {:?}\n\
+        \n\
+        ## Rendimiento (P&L)\n\
+        - Ejecución P&L (Utilidad Acumulada): ${:.2}\n\
+        - Costo de Rebalanceos: ${:.2}\n\
+        - Max Drawdown: ${:.2}\n\
+        - Sharpe Ratio: {:.4}\n\
+        - Win Rate: {:.2}%\n\
+        - Trades Ejecutados: {}\n\
+        - Trades Fallidos: {}\n\
+        \n\
+        ## Latencia (Desglose P99)\n\
+        - Red (Transporte): {} ms\n\
+        - Scheduling (Cola/Events): {} µs\n\
+        - Cómputo Puro (Decisión): {} µs\n\
+        \n\
+        ## Operativa\n\
+        - Cinta Hash (Eventos): `{}`\n\
+        - Rechazos por Razón (Fallidas): {}\n\
+        \n\
+        ## Ablación GA (Holdout)\n\
+        ```json\n\
+        {}\n\
+        ```\n\
+        ",
+        estado.generado_en.to_rfc3339(),
+        commit_sha,
+        config_hash,
+        if estado.metricas.modo_conservador {
+            "Real-market paper (Conservador)"
+        } else {
+            "Synthetic Demo"
+        },
+        estado.exchanges_activos,
+        estado.pares_activos,
+        estado.metricas.utilidad_acumulada_usd,
+        estado.metricas.costo_rebalanceo_acumulado_usd,
+        estado.metricas.max_drawdown_usd,
+        estado.metricas.sharpe_ratio,
+        estado.metricas.win_rate * 100.0,
+        estado.metricas.operaciones_totales,
+        estado.metricas.operaciones_fallidas,
+        estado
+            .latencias_exchange
+            .iter()
+            .map(|l| l.p99_ms)
+            .max()
+            .unwrap_or(0),
+        estado.telemetria_pipeline.scheduling_p99_us,
+        estado.telemetria_pipeline.compute_p99_us,
+        cinta_hash,
+        estado.metricas.operaciones_fallidas,
+        serde_json::to_string_pretty(&ablacion).unwrap_or_default(),
+    );
+
+    (
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"FINAL_EVIDENCE.md\"",
+            ),
+        ],
+        md,
+    )
+        .into_response()
+}
+
 async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
 
@@ -547,6 +650,8 @@ struct ParcheConfig {
     costo_rebalanceo_usd: Option<f64>,
     #[serde(rename = "rebalanceSettlementMs")]
     rebalance_settlement_ms: Option<i64>,
+    #[serde(rename = "webhookUrl")]
+    webhook_url: Option<String>,
     exchanges: Option<HashMap<String, ExchangeConfig>>,
 }
 
@@ -638,6 +743,48 @@ async fn demo_escenario(
             .await,
     )
     .into_response()
+}
+
+async fn trigger_adverso_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    payload: Result<Json<SolicitudDemo>, JsonRejection>,
+) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(err) => return rechazo_json(err).into_response(),
+    };
+    Json(
+        app.motor
+            .activar_escenario_demo(payload.escenario.into())
+            .await,
+    )
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolicitudReglasRebalanceo {
+    reglas: Vec<crate::types::ReglaRebalanceo>,
+}
+
+async fn actualizar_reglas_rebalanceo_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    payload: Result<Json<SolicitudReglasRebalanceo>, JsonRejection>,
+) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(err) => return rechazo_json(err).into_response(),
+    };
+    app.motor.actualizar_reglas_rebalanceo(payload.reglas).await;
+    Json(json!({ "ok": true })).into_response()
 }
 
 async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
@@ -809,6 +956,34 @@ async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Re
         "siguiente": "POST /api/demo/final"
     }))
     .into_response()
+}
+
+async fn captura_iniciar_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    app.motor.iniciar_captura().await;
+    Json(json!({"ok": true, "modo": "captura_iniciada"})).into_response()
+}
+
+async fn captura_detener_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let count = app.motor.detener_captura().await;
+    Json(json!({"ok": true, "modo": "captura_detenida", "snapshots": count})).into_response()
+}
+
+async fn captura_estado_http(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    Json(app.motor.captura_estado().await)
+}
+
+async fn captura_replay_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let resultado = app.motor.ejecutar_replay_capturado().await;
+    Json(resultado).into_response()
 }
 
 async fn ga_estado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
@@ -1208,6 +1383,9 @@ fn aplicar_config_patch(cfg: &mut MapaCostos, patch: ParcheConfig) -> Result<(),
             actual.retiro_btc = exchange.retiro_btc;
             actual.confiabilidad = exchange.confiabilidad;
         }
+    }
+    if let Some(v) = patch.webhook_url {
+        cfg.webhook_url = if v.trim().is_empty() { None } else { Some(v) };
     }
     Ok(())
 }
@@ -1772,7 +1950,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             check("auditoria_exportable", export_ok, "/api/export/json y /api/export/csv disponibles"),
             check("sqlite_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("{} ops, {} oportunidades, {} auditorias en {}", p.operaciones, p.oportunidades, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
             check("rest_fallback", rest_fallback_ok, format!("{rest_fallbacks} feeds usan snapshot REST publico como respaldo; WS sigue siendo la fuente primaria")),
-            check("telemetria_pipeline", estado.telemetria_pipeline.muestras > 0, format!("{} muestras; compute p50/p95/p99={}/{}/{} us; quote->decision p50/p95/p99={}/{}/{} ms; {:.1} eventos/s", estado.telemetria_pipeline.muestras, estado.telemetria_pipeline.compute_p50_us, estado.telemetria_pipeline.compute_p95_us, estado.telemetria_pipeline.compute_p99_us, estado.telemetria_pipeline.quote_to_decision_p50_ms, estado.telemetria_pipeline.quote_to_decision_p95_ms, estado.telemetria_pipeline.quote_to_decision_p99_ms, estado.telemetria_pipeline.eventos_por_segundo)),
+            check("telemetria_pipeline", estado.telemetria_pipeline.muestras > 0, format!("{} muestras; compute p50/p95/p99={}/{}/{} us; scheduling p50/p95/p99={}/{}/{} us; {:.1} eventos/s", estado.telemetria_pipeline.muestras, estado.telemetria_pipeline.compute_p50_us, estado.telemetria_pipeline.compute_p95_us, estado.telemetria_pipeline.compute_p99_us, estado.telemetria_pipeline.scheduling_p50_us, estado.telemetria_pipeline.scheduling_p95_us, estado.telemetria_pipeline.scheduling_p99_us, estado.telemetria_pipeline.eventos_por_segundo)),
         ],
         "feeds": feed_detalle,
         "endpoints": {
@@ -3337,7 +3515,9 @@ mod tests {
         }
 
         EstadoPublico {
-            generado_en: ahora,
+            generado_en: Utc::now(),
+            configuracion: cfg_test(),
+            reglas_rebalanceo: Vec::new(),
             corrida: EstadoCorrida {
                 id: "jury-qa".to_string(),
                 modo: "demo_controlada".to_string(),
@@ -3429,7 +3609,6 @@ mod tests {
                 rebalanceos_totales: 1,
                 ..Metricas::default()
             },
-            configuracion: cfg_test(),
             genetico: Some(EstadoGenetico {
                 activo: true,
                 generacion: 1,
@@ -3540,8 +3719,9 @@ mod tests {
             );
         }
         MapaCostos {
-            max_operacion_btc: (0.18),
-            min_utilidad_usd: (1.25),
+            max_operacion_btc: 0.15,
+            min_utilidad_usd: 1.0,
+            webhook_url: None,
             min_diferencial_neto_bps: 0.65,
             deslizamiento_bps: 0.18,
             latencia_riesgo_bps: 0.08,

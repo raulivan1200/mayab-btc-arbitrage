@@ -44,7 +44,7 @@
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker" data-ui-copy="landingKicker">10 exchanges · 90 rutas · inteligencia evolutiva</p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">12 exchanges · 100+ rutas · inteligencia evolutiva</p>
             <h1 data-ui-copy="landingTitle">Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.</h1>
             <p data-ui-copy="landingBody">Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.</p>
             <div class="landing-actions">
@@ -55,7 +55,7 @@
               <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
-              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 exchanges en tiempo real</span></span>
+              <span><strong>01</strong> <span data-ui-copy="proofMarket">12 exchanges en tiempo real (10 CEX + 2 DEX)</span></span>
               <span><strong>02</strong> <span data-ui-copy="proofCosts">Cada costo cuenta</span></span>
               <span><strong>03</strong> <span data-ui-copy="proofSafety">Capital real: cero</span></span>
             </div>
@@ -84,7 +84,7 @@
         </div>
 
         <div class="landing-grid">
-          <article class="landing-card landing-card-green reveal-card">
+          <article class="landing-card landing-card-green reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-riesgo\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
             <span>03</span>
             <h2>Riesgo defendible</h2>
             <ul>
@@ -93,7 +93,7 @@
               <li>Rebalanceos internos con costo explícito</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-purple reveal-card">
+          <article class="landing-card landing-card-purple reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-galab\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
             <span>04</span>
             <h2>Optimización explicable</h2>
             <ul>
@@ -102,7 +102,7 @@
               <li>JSON/CSV para auditar fuera del dashboard</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-black reveal-card">
+          <article class="landing-card landing-card-black reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-logs\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
             <span>05</span>
             <h2>Listo para evaluar</h2>
             <ul>
@@ -111,7 +111,7 @@
               <li>Sin llaves, sin custodia, sin trading real</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-blue reveal-card" id="seguridad-card">
+          <article class="landing-card landing-card-blue reveal-card" id="seguridad-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-overview\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
             <span>06</span>
             <h2>Seguridad y observabilidad</h2>
             <ul>
@@ -119,7 +119,7 @@
               <li>Métricas Prometheus en <code>/metrics</code></li>
               <li>Sin llaves API ni superficie de órdenes privadas</li>
             </ul>
-            <div class="landing-actions">
+            <div class="landing-actions" style="margin-top: 1.5rem; margin-bottom: 1rem;">
               <a class="btn-link" href="/metrics" target="_blank" rel="noopener">Ver métricas Prometheus</a>
             </div>
             <p class="seguridad-estado seguridad-ok">Demo segura: solo datos públicos y estado simulado.</p>
@@ -166,9 +166,9 @@
       </header>
 
       <section class="provenance-strip" aria-label="Procedencia de datos, ejecución y corrida">
-        <article><span>Datos</span><strong id="provenanceData">LIVE 0/5</strong><small id="provenanceLatency">esperando feeds</small></article>
-        <article><span>Ejecución</span><strong>100% simulada</strong><small>sin llaves · sin custodia</small></article>
-        <article><span>Corrida</span><strong id="provenanceRun">sin demo</strong><small id="provenanceRunMeta">PnL separado de mercado</small></article>
+        <article><span>Datos</span><strong id="provenanceData">Conectando… 8 WS · 2 REST</strong><small id="provenanceLatency">Último estado conocido: sincronizando</small></article>
+        <article><span>Ejecución</span><strong id="provenanceResultTag">Real-market paper result</strong><small>100% simulada · sin custodia</small></article>
+        <article><span>Corrida</span><strong id="provenanceRun">La ejecución permanece pausada</strong><small id="provenanceRunMeta">hasta sincronizar libros</small></article>
       </section>
 
       <div id="circuitBreakerBanner" class="circuit-breaker-banner" hidden>
@@ -221,24 +221,24 @@
 
       <section class="metricas metricas-principales" aria-label="Métricas principales">
         <article>
-          <span>Utilidad neta demo</span>
-          <strong id="pnl" class="metric-value" data-fit-metric><span class="metric-amount">$0.00</span></strong>
-          <p id="pnlDetalle">Corrida rentable precargada: PnL simulado después de costos, fill parcial y rebalanceo.</p>
+          <span>Execution P&L</span>
+          <strong id="pnlExecution" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
+          <p>Utilidad bruta de ejecución simulada.</p>
         </article>
         <article>
-          <span>Retorno</span>
-          <strong id="retorno" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">bps</small></strong>
-          <p>Rendimiento acumulado en puntos base; 100 bps equivale a 1%.</p>
+          <span>Rebalance cost</span>
+          <strong id="pnlRebalance" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
+          <p>Costo de rebalanceo de inventario.</p>
         </article>
         <article>
-          <span>Eventos</span>
-          <strong id="eventos" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
-          <p>Cotizaciones procesadas por el motor en tiempo real.</p>
+          <span>Inventory mark-to-market</span>
+          <strong id="pnlMarkToMarket" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
+          <p>Ganancia/pérdida por exposición de cripto.</p>
         </article>
         <article>
-          <span>Latencia promedio</span>
-          <strong id="latencia" class="metric-value" data-fit-metric><span class="metric-amount">0</span><small class="metric-unit">ms</small></strong>
-          <p>Tiempo medio de llegada de datos; menor es mejor.</p>
+          <span>Total equity change</span>
+          <strong id="pnl" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
+          <p>Variación total neta de capital.</p>
         </article>
       </section>
 
@@ -296,52 +296,52 @@
       <section class="metricas metricas-secundarias" aria-label="Métricas de riesgo y desempeño">
         <article>
           <span>Sharpe por operación</span>
-          <strong id="sharpe" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
+          <strong id="sharpe" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Retorno medio dividido por su variabilidad entre trades; no anualizado.</p>
         </article>
         <article>
           <span>Win Rate</span>
-          <strong id="winRate" class="metric-value" data-fit-metric><span class="metric-amount">0.0</span><small class="metric-unit">%</small></strong>
+          <strong id="winRate" class="metric-value" data-fit-metric><span class="metric-amount">—</span><small class="metric-unit">%</small></strong>
           <p>Porcentaje de operaciones con utilidad positiva.</p>
         </article>
         <article>
           <span>Max Drawdown</span>
-          <strong id="maxDrawdown" class="metric-value metric-money" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">USD</small></strong>
+          <strong id="maxDrawdown" class="metric-value metric-money" data-fit-metric><span class="metric-amount">—</span><small class="metric-unit">USD</small></strong>
           <p>Peor caída acumulada desde un máximo de PnL.</p>
         </article>
         <article>
           <span>Sortino Ratio</span>
-          <strong id="sortinoRatio" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
+          <strong id="sortinoRatio" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Retorno medio ajustado por volatilidad bajista.</p>
         </article>
         <article>
           <span>Kelly Criterion</span>
-          <strong id="kellyCriterion" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">%</small></strong>
+          <strong id="kellyCriterion" class="metric-value" data-fit-metric><span class="metric-amount">—</span><small class="metric-unit">%</small></strong>
           <p>Tamaño óptimo de la apuesta según riesgo/recompensa.</p>
         </article>
         <article>
           <span>TOBI</span>
-          <strong id="tobi" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span></strong>
+          <strong id="tobi" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Taker Order Book Imbalance.</p>
         </article>
         <article>
           <span>Bayesian Prob</span>
-          <strong id="bayesian" class="metric-value" data-fit-metric><span class="metric-amount">0.00</span><small class="metric-unit">%</small></strong>
+          <strong id="bayesian" class="metric-value" data-fit-metric><span class="metric-amount">—</span><small class="metric-unit">%</small></strong>
           <p>Tasa de éxito con suavizado de Laplace.</p>
         </article>
         <article>
           <span>Trades Ejecutados</span>
-          <strong id="operacionesTotales" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
+          <strong id="operacionesTotales" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Trades simulados que pasaron filtros de utilidad, balance y riesgo.</p>
         </article>
         <article>
           <span>Fallos</span>
-          <strong id="operacionesFallidas" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
+          <strong id="operacionesFallidas" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Fallas controladas para demostrar robustez bajo estrés.</p>
         </article>
         <article>
           <span>Rebalanceos</span>
-          <strong id="rebalanceosTotales" class="metric-value" data-fit-metric><span class="metric-amount">0</span></strong>
+          <strong id="rebalanceosTotales" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Movimientos internos para mantener capital por exchange.</p>
         </article>
       </section>
@@ -457,10 +457,10 @@
               <small>p50 / p95 / p99</small>
             </div>
             <div class="pipeline-kpis">
-              <article><span>Quote → decisión</span><strong id="pipelineDecision">—</strong><small id="pipelineDecisionTail">p95 — · p99 —</small></article>
-              <article><span>Scan interno</span><strong id="pipelineCompute">—</strong><small id="pipelineComputeTail">p95 — · p99 —</small></article>
+              <article><span>Red (Transporte)</span><strong id="pipelineRed">—</strong><small id="pipelineRedTail">p95 — · p99 —</small></article>
+              <article><span>Scheduling (Cola/Events)</span><strong id="pipelineScheduling">—</strong><small id="pipelineSchedulingTail">p95 — · p99 —</small></article>
+              <article><span>Cómputo Puro (Decisión)</span><strong id="pipelineCompute">—</strong><small id="pipelineComputeTail">p95 — · p99 —</small></article>
               <article><span>Throughput</span><strong id="pipelineThroughput">—</strong><small id="pipelineRoutes">0 rutas evaluadas</small></article>
-              <article><span>Coalescing</span><strong id="pipelineCoalescing">—</strong><small id="pipelineSamples">0 muestras</small></article>
             </div>
             <p class="panel-ayuda pipeline-note">Exchange → ingesta se reporta arriba. Aquí se mide por separado espera de scheduling y cómputo; ticks sin cotización nueva se omiten para no duplicar decisiones ni Z-score.</p>
           </div>
@@ -488,7 +488,7 @@
               <p class="ceja">Riesgo</p>
               <h2>Carteras</h2>
             </div>
-            <span id="trabajadores">0 trabajadores</span>
+            <span id="trabajadores">10 trabajadores</span>
           </div>
           <p class="panel-ayuda">Inventario simulado por exchange: aquí se ve si el bot puede comprar, vender o necesita rebalancear antes de operar.</p>
           <div id="balances" class="balances"></div>
@@ -504,6 +504,33 @@
                 </tr>
               </thead>
               <tbody id="exchangeCostos"></tbody>
+            </table>
+          </div>
+
+          <div class="panel-titulo" style="margin-top: 2rem;">
+            <div>
+              <p class="ceja">Inventario en tránsito</p>
+              <h2>Transferencias y Rebalanceos</h2>
+            </div>
+            <span id="transferenciasCount">0 pendientes</span>
+          </div>
+          <p class="panel-ayuda">Muestra el movimiento de liquidez entre wallets, simulando costos fijos y tiempos de confirmación en cadena (settlement delays).</p>
+          <div class="tabla-scroll transfer-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Estado</th>
+                  <th>De &rarr; A</th>
+                  <th>Activo</th>
+                  <th>Enviado</th>
+                  <th>Neto Recibido</th>
+                  <th>Costo USD</th>
+                  <th>Liq. Estimada</th>
+                </tr>
+              </thead>
+              <tbody id="tablaTransferencias">
+                <tr><td colspan="7" class="text-center">Sin transferencias recientes</td></tr>
+              </tbody>
             </table>
           </div>
 
@@ -626,6 +653,13 @@
           <button type="button" class="btn-secundario" data-demo="liquidez_insuficiente">Liquidez insuficiente</button>
           <button type="button" class="btn-secundario" data-demo="circuit_breaker">Circuit breaker</button>
           <button type="button" class="btn-secundario" data-demo="rebalanceo">Forzar rebalanceo</button>
+        </div>
+        <div class="demo-actions" style="margin-top: 1rem; border-top: 1px solid var(--borde); padding-top: 1rem;">
+          <p class="panel-ayuda" style="margin-bottom: 0.5rem; font-size: 0.85rem;">Replay real: captura order books en vivo y reinyéctalos determinísticamente</p>
+          <button type="button" id="btnCapturarIniciar" class="btn-secundario" style="background: var(--azul);">Iniciar captura</button>
+          <button type="button" id="btnCapturarDetener" class="btn-secundario" style="background: var(--rojo);" disabled>Detener captura</button>
+          <button type="button" id="btnCapturarReplay" class="btn-secundario demo-primary" disabled>Ejecutar replay</button>
+          <span id="capturaEstado" class="feedback" style="margin-left: 0.5rem;"></span>
         </div>
         <span id="demoFeedback" class="feedback"></span>
       </section>
@@ -872,6 +906,28 @@
           <span id="gaGeneracion">Gen 0</span>
         </div>
 
+        <div class="ga-ablation-table-wrap" style="margin-bottom: 2rem;">
+          <p class="ceja" style="margin-bottom: 0.5rem; display: block;">Evidencia Cuantitativa (Holdout Baseline vs GA)</p>
+          <div class="table-responsive">
+            <table class="rutas-table">
+              <thead>
+                <tr>
+                  <th>Modelo / Ablación</th>
+                  <th class="num">Profit Factor</th>
+                  <th class="num">Win Rate</th>
+                  <th class="num">Drawdown</th>
+                  <th class="num">Trades</th>
+                  <th class="num">Mediana PnL</th>
+                  <th class="num">P05-P95 PnL (Intervalo)</th>
+                </tr>
+              </thead>
+              <tbody id="gaAblationBody">
+                <tr><td colspan="7" class="text-center">Cargando ablación GA...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="ga-hero">
           <div>
             <span class="ga-status" id="gaEstado">Listo para evolucionar</span>
@@ -1084,7 +1140,7 @@
       </div>
       <p class="ceja">Recorrido para jurado</p>
       <h2 id="tutorialTitle">Mercado público en vivo</h2>
-      <p id="tutorialText">Cinco adaptadores normalizan order books y conservan la fuente visible.</p>
+      <p id="tutorialText">10 exchanges configurados, 8 WebSocket frescos y 2 REST fallback normalizan order books y conservan la fuente visible.</p>
       <p id="tutorialProof" class="tutorial-proof"></p>
       <div class="tutorial-actions">
         <button id="tutorialPrev" class="btn-secundario" type="button">Anterior</button>

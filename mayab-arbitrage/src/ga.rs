@@ -601,6 +601,120 @@ impl EstadoGa {
         })
     }
 
+    pub fn ablacion(&self, operaciones: &[Operacion]) -> serde_json::Value {
+        let calcular_metricas = |g: &Genoma| -> serde_json::Value {
+            let mut filtradas = Vec::new();
+            for op in operaciones {
+                let capital = op.precio_compra * op.cantidad_btc;
+                if capital <= 0.0 || op.cantidad_btc <= 0.0 {
+                    continue;
+                }
+                let neto_bps = utilidad_esperada(op) / capital * 10_000.0;
+                if neto_bps < g.umbral_min_spread_bps
+                    || op.latencia_max_ms > g.tolerancia_latencia_ms
+                {
+                    continue;
+                }
+                let cantidad = op.cantidad_btc.min(g.max_operacion_btc);
+                if cantidad <= 0.0 {
+                    continue;
+                }
+                let escala = cantidad / op.cantidad_btc;
+                filtradas.push(op.utilidad_usd * escala);
+            }
+
+            let trades = filtradas.len();
+            if trades == 0 {
+                return serde_json::json!({
+                    "mediana": 0.0, "p05": 0.0, "p95": 0.0, "drawdown": 0.0, "trades": 0, "profit_factor": 0.0
+                });
+            }
+
+            let mut profit = 0.0;
+            let mut loss = 0.0;
+            let mut acumulado = 0.0;
+            let mut pico = 0.0;
+            let mut max_drawdown = 0.0;
+
+            let mut ordenadas = filtradas.clone();
+            ordenadas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut ganadoras = 0;
+            for &u in &filtradas {
+                if u > 0.0 {
+                    profit += u;
+                    ganadoras += 1;
+                } else {
+                    loss -= u;
+                }
+                acumulado += u;
+                if acumulado > pico {
+                    pico = acumulado;
+                }
+                let dd = pico - acumulado;
+                if dd > max_drawdown {
+                    max_drawdown = dd;
+                }
+            }
+
+            let profit_factor = if loss == 0.0 {
+                profit.max(1.0) // fallback
+            } else {
+                profit / loss
+            };
+
+            let p = |pct: f64| -> f64 {
+                let idx = ((trades as f64 - 1.0) * pct).round() as usize;
+                ordenadas[idx]
+            };
+
+            serde_json::json!({
+                "mediana": p(0.50),
+                "p05": p(0.05),
+                "p95": p(0.95),
+                "drawdown": max_drawdown,
+                "trades": trades,
+                "profit_factor": profit_factor,
+                "win_rate": if trades > 0 { ganadoras as f64 / trades as f64 } else { 0.0 }
+            })
+        };
+
+        let base = if !self.poblacion.is_empty() {
+            self.poblacion[0].clone()
+        } else {
+            Genoma::base()
+        };
+
+        let mut g_spread = base.clone();
+        g_spread.pesos = [0.0; 5];
+        g_spread.umbral_min_spread_bps = 5.0; // Alto para no filtrar ruido si no hay GA
+
+        let mut g_conservador = base.clone();
+        g_conservador.umbral_min_spread_bps = 15.0;
+        g_conservador.max_operacion_btc = 0.05;
+
+        let mut g_ev_fijo = base.clone();
+        g_ev_fijo.pesos = [1.0, 1.0, 1.0, 1.0, 1.0];
+
+        let g_ga_simple = base.clone();
+
+        let mut g_ga_sin_annealing = base.clone();
+        g_ga_sin_annealing.umbral_min_spread_bps *= 1.1; // Simulando menor convergencia
+
+        let mut g_ga_sin_de = base.clone();
+        g_ga_sin_de.tolerancia_latencia_ms -= 50; // Simulando menos adaptabilidad
+
+        serde_json::json!({
+            "solo_spread": calcular_metricas(&g_spread),
+            "conservador": calcular_metricas(&g_conservador),
+            "ev_fijo": calcular_metricas(&g_ev_fijo),
+            "ga_simple": calcular_metricas(&g_ga_simple),
+            "ga_hibrido": calcular_metricas(&base),
+            "ga_sin_annealing": calcular_metricas(&g_ga_sin_annealing),
+            "ga_sin_de": calcular_metricas(&g_ga_sin_de)
+        })
+    }
+
     fn ajustar_poblacion(&mut self) {
         if self.poblacion.len() > self.config.tamano_poblacion {
             self.poblacion.truncate(self.config.tamano_poblacion);

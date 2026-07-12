@@ -9,7 +9,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use reqwest::Client;
 use serde_json::Value;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -296,7 +297,7 @@ pub async fn start_feeds(motor: Arc<Motor>, par_base: String) {
         .build()
         .unwrap_or_else(|_| Client::new());
     for adaptador in adaptadores(&par_base) {
-        if adaptador.tiene_rest() {
+        if adaptador.tiene_rest() && !adaptador.ws_url().starts_with("solana://") {
             let motor = motor.clone();
             let client = client.clone();
             let rest_adaptador = adaptador.clonar();
@@ -304,10 +305,136 @@ pub async fn start_feeds(motor: Arc<Motor>, par_base: String) {
                 run_rest_fallback(rest_adaptador, motor, client).await;
             });
         }
-        let motor = motor.clone();
-        tokio::spawn(async move {
-            run_feed(adaptador, motor).await;
-        });
+        // Lanzar conector DEX (simulado) o WS normal
+        if adaptador.ws_url().starts_with("solana://") {
+            let motor = motor.clone();
+            tokio::spawn(async move {
+                run_solana_dex_connector(adaptador, motor).await;
+            });
+        } else {
+            let motor = motor.clone();
+            tokio::spawn(async move {
+                run_feed(adaptador, motor).await;
+            });
+        }
+    }
+}
+
+// Helper para mapear quote según exchange (USD -> USDT para venues spot que no tienen USD)
+fn mapear_quote_exchange(exchange: &str, quote: &str) -> String {
+    let quote = quote.to_ascii_uppercase();
+    if quote == "USD" {
+        match exchange {
+            "Binance" | "OKX" | "Bybit" | "KuCoin" | "Gate.io" => "USDT".to_string(),
+            _ => "USD".to_string(),
+        }
+    } else {
+        quote
+    }
+}
+
+fn cotizacion_desde_precio_liq(
+    par: &str,
+    precio: f64,
+    liquidez: f64,
+    es_jupiter: bool,
+) -> Cotizacion {
+    let spread_bps = if es_jupiter { 2.0 } else { 5.0 };
+    let half_spread = precio * spread_bps / 10000.0 / 2.0;
+    let bid = precio - half_spread;
+    let ask = precio + half_spread;
+    let qty = (liquidez / precio * 0.01).max(0.001).min(10.0);
+    Cotizacion {
+        exchange: if es_jupiter { "Jupiter" } else { "Raydium" }.to_string(),
+        par: normalizar_par(par),
+        bid,
+        bid_cantidad: qty,
+        ask,
+        ask_cantidad: qty,
+        bids: SmallVec::from_vec(vec![NivelOrden {
+            precio: bid,
+            cantidad: qty,
+        }]),
+        asks: SmallVec::from_vec(vec![NivelOrden {
+            precio: ask,
+            cantidad: qty,
+        }]),
+        evento_unix_ms: Utc::now().timestamp_millis(),
+        recibida_en: Utc::now(),
+        latencia_ms: if es_jupiter { 80 } else { 120 },
+        secuencia: 0,
+        exchange_sequence: None,
+        integrity_status: "amm_rest".to_string(),
+        resyncs: 0,
+        timestamp_confiable: true,
+        conectado: false,
+        ultimo_mensaje: "rest_fallback".to_string(),
+    }
+}
+
+/// Tarea periódica que simula consultas RPC a DEXs Solana (Jupiter/Raydium)
+/// Genera cotizaciones sintéticas con curvas AMM x*y=k
+async fn run_solana_dex_connector(adaptador: Box<dyn ExchangeAdapter>, motor: Arc<Motor>) {
+    let nombre = adaptador.nombre().to_string();
+    let par = adaptador.par().to_string();
+    let mut intervalo = tokio::time::interval(Duration::from_millis(1200));
+    let mut rng = StdRng::from_entropy();
+    let mut precio_base = 50000.0_f64;
+    loop {
+        intervalo.tick().await;
+        // Simular deriva de precio +/- 0.2% por tick
+        let deriva = rng.gen_range(-0.002..0.002);
+        precio_base *= 1.0 + deriva;
+        precio_base = precio_base.clamp(20_000.0, 200_000.0);
+
+        // Simular order book AMM con x*y=k
+        // Reserva virtual: 1000 BTC * 50M USD = 50B constante
+        let reserva_btc = 1000.0_f64;
+        let reserva_usd = precio_base * reserva_btc;
+        let k = reserva_btc * reserva_usd;
+
+        // Generar niveles de order book simulando profundidad AMM
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
+        for i in 0..10 {
+            let factor = 1.0 + (i as f64 * 0.001);
+            let bid_price = precio_base / factor;
+            let ask_price = precio_base * factor;
+            // Liquidez decreciente lejos del mid
+            let liq_factor = 1.0 / (1.0 + i as f64 * 0.5);
+            let bid_qty = (reserva_btc * 0.01 * liq_factor).max(0.001);
+            let ask_qty = (reserva_usd * 0.01 / ask_price * liq_factor).max(0.001);
+            bids.push(NivelOrden {
+                precio: bid_price,
+                cantidad: bid_qty,
+            });
+            asks.push(NivelOrden {
+                precio: ask_price,
+                cantidad: ask_qty,
+            });
+        }
+
+        let cotizacion = Cotizacion {
+            exchange: nombre.clone(),
+            par: par.clone(),
+            bid: bids[0].precio,
+            bid_cantidad: bids[0].cantidad,
+            ask: asks[0].precio,
+            ask_cantidad: asks[0].cantidad,
+            bids: SmallVec::from_vec(bids),
+            asks: SmallVec::from_vec(asks),
+            evento_unix_ms: Utc::now().timestamp_millis(),
+            recibida_en: Utc::now(),
+            latencia_ms: rng.gen_range(60..150),
+            secuencia: 0,
+            exchange_sequence: None,
+            integrity_status: "amm_simulado".to_string(),
+            resyncs: 0,
+            timestamp_confiable: true,
+            conectado: true,
+            ultimo_mensaje: "amm_simulado".to_string(),
+        };
+        motor.recibir_cotizacion(cotizacion).await;
     }
 }
 
@@ -432,143 +559,205 @@ fn partes_par(par: &str) -> (String, String) {
 
 fn adaptadores(par: &str) -> Vec<Box<dyn ExchangeAdapter>> {
     let (base, quote) = partes_par(par);
-    let binance_symbol = format!("{base}{quote}");
-    let dash_symbol = format!("{base}-{quote}");
-    let slash_symbol = format!("{base}/{quote}");
+    // Usar mapeo dinámico por exchange para símbolos y URLs
+    let mut lista: Vec<Adaptador> = Vec::new();
 
-    let lista: Vec<Adaptador> = vec![
-        Adaptador {
-            nombre: "Binance",
-            par: normalizar_par(par),
+    // Binance - usa USDT para spot
+    let quote_bn = mapear_quote_exchange("Binance", &quote);
+    let binance_symbol = format!("{base}{quote_bn}");
+    lista.push(Adaptador {
+        nombre: "Binance",
+        par: normalizar_par(par),
+        url: format!(
+            "wss://data-stream.binance.vision/ws/{}@depth10@100ms",
+            binance_symbol.to_lowercase()
+        ),
+        suscripcion: None,
+        parser: parsear_binance,
+        rest: Some(RestFallback {
+            url: format!("https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=10"),
+            parser: parsear_rest_binance,
+        }),
+    });
+
+    // Kraken - usa USD nativamente
+    let quote_kr = mapear_quote_exchange("Kraken", &quote);
+    let slash_symbol = format!("{base}/{quote_kr}");
+    lista.push(Adaptador {
+        nombre: "Kraken",
+        par: normalizar_par(par),
+        url: "wss://ws.kraken.com/v2".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"method":"subscribe","params":{"channel":"book","symbol":[slash_symbol],"depth":10,"snapshot":true}}),
+        ),
+        parser: parsear_kraken,
+        rest: Some(RestFallback {
+            url: format!("https://api.kraken.com/0/public/Depth?pair={base}{quote_kr}&count=10"),
+            parser: parsear_rest_kraken,
+        }),
+    });
+
+    // Coinbase - usa USD
+    let quote_cb = mapear_quote_exchange("Coinbase", &quote);
+    let dash_symbol = format!("{base}-{quote_cb}");
+    lista.push(Adaptador {
+        nombre: "Coinbase",
+        par: normalizar_par(par),
+        url: "wss://advanced-trade-ws.coinbase.com".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"type":"subscribe","product_ids":[dash_symbol],"channel":"level2"}),
+        ),
+        parser: parsear_coinbase,
+        rest: Some(RestFallback {
+            url: format!("https://api.exchange.coinbase.com/products/{dash_symbol}/book?level=2"),
+            parser: parsear_rest_coinbase,
+        }),
+    });
+
+    // OKX - usa USDT
+    let quote_okx = mapear_quote_exchange("OKX", &quote);
+    let dash_symbol_okx = format!("{base}-{quote_okx}");
+    lista.push(Adaptador {
+        nombre: "OKX",
+        par: normalizar_par(par),
+        url: "wss://ws.okx.com:8443/ws/v5/public".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"op":"subscribe","args":[{"channel":"books5","instId":&dash_symbol_okx}]}),
+        ),
+        parser: parsear_okx,
+        rest: Some(RestFallback {
+            url: format!("https://www.okx.com/api/v5/market/books?instId={dash_symbol_okx}&sz=10"),
+            parser: parsear_rest_okx,
+        }),
+    });
+
+    // Bybit - usa USDT
+    let quote_bybit = mapear_quote_exchange("Bybit", &quote);
+    let binance_symbol_bybit = format!("{base}{quote_bybit}");
+    lista.push(Adaptador {
+        nombre: "Bybit",
+        par: normalizar_par(par),
+        url: "wss://stream.bybit.com/v5/public/spot".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"op":"subscribe","args":[format!("orderbook.50.{binance_symbol_bybit}")]}),
+        ),
+        parser: parsear_bybit,
+        rest: Some(RestFallback {
             url: format!(
-                "wss://data-stream.binance.vision/ws/{}@depth10@100ms",
-                binance_symbol.to_lowercase()
+                "https://api.bybit.com/v5/market/orderbook?category=spot&symbol={binance_symbol_bybit}&limit=10"
             ),
-            suscripcion: None,
-            parser: parsear_binance,
-            rest: Some(RestFallback {
-                url: format!("https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=10"),
-                parser: parsear_rest_binance,
-            }),
-        },
-        Adaptador {
-            nombre: "Kraken",
-            par: normalizar_par(par),
-            url: "wss://ws.kraken.com/v2".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"method":"subscribe","params":{"channel":"book","symbol":[slash_symbol],"depth":10,"snapshot":true}}),
-            ),
-            parser: parsear_kraken,
-            rest: Some(RestFallback {
-                url: format!("https://api.kraken.com/0/public/Depth?pair={base}{quote}&count=10"),
-                parser: parsear_rest_kraken,
-            }),
-        },
-        Adaptador {
-            nombre: "Coinbase",
-            par: normalizar_par(par),
-            url: "wss://advanced-trade-ws.coinbase.com".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"type":"subscribe","product_ids":[dash_symbol],"channel":"level2"}),
-            ),
-            parser: parsear_coinbase,
-            rest: Some(RestFallback {
-                url: format!("https://api.exchange.coinbase.com/products/{dash_symbol}/book?level=2"),
-                parser: parsear_rest_coinbase,
-            }),
-        },
-        Adaptador {
-            nombre: "OKX",
-            par: normalizar_par(par),
-            url: "wss://ws.okx.com:8443/ws/v5/public".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"op":"subscribe","args":[{"channel":"books5","instId":&dash_symbol}]}),
-            ),
-            parser: parsear_okx,
-            rest: Some(RestFallback {
-                url: format!("https://www.okx.com/api/v5/market/books?instId={dash_symbol}&sz=10"),
-                parser: parsear_rest_okx,
-            }),
-        },
-        Adaptador {
-            nombre: "Bybit",
-            par: normalizar_par(par),
-            url: "wss://stream.bybit.com/v5/public/spot".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"op":"subscribe","args":[format!("orderbook.50.{binance_symbol}")]}),
-            ),
-            parser: parsear_bybit,
-            rest: Some(RestFallback {
-                url: format!(
-                    "https://api.bybit.com/v5/market/orderbook?category=spot&symbol={binance_symbol}&limit=10"
-                ),
-                parser: parsear_rest_bybit,
-            }),
-        },
-        Adaptador {
-            nombre: "Bitfinex",
-            par: normalizar_par(par),
-            url: "wss://api-pub.bitfinex.com/ws/2".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"event":"subscribe","channel":"book","symbol":format!("t{base}{quote}"),"prec":"P0","len":10}),
-            ),
-            parser: parsear_bitfinex,
-            rest: Some(RestFallback {
-                url: format!("https://api-pub.bitfinex.com/v2/book/t{base}{quote}/P0?len=10"),
-                parser: parsear_rest_bitfinex,
-            }),
-        },
-        Adaptador {
-            nombre: "KuCoin",
-            par: normalizar_par(par),
-            url: "wss://ws-api-spot.kucoin.com/".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"id":1,"type":"subscribe","topic":format!("/market/level2:{}", dash_symbol),"response":true}),
-            ),
-            parser: parsear_kucoin,
-            rest: Some(RestFallback {
-                url: format!("https://api.kucoin.com/api/v1/market/orderbook/level2_10?symbol={dash_symbol}"),
-                parser: parsear_rest_kucoin,
-            }),
-        },
-        Adaptador {
-            nombre: "Gate.io",
-            par: normalizar_par(par),
-            url: "wss://api.gateio.ws/ws/v4/".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"id":1,"method":"order_book.subscribe","params":[dash_symbol,10,100]}),
-            ),
-            parser: parsear_gateio,
-            rest: Some(RestFallback {
-                url: format!("https://api.gateio.ws/api/v4/spot/order_book?currency_pair={dash_symbol}&limit=10"),
-                parser: parsear_rest_gateio,
-            }),
-        },
-        Adaptador {
-            nombre: "Bitstamp",
-            par: normalizar_par(par),
-            url: "wss://ws.bitstamp.net".to_string(),
-            suscripcion: Some(
-                serde_json::json!({"event":"bts:subscribe","data":{"channel":format!("order_book_{}", dash_symbol.to_lowercase())}}),
-            ),
-            parser: parsear_bitstamp,
-            rest: Some(RestFallback {
-                url: format!("https://www.bitstamp.net/api/v2/order_book/{}/?group=1", dash_symbol.to_lowercase()),
-                parser: parsear_rest_bitstamp,
-            }),
-        },
-        Adaptador {
-            nombre: "Gemini",
-            par: normalizar_par(par),
-            url: format!("wss://api.gemini.com/v1/marketdata/{}", dash_symbol),
-            suscripcion: None,
-            parser: parsear_gemini,
-            rest: Some(RestFallback {
-                url: format!("https://api.gemini.com/v1/book/{dash_symbol}"),
-                parser: parsear_rest_gemini,
-            }),
-        },
-    ];
+            parser: parsear_rest_bybit,
+        }),
+    });
+
+    // Bitfinex - usa USD
+    let quote_bfx = mapear_quote_exchange("Bitfinex", &quote);
+    lista.push(Adaptador {
+        nombre: "Bitfinex",
+        par: normalizar_par(par),
+        url: "wss://api-pub.bitfinex.com/ws/2".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"event":"subscribe","channel":"book","symbol":format!("t{base}{quote_bfx}"),"prec":"P0","len":10}),
+        ),
+        parser: parsear_bitfinex,
+        rest: Some(RestFallback {
+            url: format!("https://api-pub.bitfinex.com/v2/book/t{base}{quote_bfx}/P0?len=10"),
+            parser: parsear_rest_bitfinex,
+        }),
+    });
+
+    // KuCoin - usa USDT
+    let quote_ku = mapear_quote_exchange("KuCoin", &quote);
+    let dash_symbol_ku = format!("{base}-{quote_ku}");
+    lista.push(Adaptador {
+        nombre: "KuCoin",
+        par: normalizar_par(par),
+        url: "wss://ws-api-spot.kucoin.com/".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"id":1,"type":"subscribe","topic":format!("/market/level2:{}", dash_symbol_ku),"response":true}),
+        ),
+        parser: parsear_kucoin,
+        rest: Some(RestFallback {
+            url: format!("https://api.kucoin.com/api/v1/market/orderbook/level2_10?symbol={dash_symbol_ku}"),
+            parser: parsear_rest_kucoin,
+        }),
+    });
+
+    // Gate.io - usa USDT
+    let quote_gt = mapear_quote_exchange("Gate.io", &quote);
+    let dash_symbol_gt = format!("{base}-{quote_gt}");
+    lista.push(Adaptador {
+        nombre: "Gate.io",
+        par: normalizar_par(par),
+        url: "wss://api.gateio.ws/ws/v4/".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"id":1,"method":"order_book.subscribe","params":[dash_symbol_gt,10,100]}),
+        ),
+        parser: parsear_gateio,
+        rest: Some(RestFallback {
+            url: format!("https://api.gateio.ws/api/v4/spot/order_book?currency_pair={dash_symbol_gt}&limit=10"),
+            parser: parsear_rest_gateio,
+        }),
+    });
+
+    // Bitstamp - usa USD
+    let quote_bs = mapear_quote_exchange("Bitstamp", &quote);
+    let dash_symbol_bs = format!("{base}-{quote_bs}");
+    lista.push(Adaptador {
+        nombre: "Bitstamp",
+        par: normalizar_par(par),
+        url: "wss://ws.bitstamp.net".to_string(),
+        suscripcion: Some(
+            serde_json::json!({"event":"bts:subscribe","data":{"channel":format!("order_book_{}", dash_symbol_bs.to_lowercase())}}),
+        ),
+        parser: parsear_bitstamp,
+        rest: Some(RestFallback {
+            url: format!("https://www.bitstamp.net/api/v2/order_book/{}/?group=1", dash_symbol_bs.to_lowercase()),
+            parser: parsear_rest_bitstamp,
+        }),
+    });
+
+    // Gemini - usa USD
+    let quote_gm = mapear_quote_exchange("Gemini", &quote);
+    let dash_symbol_gm = format!("{base}-{quote_gm}");
+    lista.push(Adaptador {
+        nombre: "Gemini",
+        par: normalizar_par(par),
+        url: format!("wss://api.gemini.com/v1/marketdata/{}", dash_symbol_gm),
+        suscripcion: None,
+        parser: parsear_gemini,
+        rest: Some(RestFallback {
+            url: format!("https://api.gemini.com/v1/book/{dash_symbol_gm}"),
+            parser: parsear_rest_gemini,
+        }),
+    });
+
+    // DEX: Jupiter (Solana) - simula order book AMM
+    lista.push(Adaptador {
+        nombre: "Jupiter",
+        par: normalizar_par(par),
+        url: "solana://jupiter".to_string(), // placeholder, se usa run_solana_dex_connector
+        suscripcion: None,
+        parser: parsear_jupiter,
+        rest: Some(RestFallback {
+            url: "https://quote-api.jup.ag/v6/quote".to_string(),
+            parser: parsear_rest_jupiter,
+        }),
+    });
+
+    // DEX: Raydium (Solana) - simula order book AMM
+    lista.push(Adaptador {
+        nombre: "Raydium",
+        par: normalizar_par(par),
+        url: "solana://raydium".to_string(),
+        suscripcion: None,
+        parser: parsear_raydium,
+        rest: Some(RestFallback {
+            url: "https://api.raydium.io/v2/sdk/liquidity/mainnet.json".to_string(),
+            parser: parsear_rest_raydium,
+        }),
+    });
+
     lista
         .into_iter()
         .map(|a| Box::new(a) as Box<dyn ExchangeAdapter>)
@@ -1076,6 +1265,45 @@ fn parsear_rest_gemini(bytes: &[u8], par: &str) -> Option<Cotizacion> {
     marcar_rest(cotizacion(par, bids.into(), asks.into(), ts), false)
 }
 
+/// Parser REST para Jupiter (Simulado - API real: quote-api.jup.ag)
+fn parsear_rest_jupiter(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let price = v.get("data")?.get("price")?.as_str()?.parse::<f64>().ok()?;
+    let liq = v
+        .get("data")?
+        .get("liquidity")?
+        .as_str()?
+        .parse::<f64>()
+        .ok()?;
+    Some(cotizacion_desde_precio_liq(par, price, liq, true))
+}
+
+/// Parser REST para Raydium (Simulado - API real: api.raydium.io)
+fn parsear_rest_raydium(bytes: &[u8], par: &str) -> Option<Cotizacion> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    let pools = v.get("official")?.as_array()?;
+    for pool in pools {
+        let mint_a = pool.get("mintA")?.get("address")?.as_str()?;
+        let mint_b = pool.get("mintB")?.get("address")?.as_str()?;
+        if mint_a.contains("BTC") || mint_b.contains("BTC") {
+            let price = pool.get("price")?.as_f64()?;
+            let liq = pool.get("liquidity")?.as_f64()?;
+            return Some(cotizacion_desde_precio_liq(par, price, liq, false));
+        }
+    }
+    None
+}
+
+/// Parser WS placeholder para Jupiter (usa run_solana_dex_connector en su lugar)
+fn parsear_jupiter(_bytes: &[u8], _libro: &mut LibroEstado) -> Option<Cotizacion> {
+    None
+}
+
+/// Parser WS placeholder para Raydium (usa run_solana_dex_connector en su lugar)
+fn parsear_raydium(_bytes: &[u8], _libro: &mut LibroEstado) -> Option<Cotizacion> {
+    None
+}
+
 fn marcar_rest(cotizacion: Option<Cotizacion>, timestamp_confiable: bool) -> Option<Cotizacion> {
     cotizacion.map(|mut cotizacion| {
         cotizacion.integrity_status = "rest_snapshot".to_string();
@@ -1464,12 +1692,14 @@ mod tests {
     #[test]
     fn adaptadores_exportan_trait_object_por_venue() {
         let lista = adaptadores("BTC/USD");
-        // Diez venues vía el trait ExchangeAdapter (polimorfismo uniforme).
-        assert_eq!(lista.len(), 10);
+        // 12 venues: 10 CEX + 2 DEX (Jupiter, Raydium)
+        assert_eq!(lista.len(), 12);
         let nombres: Vec<&str> = lista.iter().map(|a| a.nombre()).collect();
         assert!(nombres.contains(&"Binance"));
         assert!(nombres.contains(&"Gate.io"));
         assert!(nombres.contains(&"Gemini"));
+        assert!(nombres.contains(&"Jupiter"));
+        assert!(nombres.contains(&"Raydium"));
         for a in &lista {
             assert!(!a.ws_url().is_empty());
             assert!(a.tiene_rest(), "{} debe tener REST fallback", a.nombre());

@@ -269,8 +269,8 @@ button {
 .dictionary-fab {
   position: fixed;
   left: max(18px, env(safe-area-inset-left));
-  top: calc(90vh - 52px);
-  top: calc(90dvh - 52px);
+  top: calc(90vh - 114px);
+  top: calc(90dvh - 114px);
   bottom: auto;
   z-index: 2147483010;
   display: flex;
@@ -316,8 +316,8 @@ button {
 }
 .dictionary-fab:active img { filter: brightness(0) invert(1); }
 .tutorial-fab {
-  top: calc(90vh - 114px);
-  top: calc(90dvh - 114px);
+  top: calc(90vh - 52px);
+  top: calc(90dvh - 52px);
   background: var(--blue);
   color: #fff;
 }
@@ -5508,12 +5508,12 @@ body::after {
   border-radius: var(--landing-radius);
   color: #111111;
   box-shadow: none;
-  transition: transform 400ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 400ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 400ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .landing-card:hover {
-  transform: translateY(-8px);
-  box-shadow: none;
+  transform: translateY(-6px) scale(1.015);
+  box-shadow: 0 22px 34px -8px rgba(0, 0, 0, 0.25), 0 8px 16px -6px rgba(0, 0, 0, 0.15);
 }
 
 .landing-card > span {
@@ -6393,12 +6393,12 @@ strong.metric-value {
 .dictionary-fab {
   left: max(18px, env(safe-area-inset-left));
   top: auto;
-  bottom: max(18px, env(safe-area-inset-bottom));
+  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 62px);
 }
 
 .tutorial-fab {
   top: auto;
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 62px);
+  bottom: max(18px, env(safe-area-inset-bottom));
 }
 
 .reveal-card {
