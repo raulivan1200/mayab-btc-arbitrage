@@ -16,9 +16,11 @@ RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
            target/release/deps/mayab_arbitrage-* \
            target/release/deps/libmayab_arbitrage-* \
            target/release/mayab-arbitrage; \
-    find target/release/.fingerprint -maxdepth 1 \
-      \( -name 'mayab-arbitrage-*' -o -name 'mayab-cli-*' \) \
-      -exec rm -rf {} +
+    if [ -d target/release/.fingerprint ]; then \
+      find target/release/.fingerprint -maxdepth 1 \
+        \( -name 'mayab-arbitrage-*' -o -name 'mayab-cli-*' \) \
+        -exec rm -rf {} +; \
+    fi
 
 # Real source
 COPY mayab-arbitrage/src ./mayab-arbitrage/src
