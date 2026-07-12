@@ -46,7 +46,7 @@ impl FromStr for Split {
             .map(str::trim)
             .map(str::parse::<u32>)
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        if p.len() != 3 || p.iter().sum::<u32>() != 100 || p.iter().any(|x| *x == 0) {
+        if p.len() != 3 || p.iter().sum::<u32>() != 100 || p.contains(&0) {
             bail!("--split debe contener tres porcentajes positivos que sumen 100");
         }
         Ok(Self {
@@ -507,7 +507,7 @@ fn run(s: &Strategy, events: &[TapeEvent]) -> Metrics {
     let mut gross_win = 0.;
     let mut gross_loss = 0.;
     let chunks = events.len().clamp(1, 8);
-    let window = (events.len() + chunks - 1) / chunks;
+    let window = events.len().div_ceil(chunks);
     m.pnl_windows = vec![0.; chunks];
     for (i, e) in events.iter().enumerate() {
         m.orders += 1;

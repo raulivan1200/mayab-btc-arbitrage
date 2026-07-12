@@ -781,13 +781,14 @@ Genera `evaluation.json`, `evaluation.csv` y `evaluation.md`. Acepta un archivo
 o directorio con JSON (array de cotizaciones o wrapper `cotizaciones`/`eventos`)
 y JSONL/NDJSON.
 
-## Fase 9 — Microestructura y calibración (diferida)
+## Fase 9 — Microestructura y calibración
 
-> **Estado: no implementada.** Esta fase empieza únicamente cuando las fases
-> anteriores estén cerradas. No forma parte de las capacidades actuales del
-> motor, la API ni el dashboard.
+> **Estado: laboratorio implementado.** Está expuesto en
+> `GET /api/research/microstructure` y Evidence Lab. Consume el tape configurado
+> por `MAYAB_RESEARCH_TAPE`; sin una captura verificable suficiente usa un
+> fallback sintético explícitamente etiquetado que valida contratos, no edge.
 
-La fase incorporará señales y mediciones de microestructura reproducibles:
+El laboratorio incorpora señales y mediciones reproducibles:
 
 - quote age por exchange;
 - asincronía entre venues;
@@ -827,9 +828,23 @@ ni un gen adicional dentro del GA. Su protocolo será cronológico:
 5. Rechazar el modelo si no hay evidencia de estacionariedad o si sus parámetros
    y resultados no son estables entre ventanas.
 
-La fase solo podrá marcarse como completada cuando las métricas, calibradores,
-diagramas, intervalos, baselines y criterios de rechazo estén expuestos como
-evidencia reproducible en API, UI o exports, según corresponda.
+El reporte publica Brier score, log-loss, ECE, reliability bins, Wilson 95%,
+transferencia por venue, guards de leakage y criterios explícitos de rechazo
+OU. Sigue siendo research aislado: no modifica el GA ni habilita trading real.
+
+## Fase 10 — Laboratorio OU fuera de muestra
+
+> **Estado: implementada como research independiente.** `GET /api/research/ou`
+> reconstruye spreads cross-venue del tape configurado. Si la muestra real no
+> alcanza 300 observaciones comparables, utiliza un fallback OU sintético
+> etiquetado exclusivamente para validar el protocolo.
+
+El laboratorio estima media de largo plazo, AR(1), kappa, half-life y sigma
+solo en A; elige umbral y horizonte solo en B; después ejecuta una única
+evaluación en C contra `no_trade` y `simple_spread_threshold`. Publica ADF,
+KPSS, cinco ventanas de estabilidad y conserva resultados negativos. El modelo
+se rechaza automáticamente si falla estacionariedad, estabilidad o no supera
+el baseline en el holdout.
 
 ## Nota de seguridad
 

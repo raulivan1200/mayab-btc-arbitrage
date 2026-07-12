@@ -2095,12 +2095,14 @@ async function cargarEvidenceLab() {
   const boton = $("btnEvidenceReload");
   if (!status || !grid) return;
   boton.disabled = true;
-  status.textContent = "Consultando seis contratos de solo lectura…";
+  status.textContent = "Consultando ocho contratos de solo lectura…";
   const endpoints = [
     ["tapes", "/api/research/tapes"],
     ["walk", "/api/research/walk-forward"],
     ["impact", "/api/research/impact"],
     ["bootstrap", "/api/research/bootstrap"],
+    ["microstructure", "/api/research/microstructure"],
+    ["ou", "/api/research/ou"],
     ["ledger", "/api/research/ledger-audit"],
     ["readiness", "/api/readiness/live"],
   ];
@@ -2117,6 +2119,10 @@ async function cargarEvidenceLab() {
     const pnlCi = principal?.pnlNetoUsd?.ci95 || [];
     const impacto = evidencia.impact?.comparison || {};
     const ledger = evidencia.ledger || {};
+    const micro = evidencia.microstructure?.report || {};
+    const calibrators = micro.calibration || [];
+    const winnerCalibration = calibrators.find((x) => x.model === micro.winnerByBrier);
+    const ou = evidencia.ou?.report || {};
     const cards = [
       ["Proveniencia y hash del tape", tape
         ? `<strong>${escapeHtml(tape.provenance)}</strong><code>${escapeHtml(tape.sha256)}</code><small>${numero.format(tape.events || 0)} eventos · ${numero.format(tape.bytes || 0)} bytes</small>`
@@ -2125,11 +2131,13 @@ async function cargarEvidenceLab() {
       ["GA vs baselines", `<strong>${escapeHtml(wf.ganador || "sin resultado")}</strong><small>${escapeHtml(wf.lectura || "Sin lectura disponible")}</small>`, "/api/research/walk-forward"],
       ["Comparación de impacto", `<strong>Default: ${escapeHtml(impacto.modeloPredeterminado || "—")}</strong><small>${numero.format(impacto.candidatos || 0)} candidatos pareados · menor error: ${escapeHtml(impacto.respuestas?.modeloConMenorErrorContraMarkout || "—")}</small>`, "/api/research/impact"],
       ["Bootstrap CI", `<strong>Δ PnL IC 95%: ${pnlCi.length === 2 ? `${dinero.format(pnlCi[0])} a ${dinero.format(pnlCi[1])}` : "no disponible"}</strong><small>${numero.format(evidencia.bootstrap?.bootstrap?.remuestras || 0)} remuestras · bloque principal ${numero.format(evidencia.bootstrap?.bootstrap?.bloquePrincipalSegundos || 0)} s</small>`, "/api/research/bootstrap"],
+      ["Microestructura y calibración", `<strong>${escapeHtml(micro.winnerByBrier || "sin resultado")}</strong><small>${numero.format(micro.observations || 0)} observaciones · ${escapeHtml(micro.sourceKind || "fuente desconocida")} · Brier ${formato(winnerCalibration?.brierScore || 0, 4)}</small><small>Quote age, asincronía, microprice, OFI multinivel, markouts y Wilson 95%.</small>`, "/api/research/microstructure"],
+      ["OU fuera de muestra", `<strong>${escapeHtml(ou.decision || "sin resultado")}</strong><small>${numero.format(ou.observations || 0)} spreads · ${escapeHtml(ou.sourceKind || "fuente desconocida")} · ADF ${formato(ou.stationarity?.adfTStat || 0, 3)} · KPSS ${formato(ou.stationarity?.kpssStat || 0, 3)}</small><small>Estimación A · selección B · evaluación única C · separado del GA.</small>`, "/api/research/ou"],
       ["Auditoría del ledger", `<strong>${Object.values(ledger.checks || {}).every(Boolean) ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
       ["Limitaciones conocidas", `<strong>${escapeHtml(evidencia.readiness?.status || "estado desconocido")}</strong><ul>${(evidencia.readiness?.limitations || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`, "/api/readiness/live"],
     ];
     grid.innerHTML = cards.map(([titulo, contenido, url]) => `<article class="evidence-lab-card"><h3>${escapeHtml(titulo)}</h3>${contenido}<a href="${url}" target="_blank" rel="noopener">Abrir artefacto JSON</a></article>`).join("");
-    status.textContent = "6 de 6 contratos respondieron. Los resultados reflejan esta instancia.";
+    status.textContent = "8 de 8 contratos respondieron. Los resultados reflejan esta instancia.";
   } catch (error) {
     status.textContent = `No se pudo completar Evidence Lab: ${error.message}`;
     grid.innerHTML = "";

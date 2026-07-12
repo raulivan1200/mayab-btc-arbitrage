@@ -9,8 +9,9 @@ pub enum LadoOrden {
     Venta,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum ModeloImpacto {
+    #[default]
     BookWalk,
     SquareRoot {
         eta: f64,
@@ -21,12 +22,6 @@ pub enum ModeloImpacto {
         impacto_permanente: f64,
         horizonte_ms: u64,
     },
-}
-
-impl Default for ModeloImpacto {
-    fn default() -> Self {
-        Self::BookWalk
-    }
 }
 
 impl ModeloImpacto {

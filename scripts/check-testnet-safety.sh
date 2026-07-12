@@ -7,6 +7,9 @@ MANIFEST="mayab-cli/Cargo.toml"
 test -f "$SOURCE"
 grep -q 'required-features = \["testnet-execution"\]' "$MANIFEST"
 grep -q 'api-public.sandbox.exchange.coinbase.com' "$SOURCE"
+grep -q 'TESTNET_ALLOWED_EGRESS_IP' "$SOURCE"
+grep -q 'TESTNET_SECRET_VERSION' "$SOURCE"
+grep -q 'eq_ignore_ascii_case("latest")' "$SOURCE"
 
 routes="$(awk '/pub const OUTBOUND_ROUTE_ALLOWLIST/{capture=1} capture{print} capture && /^];/{exit}' "$SOURCE")"
 printf '%s\n' "$routes" | grep -Eq '\("GET", "/accounts"\)'

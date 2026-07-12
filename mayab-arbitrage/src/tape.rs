@@ -14,6 +14,8 @@ use std::{
     time::Duration,
 };
 
+type BookSides = (BTreeMap<i64, f64>, BTreeMap<i64, f64>);
+
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const MANIFEST_FILE: &str = "manifest.json";
 pub const CONFIG_FILE: &str = "capture-config.json";
@@ -174,8 +176,7 @@ pub fn verify(path: &Path) -> anyhow::Result<Verification> {
     if actual_sha != manifest.sha256 {
         bail!("sha256 de events.jsonl no coincide");
     }
-    let mut books: HashMap<(String, String), (BTreeMap<i64, f64>, BTreeMap<i64, f64>)> =
-        HashMap::new();
+    let mut books: HashMap<(String, String), BookSides> = HashMap::new();
     let mut last_local = None;
     let mut last_seq: HashMap<(String, String), u64> = HashMap::new();
     let mut count = 0;

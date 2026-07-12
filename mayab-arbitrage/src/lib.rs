@@ -7,9 +7,12 @@ pub mod estrategia;
 pub mod evaluation;
 pub mod ga;
 pub mod impacto;
+pub mod ledger_audit;
 pub mod mercado;
 pub mod metricas;
+pub mod microestructura;
 pub mod motor;
+pub mod ou;
 pub mod persistencia;
 #[cfg(feature = "timescaledb")]
 pub mod persistencia_timescale;

@@ -106,6 +106,7 @@ pub fn hash(e: &Event) -> Result<String> {
         })?)
     ))
 }
+#[cfg(test)]
 pub fn seal(events: &mut [Event]) -> Result<String> {
     let mut p = "GENESIS".to_string();
     for (i, e) in events.iter_mut().enumerate() {

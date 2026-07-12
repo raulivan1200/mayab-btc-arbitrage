@@ -419,6 +419,60 @@ async fn integration_backtest_devuelve_metricas_comparativas() {
 }
 
 #[tokio::test]
+async fn integration_microestructura_expone_holdout_calibracion_y_wilson() {
+    let (app, _motor) = make_test_app().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/research/microstructure")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["report"]["split"][0], 1200);
+    assert_eq!(json["report"]["split"][1], 480);
+    assert_eq!(json["report"]["split"][2], 720);
+    assert_eq!(
+        json["report"]["leakageGuards"]["gaParametersUnchanged"],
+        true
+    );
+    assert!(json["report"]["markoutsMeanBps"]["500ms"].is_number());
+    assert!(json["report"]["estimatedSecondLegRiskMean"].is_number());
+    assert_eq!(json["report"]["ouLab"]["separateFromGa"], true);
+    assert!(json["report"]["ouLab"]["decision"].is_string());
+    assert_eq!(json["report"]["calibration"].as_array().unwrap().len(), 3);
+    assert!(json["report"]["calibration"][0]["reliability"][0]["wilson95"].is_array());
+}
+
+#[tokio::test]
+async fn integration_ou_expone_estacionariedad_baselines_y_holdout() {
+    let (app, _motor) = make_test_app().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/research/ou")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["report"]["phase"], 10);
+    assert_eq!(json["report"]["protocol"]["separateFromGa"], true);
+    assert!(json["report"]["stationarity"]["adfTStat"].is_number());
+    assert!(json["report"]["stationarity"]["kpssStat"].is_number());
+    assert_eq!(json["report"]["holdoutC"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        json["report"]["stabilityWindows"].as_array().unwrap().len(),
+        5
+    );
+}
+
+#[tokio::test]
 async fn integration_modo_jurado_devuelve_rubrica_y_scorecard() {
     let (app, _motor) = make_test_app().await;
 

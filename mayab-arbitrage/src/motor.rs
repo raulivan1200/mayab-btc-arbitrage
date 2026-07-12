@@ -3383,14 +3383,15 @@ mod tests {
     }
 
     #[test]
-    fn rebalanceo_genera_evento_y_mueve_saldo() {
+    fn rebalanceo_genera_evento_y_bloquea_capital_hasta_liquidacion() {
         let exchanges = vec!["A".to_string(), "B".to_string()];
         let mut carteras = Carteras::new(&exchanges, 20_000.0, 2.0);
         carteras.balances.get_mut("A").unwrap().usd = 100.0;
         carteras.balances.get_mut("B").unwrap().usd = 19_900.0;
         let eventos = carteras.rebalancear(100_000.0, &cfg_test(), Utc::now());
         assert!(!eventos.is_empty());
-        assert!(carteras.balance("A").usd > 100.0);
+        assert_eq!(carteras.balance("A").usd, 100.0);
+        assert!(carteras.balance("B").usd < 19_900.0);
         assert!(eventos.iter().any(|e| e.activo == "USD"));
     }
 

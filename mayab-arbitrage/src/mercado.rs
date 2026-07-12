@@ -105,6 +105,8 @@ pub(crate) struct LibroEstado {
     checksum_failures: u64,
     sequence_gaps: u64,
     invalidada_desde_ms: Option<i64>,
+    kraken_bids_crc: BTreeMap<BookPriceUnits, (String, String)>,
+    kraken_asks_crc: BTreeMap<BookPriceUnits, (String, String)>,
 }
 
 const BOOK_SCALE: f64 = 100_000_000.0;
@@ -149,6 +151,8 @@ impl LibroEstado {
             checksum_failures: 0,
             sequence_gaps: 0,
             invalidada_desde_ms: None,
+            kraken_bids_crc: BTreeMap::new(),
+            kraken_asks_crc: BTreeMap::new(),
         }
     }
 
@@ -156,6 +160,8 @@ impl LibroEstado {
         self.par = normalizar_par(par);
         self.bids.clear();
         self.asks.clear();
+        self.kraken_bids_crc.clear();
+        self.kraken_asks_crc.clear();
     }
 
     fn actualizar_bids(&mut self, niveles: &[NivelOrden]) {
@@ -308,13 +314,13 @@ impl LibroEstado {
 
     fn validar_checksum_kraken(&mut self, esperado: u32) -> bool {
         let mut entrada = String::new();
-        for (precio, cantidad) in self.asks.iter().take(10) {
-            entrada.push_str(&kraken_crc_num(precio.to_f64()));
-            entrada.push_str(&kraken_crc_num(cantidad.to_f64()));
+        for (_, (precio, cantidad)) in self.kraken_asks_crc.iter().take(10) {
+            entrada.push_str(precio);
+            entrada.push_str(cantidad);
         }
-        for (precio, cantidad) in self.bids.iter().rev().take(10) {
-            entrada.push_str(&kraken_crc_num(precio.to_f64()));
-            entrada.push_str(&kraken_crc_num(cantidad.to_f64()));
+        for (_, (precio, cantidad)) in self.kraken_bids_crc.iter().rev().take(10) {
+            entrada.push_str(precio);
+            entrada.push_str(cantidad);
         }
         if crc32fast::hash(entrada.as_bytes()) == esperado {
             self.integrity_status = "checksum_crc32_ok".to_string();
@@ -332,18 +338,20 @@ impl LibroEstado {
     }
 }
 
-fn kraken_crc_num(value: f64) -> String {
-    let fixed = format!("{value:.8}");
-    let compact = fixed
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .replace('.', "");
+fn kraken_crc_num(value: &str) -> Option<String> {
+    if value.starts_with('-') || value.contains(['e', 'E']) {
+        return None;
+    }
+    let compact = value.replace('.', "");
+    if compact.is_empty() || !compact.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     let stripped = compact.trim_start_matches('0');
-    if stripped.is_empty() {
+    Some(if stripped.is_empty() {
         "0".to_string()
     } else {
         stripped.to_string()
-    }
+    })
 }
 
 /// Lanza una tarea Tokio por cada feed público configurado.
@@ -1043,16 +1051,18 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         libro.par = normalizar_par(par);
         libro.timestamp_confiable = true;
     }
-    let bids = item
+    let bids_raw = item
         .get("bids")
         .and_then(Value::as_array)
-        .map(|niveles| niveles_mixtos(niveles, 10))
+        .map(Vec::as_slice)
         .unwrap_or_default();
-    let asks = item
+    let asks_raw = item
         .get("asks")
         .and_then(Value::as_array)
-        .map(|niveles| niveles_mixtos(niveles, 10))
+        .map(Vec::as_slice)
         .unwrap_or_default();
+    let bids = niveles_kraken(bids_raw, &mut libro.kraken_bids_crc)?;
+    let asks = niveles_kraken(asks_raw, &mut libro.kraken_asks_crc)?;
     let ts = item
         .get("timestamp")
         .and_then(Value::as_str)
@@ -1065,7 +1075,14 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
             return None;
         }
     } else {
-        libro.integrity_status = "checksum_no_disponible".to_string();
+        libro.checksum_failures += 1;
+        libro.resyncs += 1;
+        libro.invalidada_desde_ms = Some(Utc::now().timestamp_millis());
+        libro.requiere_snapshot = true;
+        libro.integrity_status = "checksum_ausente_requiere_snapshot".to_string();
+        let par = libro.par.clone();
+        libro.reset(&par);
+        return None;
     }
     libro.cotizacion(ts)
 }
@@ -1487,24 +1504,41 @@ fn niveles_strings(items: &[Value], max: usize) -> Vec<NivelOrden> {
         .collect()
 }
 
-fn niveles_mixtos(items: &[Value], max: usize) -> Vec<NivelOrden> {
-    items
-        .iter()
-        .take(max)
-        .filter_map(|item| {
-            let (precio, cantidad) = if let Some(arr) = item.as_array() {
-                (parse_num(arr.first()?)?, parse_num(arr.get(1)?)?)
-            } else {
-                (
-                    item.get("price").and_then(parse_num)?,
-                    item.get("qty")
-                        .or_else(|| item.get("quantity"))
-                        .and_then(parse_num)?,
-                )
-            };
-            (precio > 0.0).then_some(NivelOrden { precio, cantidad })
-        })
-        .collect()
+fn niveles_kraken(
+    items: &[Value],
+    crc: &mut BTreeMap<BookPriceUnits, (String, String)>,
+) -> Option<Vec<NivelOrden>> {
+    let mut niveles = Vec::with_capacity(items.len());
+    for item in items {
+        let price = item.get("price")?;
+        let qty = item.get("qty")?;
+        let price_text = decimal_text(price)?;
+        let qty_text = decimal_text(qty)?;
+        let precio = parse_num(price)?;
+        let cantidad = parse_num(qty)?;
+        if precio <= 0.0 {
+            continue;
+        }
+        let key = BookPriceUnits::from_f64(precio);
+        if cantidad <= 0.0 {
+            crc.remove(&key);
+        } else {
+            crc.insert(
+                key,
+                (kraken_crc_num(&price_text)?, kraken_crc_num(&qty_text)?),
+            );
+        }
+        niveles.push(NivelOrden { precio, cantidad });
+    }
+    Some(niveles)
+}
+
+fn decimal_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn parse_num(v: &Value) -> Option<f64> {
@@ -1663,12 +1697,18 @@ mod tests {
 
     #[test]
     fn kraken_conserva_bid_en_delta_solo_ask() {
-        let snapshot = br#"{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":100.0,"qty":2.0}],"asks":[{"price":101.0,"qty":1.5}],"timestamp":"2024-03-09T00:00:00Z"}]}"#;
-        let delta = br#"{"channel":"book","type":"update","data":[{"symbol":"BTC/USD","asks":[{"price":100.8,"qty":1.0}],"timestamp":"2024-03-09T00:00:00.001Z"}]}"#;
+        let snapshot_crc = crc32fast::hash(b"101015100020");
+        let delta_crc = crc32fast::hash(b"100810101015100020");
+        let snapshot = format!(
+            r#"{{"channel":"book","type":"snapshot","data":[{{"symbol":"BTC/USD","bids":[{{"price":100.0,"qty":2.0}}],"asks":[{{"price":101.0,"qty":1.5}}],"checksum":{snapshot_crc},"timestamp":"2024-03-09T00:00:00Z"}}]}}"#
+        );
+        let delta = format!(
+            r#"{{"channel":"book","type":"update","data":[{{"symbol":"BTC/USD","asks":[{{"price":100.8,"qty":1.0}}],"checksum":{delta_crc},"timestamp":"2024-03-09T00:00:00.001Z"}}]}}"#
+        );
         let mut libro = LibroEstado::new("BTC/USD");
-        parsear_kraken(snapshot, &mut libro).unwrap();
+        parsear_kraken(snapshot.as_bytes(), &mut libro).unwrap();
 
-        let c = parsear_kraken(delta, &mut libro).unwrap();
+        let c = parsear_kraken(delta.as_bytes(), &mut libro).unwrap();
 
         assert_eq!(c.bid, (100.0));
         assert_eq!(c.ask, (100.8));
@@ -1686,10 +1726,10 @@ mod tests {
             cantidad: 1.5,
         }]);
         let mut entrada = String::new();
-        entrada.push_str(&kraken_crc_num(101.0));
-        entrada.push_str(&kraken_crc_num(1.5));
-        entrada.push_str(&kraken_crc_num(100.0));
-        entrada.push_str(&kraken_crc_num(2.0));
+        entrada.push_str(&kraken_crc_num("101.0").unwrap());
+        entrada.push_str(&kraken_crc_num("1.5").unwrap());
+        entrada.push_str(&kraken_crc_num("100.0").unwrap());
+        entrada.push_str(&kraken_crc_num("2.0").unwrap());
         let checksum = crc32fast::hash(entrada.as_bytes());
         let snapshot = format!(
             r#"{{"channel":"book","type":"snapshot","data":[{{"symbol":"BTC/USD","bids":[{{"price":100.0,"qty":2.0}}],"asks":[{{"price":101.0,"qty":1.5}}],"checksum":{checksum},"timestamp":"2024-03-09T00:00:00Z"}}]}}"#
@@ -1703,6 +1743,24 @@ mod tests {
         assert_eq!(libro.checksum_failures, 1);
         assert!(libro.requiere_snapshot);
         assert!(libro.bids.is_empty());
+    }
+
+    #[test]
+    fn kraken_rechaza_checksum_ausente() {
+        let snapshot = br#"{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":100.0,"qty":2.0}],"asks":[{"price":101.0,"qty":1.5}],"timestamp":"2024-03-09T00:00:00Z"}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+
+        assert!(parsear_kraken(snapshot, &mut libro).is_none());
+        assert_eq!(libro.checksum_failures, 1);
+        assert!(libro.requiere_snapshot);
+        assert!(libro.bids.is_empty());
+    }
+
+    #[test]
+    fn kraken_crc_preserva_ceros_y_coincide_con_vector_oficial() {
+        let entrada = "45285210000045286415457195345286615457110945289615456091145290215890660452918154553491452947445474945296135380000452975994554245299518772827452835100000004528341545820154528211000000045281010000000452803154592586452790799000045277633101034527753000000045277315460273745276615445238";
+        assert_eq!(crc32fast::hash(entrada.as_bytes()), 3_310_070_434);
+        assert_eq!(kraken_crc_num("0.00100000").as_deref(), Some("100000"));
     }
 
     #[test]

@@ -99,6 +99,8 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/research/walk-forward", get(research_walk_forward))
         .route("/api/research/impact", get(research_impact))
         .route("/api/research/bootstrap", get(research_bootstrap))
+        .route("/api/research/microstructure", get(research_microstructure))
+        .route("/api/research/ou", get(research_ou))
         .route("/api/research/ledger-audit", get(research_ledger_audit))
         .route("/api/readiness/live", get(readiness_live))
         .route("/api/lab/sweep", get(lab_sweep))
@@ -437,6 +439,29 @@ async fn research_bootstrap(State(app): State<EstadoApp>) -> Json<serde_json::Va
         "comparison": "campeon_ga_menos_baseline_estatico",
         "bootstrap": reporte["significanciaBootstrap"],
         "limitations": ["El intervalo cuantifica incertidumbre interna del replay sintético, no riesgo de mercado live."]
+    }))
+}
+
+async fn research_microstructure() -> Json<serde_json::Value> {
+    let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/microstructure",
+        "report": crate::microestructura::build_report(configured.as_deref(), 42),
+        "separation": {
+            "optimizer": "GA y optimización permanecen fuera de este módulo",
+            "calibration": "Platt e isotónica se ajustan solamente en la ventana B",
+            "evaluation": "Brier, log-loss, ECE, Wilson y transferencia por venue se calculan en C"
+        }
+    }))
+}
+
+async fn research_ou() -> Json<serde_json::Value> {
+    let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/ou",
+        "report": crate::ou::build_report(configured.as_deref(), 42)
     }))
 }
 
@@ -2271,6 +2296,18 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let resumen = construir_resumen_llm(estado);
     let backtest = backtest_reproducible(estado);
     let lab_sweep = lab_sweep_reproducible(estado);
+    let microstructure = crate::microestructura::build_report(
+        std::env::var_os("MAYAB_RESEARCH_TAPE")
+            .map(PathBuf::from)
+            .as_deref(),
+        42,
+    );
+    let ou = crate::ou::build_report(
+        std::env::var_os("MAYAB_RESEARCH_TAPE")
+            .map(PathBuf::from)
+            .as_deref(),
+        42,
+    );
     let mejor_oportunidad = estado
         .oportunidades
         .iter()
@@ -2498,6 +2535,8 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "preflight": preflight,
                 "backtest": backtest,
                 "researchLab": lab_sweep,
+                "microstructureLab": microstructure,
+                "ouLab": ou,
         },
         "scriptDemo": [
             "GET /api/healthz",
@@ -2507,6 +2546,8 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "POST /api/ga/evolucionar {\"usarReplaySiVacio\":true,\"muestras\":96}",
             "POST /api/demo {\"escenario\":\"mercado_rentable\"}",
             "GET /api/lab/sweep",
+            "GET /api/research/microstructure",
+            "GET /api/research/ou",
             "GET /api/paquete-evaluacion",
             "GET /api/export/json"
         ],
@@ -3478,8 +3519,11 @@ fn significancia_bootstrap_bloques(
         })
         .collect::<Vec<_>>();
     let principal = sensibilidades[1].clone();
-    let permutacion =
+    let mut permutacion =
         permutacion_pareada_bloques(&serie_base, &serie_ga, 60, REMUESTRAS, SEED_BOOTSTRAP + 100);
+    let p_value = permutacion["pValueDosColas"].as_f64().unwrap_or(1.0);
+    let p_value_holm = holm_ajustar(&[p_value])[0];
+    permutacion["pValueHolm"] = json!(p_value_holm);
     let estable = estabilidad_cinco_ventanas(&serie_base, &serie_ga);
 
     json!({
@@ -3499,7 +3543,8 @@ fn significancia_bootstrap_bloques(
         "correccionMultiplesModelos": {
             "metodo": "Holm",
             "comparaciones": 1,
-            "pValueAjustado": permutacion["pValueDosColas"],
+            "pValueAjustado": p_value_holm,
+            "pValuesAjustados": [p_value_holm],
             "nota": "Con una sola comparacion, Holm no altera el p-value. Aplicar el ajuste al conjunto completo al agregar modelos."
         },
         "estabilidadVentanas": estable,
@@ -3566,14 +3611,17 @@ fn bootstrap_pareado(
     }
     let ci_delta_pnl = intervalo_percentil(&delta_pnl);
     let prob_superior = delta_pnl.iter().filter(|v| **v > 0.0).count() as f64 / remuestras as f64;
-    let deltas_tick = base
+    let deltas_bloque = base
         .iter()
         .zip(candidato)
         .map(|(b, g)| g.pnl_usd - b.pnl_usd)
+        .collect::<Vec<_>>()
+        .chunks(bloque)
+        .map(|valores| valores.iter().sum::<f64>())
         .collect::<Vec<_>>();
-    let media_delta = deltas_tick.iter().sum::<f64>() / deltas_tick.len().max(1) as f64;
-    let efecto = if deltas_tick.len() > 1 {
-        media_delta / desviacion_estandar(&deltas_tick, media_delta).max(1e-12)
+    let media_delta = deltas_bloque.iter().sum::<f64>() / deltas_bloque.len().max(1) as f64;
+    let efecto = if deltas_bloque.len() > 1 {
+        media_delta / desviacion_estandar(&deltas_bloque, media_delta).max(1e-12)
     } else {
         0.0
     };
@@ -3596,7 +3644,11 @@ fn bootstrap_pareado(
             "maxDrawdownUsd": resumen_ci(&delta_dd)
         },
         "probabilidadDeltaPnlMayorCero": prob_superior,
-        "tamanoEfecto": { "metodo": "Cohen_dz_por_tick_pareado", "valor": efecto },
+        "tamanoEfecto": {
+            "metodo": "Cohen_dz_por_bloque_temporal_pareado",
+            "valor": efecto,
+            "bloques": deltas_bloque.len()
+        },
         "resultado": if ci_delta_pnl.0 <= 0.0 && ci_delta_pnl.1 >= 0.0 { "resultado inconcluso" } else if ci_delta_pnl.0 > 0.0 { "candidato superior" } else { "baseline superior" }
     })
 }
@@ -3673,6 +3725,22 @@ fn permutacion_pareada_bloques(
         "estadisticoDeltaPnlUsd": observado,
         "pValueDosColas": (extremos as f64 + 1.0) / (remuestras as f64 + 1.0)
     })
+}
+
+fn holm_ajustar(p_values: &[f64]) -> Vec<f64> {
+    let m = p_values.len();
+    let mut orden = p_values.iter().copied().enumerate().collect::<Vec<_>>();
+    orden.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut ajustados = vec![1.0; m];
+    let mut anterior: f64 = 0.0;
+    for (rango, (indice, p)) in orden.into_iter().enumerate() {
+        let ajustado = ((m - rango) as f64 * p.clamp(0.0, 1.0))
+            .max(anterior)
+            .min(1.0);
+        ajustados[indice] = ajustado;
+        anterior = ajustado;
+    }
+    ajustados
 }
 
 fn estabilidad_cinco_ventanas(
@@ -4040,9 +4108,10 @@ mod tests {
                 .map(Vec::len),
             Some(3)
         );
-        assert!(backtest["comparacionImpacto"]["respuestas"]
-            ["modeloConMenorErrorContraMarkout"]
-            .is_string());
+        assert!(
+            backtest["comparacionImpacto"]["respuestas"]["modeloConMenorErrorContraMarkout"]
+                .is_string()
+        );
 
         assert_eq!(lab["tipo"], "research_lab_sweep");
         assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));
@@ -4065,6 +4134,41 @@ mod tests {
                 >= 5
         );
         assert!(lab["sensibilidad"]["elasticidadPnlVsUmbral"].is_number());
+    }
+
+    #[test]
+    fn holm_ajusta_varias_comparaciones_y_preserva_orden_original() {
+        let ajustados = holm_ajustar(&[0.04, 0.01, 0.03]);
+        assert_eq!(ajustados, vec![0.06, 0.03, 0.06]);
+    }
+
+    #[test]
+    fn bootstrap_bloques_es_determinista_y_reporta_efecto_temporal() {
+        let base = (0..240)
+            .map(|i| ResultadoTickBacktest {
+                pnl_usd: if i % 17 == 0 { -0.2 } else { 0.1 },
+                fills: 1,
+                rutas: 2,
+            })
+            .collect::<Vec<_>>();
+        let candidato = base
+            .iter()
+            .map(|tick| ResultadoTickBacktest {
+                pnl_usd: tick.pnl_usd + 0.02,
+                fills: tick.fills,
+                rutas: tick.rutas,
+            })
+            .collect::<Vec<_>>();
+        let a = bootstrap_pareado(&base, &candidato, 60, 500, 7);
+        let b = bootstrap_pareado(&base, &candidato, 60, 500, 7);
+
+        assert_eq!(a, b);
+        assert_eq!(
+            a["tamanoEfecto"]["metodo"],
+            "Cohen_dz_por_bloque_temporal_pareado"
+        );
+        assert_eq!(a["tamanoEfecto"]["bloques"], 4);
+        assert_eq!(a["resultado"], "candidato superior");
     }
 
     #[test]

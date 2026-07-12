@@ -39,6 +39,7 @@ fn main() -> Result<ExitCode> {
         }
     );
     println!("Residual exposure:     {:.8} BTC", r.residual_exposure_btc);
+    println!("Final balance venues:   {}", r.final_balances.len());
     println!(
         "Bought / sold notional: {} / {} USD",
         money(r.bought_notional_usd),

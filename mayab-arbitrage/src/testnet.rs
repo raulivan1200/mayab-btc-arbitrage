@@ -1,7 +1,7 @@
 //! Ejecutor privado y deliberadamente limitado para Coinbase Exchange Sandbox.
 //! No se comparte con el motor de demo y no ofrece un cliente HTTP genérico.
 
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, net::IpAddr, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
@@ -38,6 +38,8 @@ pub struct TestnetConfig {
     pub poll_interval: Duration,
     pub ledger_path: PathBuf,
     pub run_id: String,
+    pub allowed_egress_ip: IpAddr,
+    pub secret_version: String,
 }
 
 impl TestnetConfig {
@@ -85,6 +87,15 @@ impl TestnetConfig {
         }
         let run_id = required("TESTNET_RUN_ID")?;
         validate_id(&run_id).context("TESTNET_RUN_ID inválido")?;
+        let allowed_egress_ip = required("TESTNET_ALLOWED_EGRESS_IP")?
+            .parse::<IpAddr>()
+            .context("TESTNET_ALLOWED_EGRESS_IP debe ser una IP pública individual")?;
+        validate_public_ip(allowed_egress_ip)?;
+        let secret_version = required("TESTNET_SECRET_VERSION")?;
+        validate_id(&secret_version).context("TESTNET_SECRET_VERSION inválido")?;
+        if secret_version.eq_ignore_ascii_case("latest") {
+            bail!("TESTNET_SECRET_VERSION debe fijar una versión, no latest");
+        }
 
         Ok(Self {
             api_key: secret("COINBASE_SANDBOX_API_KEY")?,
@@ -98,8 +109,24 @@ impl TestnetConfig {
             poll_interval: Duration::from_millis(poll_ms),
             ledger_path: PathBuf::from(required("TESTNET_LEDGER_PATH")?),
             run_id,
+            allowed_egress_ip,
+            secret_version,
         })
     }
+}
+
+fn validate_public_ip(ip: IpAddr) -> anyhow::Result<()> {
+    let prohibited = ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || match ip {
+            IpAddr::V4(ip) => ip.is_private() || ip.is_link_local() || ip.is_broadcast(),
+            IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+        };
+    if prohibited {
+        bail!("TESTNET_ALLOWED_EGRESS_IP debe ser una IP pública enrutable");
+    }
+    Ok(())
 }
 
 fn required(name: &str) -> anyhow::Result<String> {
@@ -314,7 +341,13 @@ pub async fn run_cycle<T: TradingTransport>(
     let before = transport.accounts().await?;
     ledger.append(
         "preflight",
-        json!({"host": SANDBOX_HOST, "permissions":"view,trade", "accounts": before}),
+        json!({
+            "host": SANDBOX_HOST,
+            "permissions":"view,trade",
+            "allowedEgressIp": config.allowed_egress_ip,
+            "secretVersion": config.secret_version,
+            "accounts": before
+        }),
     )?;
 
     let client_oid = deterministic_client_oid(config);
@@ -369,7 +402,7 @@ pub async fn run_cycle<T: TradingTransport>(
 fn deterministic_client_oid(config: &TestnetConfig) -> String {
     use sha2::Digest;
     let seed = format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         config.run_id, config.product_id, config.side, config.price, config.size
     );
     let hex = hex::encode(Sha256::digest(seed.as_bytes()));
@@ -430,6 +463,13 @@ mod tests {
     fn host_es_exactamente_sandbox() {
         assert_eq!(SANDBOX_HOST, "api-public.sandbox.exchange.coinbase.com");
         assert!(!SANDBOX_HOST.eq_ignore_ascii_case("api.exchange.coinbase.com"));
+    }
+    #[test]
+    fn allowlist_ip_rechaza_redes_no_publicas() {
+        for ip in ["127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fc00::1"] {
+            assert!(validate_public_ip(ip.parse().unwrap()).is_err());
+        }
+        assert!(validate_public_ip("34.120.10.20".parse().unwrap()).is_ok());
     }
     #[test]
     fn preflight_detecta_capacidad_transfer() {

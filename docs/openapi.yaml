@@ -56,6 +56,18 @@ paths:
       responses:
         '200':
           description: OK
+  /api/research/microstructure:
+    get:
+      summary: Laboratorio de microestructura, calibración y OU fuera de muestra
+      responses:
+        '200':
+          description: Quote age, asincronía, microprice, OFI, markouts, Platt, isotónica, Wilson y OU
+  /api/research/ou:
+    get:
+      summary: Laboratorio OU independiente con ADF/KPSS y holdout cronológico
+      responses:
+        '200':
+          description: Parámetros OU congelados, estacionariedad, baselines y estabilidad
   /api/export/csv:
     get:
       summary: Descarga auditoría CSV
