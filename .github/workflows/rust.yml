@@ -25,7 +25,7 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy
           rustup default "$RUST_VERSION"
 
       - name: Check formatting
