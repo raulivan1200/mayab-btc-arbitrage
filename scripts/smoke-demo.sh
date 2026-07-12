@@ -28,8 +28,13 @@ json_post() {
   path="$1"
   payload="$2"
   out="$3"
+  if [ -z "${ADMIN_TOKEN:-}" ]; then
+    echo "ADMIN_TOKEN es obligatorio para el smoke de mutaciones" >&2
+    return 2
+  fi
   curl -fsS -X POST "$BASE_URL$path" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -d "$payload" \
     -o "$out"
 }

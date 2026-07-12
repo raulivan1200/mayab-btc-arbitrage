@@ -10,6 +10,9 @@ MEMORY="${MEMORY:-512Mi}"
 CPU="${CPU:-1}"
 CONCURRENCY="${CONCURRENCY:-20}"
 TIMEOUT="${TIMEOUT:-3600}"
+MAYAB_ENV="${MAYAB_ENV:-production}"
+AUDITORIA_DB_PATH="${AUDITORIA_DB_PATH:-/data/mayab-auditoria.sqlite}"
+STORAGE_MODE="${STORAGE_MODE:-sqlite_ephemeral}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -46,29 +49,73 @@ if [ "$MIN_INSTANCES" -gt "$MAX_INSTANCES" ]; then
   exit 2
 fi
 
+if [ "$MAYAB_ENV" = "production" ] && [ -z "${ADMIN_TOKEN_SECRET:-}" ]; then
+  echo "ADMIN_TOKEN_SECRET es obligatorio cuando MAYAB_ENV=production (ej. mayab-admin-token:3)" >&2
+  exit 2
+fi
+
+# Build --set-secrets only for secrets that actually exist
+SECRETS=""
+if [ -n "${ADMIN_TOKEN_SECRET:-}" ]; then
+  SECRETS="ADMIN_TOKEN=${ADMIN_TOKEN_SECRET}"
+fi
+if [ -n "${NVIDIA_API_KEY_SECRET:-}" ]; then
+  if [ -n "$SECRETS" ]; then
+    SECRETS="${SECRETS},NVIDIA_API_KEY=${NVIDIA_API_KEY_SECRET}"
+  else
+    SECRETS="NVIDIA_API_KEY=${NVIDIA_API_KEY_SECRET}"
+  fi
+fi
+if [ -n "${DISCORD_BOT_TOKEN_SECRET:-}" ]; then
+  if [ -n "$SECRETS" ]; then
+    SECRETS="${SECRETS},DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_SECRET}"
+  else
+    SECRETS="DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_SECRET}"
+  fi
+fi
+
 if [ -n "${IMAGE:-}" ]; then
   set -- --image "$IMAGE"
 else
   set -- --source .
 fi
 
-gcloud run deploy "$SERVICE" \
-  "$@" \
-  --project "$PROJECT" \
-  --region "$REGION" \
-  --allow-unauthenticated \
-  --memory "$MEMORY" \
-  --cpu "$CPU" \
-  --port 8080 \
-  --concurrency "$CONCURRENCY" \
-  --timeout "$TIMEOUT" \
-  --min-instances "$MIN_INSTANCES" \
-  --max-instances "$MAX_INSTANCES" \
-  --execution-environment gen2 \
-  --cpu-boost \
-  --set-secrets "NVIDIA_API_KEY=mayab-nvidia-api-key:latest,DISCORD_BOT_TOKEN=mayab-discord-bot-token:latest" \
-  --set-env-vars "RUST_LOG=info,AUDITORIA_DB_PATH=/tmp/mayab-auditoria.sqlite,DEMO_RENTABLE_INICIAL=false,DISCORD_APPLICATION_ID=1525827513073274891,DISCORD_PUBLIC_KEY=97a3f616bf4ea287de0266cc7e3cd58a26f8232975e3ea98543bcaeb75df7043,DISCORD_GUILD_ID=123456789012345678,FEE_BINANCE=0.0010,FEE_KRAKEN=0.0026,FEE_COINBASE=0.0060,FEE_OKX=0.0010,FEE_BYBIT=0.0010,RETIRO_BTC_BINANCE=0.00010,RETIRO_BTC_KRAKEN=0.00020,RETIRO_BTC_COINBASE=0.00012,RETIRO_BTC_OKX=0.00010,RETIRO_BTC_BYBIT=0.00010" \
-  --quiet
+# Build env vars list
+ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=true"
+
+# Optional env vars with defaults
+if [ -n "${DISCORD_APPLICATION_ID:-}" ]; then
+  ENV_VARS="${ENV_VARS},DISCORD_APPLICATION_ID=${DISCORD_APPLICATION_ID}"
+fi
+if [ -n "${DISCORD_PUBLIC_KEY:-}" ]; then
+  ENV_VARS="${ENV_VARS},DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}"
+fi
+if [ -n "${DISCORD_GUILD_ID:-}" ]; then
+  ENV_VARS="${ENV_VARS},DISCORD_GUILD_ID=${DISCORD_GUILD_ID}"
+fi
+
+# Fee and withdrawal env vars
+ENV_VARS="${ENV_VARS},FEE_BINANCE=${FEE_BINANCE:-0.0010},FEE_KRAKEN=${FEE_KRAKEN:-0.0026},FEE_COINBASE=${FEE_COINBASE:-0.0060},FEE_OKX=${FEE_OKX:-0.0010},FEE_BYBIT=${FEE_BYBIT:-0.0010}"
+ENV_VARS="${ENV_VARS},RETIRO_BTC_BINANCE=${RETIRO_BTC_BINANCE:-0.00010},RETIRO_BTC_KRAKEN=${RETIRO_BTC_KRAKEN:-0.00020},RETIRO_BTC_COINBASE=${RETIRO_BTC_COINBASE:-0.00012},RETIRO_BTC_OKX=${RETIRO_BTC_OKX:-0.00010},RETIRO_BTC_BYBIT=${RETIRO_BTC_BYBIT:-0.00010}"
+
+echo "Desplegando: $SERVICE en $PROJECT/$REGION"
+if [ -n "$SECRETS" ]; then
+  gcloud run deploy "$SERVICE" "$@" \
+    --project "$PROJECT" --region "$REGION" --allow-unauthenticated \
+    --memory "$MEMORY" --cpu "$CPU" --port 8080 \
+    --concurrency "$CONCURRENCY" --timeout "$TIMEOUT" \
+    --min-instances "$MIN_INSTANCES" --max-instances "$MAX_INSTANCES" \
+    --execution-environment gen2 --cpu-boost \
+    --set-env-vars "$ENV_VARS" --set-secrets "$SECRETS" --quiet
+else
+  gcloud run deploy "$SERVICE" "$@" \
+    --project "$PROJECT" --region "$REGION" --allow-unauthenticated \
+    --memory "$MEMORY" --cpu "$CPU" --port 8080 \
+    --concurrency "$CONCURRENCY" --timeout "$TIMEOUT" \
+    --min-instances "$MIN_INSTANCES" --max-instances "$MAX_INSTANCES" \
+    --execution-environment gen2 --cpu-boost \
+    --set-env-vars "$ENV_VARS" --quiet
+fi
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" \
   --project "$PROJECT" \
@@ -96,10 +143,11 @@ smoke_get() {
 }
 
 echo "Validando revision publica en ${SERVICE_URL}"
-# Cloud Run puede interceptar el path raíz /healthz; la ruta API es el
-# contrato estable tanto local como público.
 smoke_get "/api/healthz" "$TMP_DIR/healthz.json"
 grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/healthz.json"
+
+smoke_get "/api/readyz" "$TMP_DIR/readyz.json"
+grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/readyz.json"
 
 smoke_get "/api/preflight" "$TMP_DIR/preflight.json"
 grep -q '"judgeReadiness"' "$TMP_DIR/preflight.json"

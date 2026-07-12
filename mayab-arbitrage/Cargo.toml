@@ -28,9 +28,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 smallvec = { version = "1.12", features = ["serde"] }
+subtle = "2.5"
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-tower-http = { version = "0.6", features = ["compression-gzip", "fs", "trace", "set-header"] }
+tower = { version = "0.5", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "cors", "fs", "trace", "set-header", "limit", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio-postgres = { version = "0.7", optional = true }
@@ -41,5 +43,8 @@ testnet-execution = ["dep:async-trait", "dep:base64", "dep:hmac"]
 
 [dev-dependencies]
 approx = "0.5"
-tower = { version = "0.4", features = ["util"] }
 criterion = "0.5"
+
+[[bench]]
+name = "motor_benchmark"
+harness = false

@@ -1,4 +1,6 @@
-# Arbitraje BTC en tiempo real: Rust, Tokio, Axum, con GA híbrido y auditoría de mercado
+# Mayab Edge — arbitraje BTC explicable en Rust
+
+Feeds públicos multi-exchange, decisiones auditables y ejecución 100% simulada en un solo binario Rust.
 
 > **Aclaración para el Jurado**: Este proyecto está construido 100% en **Rust, Tokio y Axum**. Si la descripción del repositorio en GitHub menciona "Go", se trata de un remanente en la configuración de la plataforma que no corresponde al código actual.
 
@@ -7,6 +9,36 @@
 ![Tests](https://img.shields.io/badge/tests-73%20passing-16a34a)
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
 ![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
+
+## Demo
+
+Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app), la [consola operativa](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/operator) o la evidencia JSON en [`/api/paquete-evaluacion`](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/paquete-evaluacion). La demo rentable es sintética, repetible y queda etiquetada; nunca representa una orden real.
+
+![Dashboard de escritorio de Mayab Edge](screenshots/dashboard-desktop.jpg)
+
+## Quick start (3–5 minutos)
+
+Requiere una toolchain estable de Rust.
+
+```bash
+cargo run
+```
+
+En otra terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS -X POST http://127.0.0.1:8080/api/demo \
+  -H 'Content-Type: application/json' \
+  -d '{"escenario":"mercado_rentable"}'
+curl -fsS http://127.0.0.1:8080/api/estado
+```
+
+Visita `http://127.0.0.1:8080/` o `/operator`. Para el recorrido reproducible completo ejecuta `./scripts/smoke-demo.sh`.
+
+## Guía del proyecto
+
+El resto del README explica, en orden, el problema y la evidencia, arquitectura, modelo de rentabilidad neta, exchanges/símbolos, wallets/riesgo, benchmarks, observabilidad, seguridad, operación local, Docker/Cloud Run, configuración, endpoints, pruebas, extensión de exchanges, roadmap, contribución y el apéndice para jurado. Documentos de referencia: [arquitectura](docs/ARCHITECTURE.md), [seguridad](docs/SECURITY_MODEL.md), [operaciones](docs/OPERATIONS.md), [añadir exchange](docs/ADDING_EXCHANGE.md) y [decisiones](docs/DESIGN_DECISIONS.md).
 
 | Feature | Estado | Dónde se prueba | Evidencia |
 |---|---|---|---|
@@ -49,9 +81,9 @@ Este proyecto está diseñado como MVP demostrable y seguro para evaluación té
 - No puede cobrar comisiones reales: las comisiones, retiros, slippage y balances son parámetros de simulación.
 - Los WebSockets de mercado consumen datos públicos.
 - Los endpoints POST modifican únicamente el estado simulado del proceso y los parámetros visibles del dashboard.
-- En despliegues protegidos, define `ADMIN_TOKEN` para exigir `Authorization: Bearer <token>` o `X-Admin-Token` en los endpoints mutables.
+- En producción (`MAYAB_ENV=production`), `ADMIN_TOKEN` es obligatorio, debe tener al menos 32 caracteres y protege los endpoints mutables mediante `Authorization: Bearer <token>` o `X-Admin-Token`.
 
-La URL pública se puede desplegar sin `ADMIN_TOKEN` para que el comité pueda probarla. Si se quisiera convertir en producto con dinero real, la primera tarea no sería conectar órdenes, sino endurecer autenticación/autorización, rate limiting, auditoría, aislamiento de secretos, permisos por exchange y límites duros de exposición.
+Una demo local en modo desarrollo puede ejecutarse sin `ADMIN_TOKEN`; un deploy productivo falla de forma cerrada si no se configura. Si se quisiera convertir en producto con dinero real, la primera tarea no sería conectar órdenes, sino endurecer autenticación/autorización, rate limiting, auditoría, aislamiento de secretos, permisos por exchange y límites duros de exposición.
 
 La ruta de madurez operacional se documenta como gates verificables en [LIVE_READINESS.md](LIVE_READINESS.md). El challenge público permanece en S0/S1 (simulación y replay offline); testnet sería evidencia adicional separada y no implica que el dashboard público opere fondos.
 
@@ -145,7 +177,7 @@ Contrato HTTP:
 - Expone `/api/preflight` para verificar si la demo está operable antes de presentarla: feeds frescos, riesgo, GA, estáticos y exportaciones.
 - Expone un snapshot compacto para agentes y scripts en `/api/resumen-llm`, incluyendo decisión actual, mejor ruta, GA, riesgo, PnL y últimos eventos.
 - Expone `/api/paquete-evaluacion` como evidencia autocontenida para jueces: score por criterio, guion de demo, resumen ejecutivo, backtest y enlaces de auditoría.
-- Persiste evidencia en SQLite local configurable con `AUDITORIA_DB_PATH`; por defecto usa `/tmp/mayab-auditoria.sqlite`.
+- Persiste evidencia en SQLite local configurable con `AUDITORIA_DB_PATH`; la imagen usa `/data/mayab-auditoria.sqlite`. `STORAGE_MODE` declara si ese directorio está respaldado por almacenamiento persistente.
 
 ## Tecnologías utilizadas
 
@@ -340,10 +372,33 @@ cargo build --release
 
 ## Configuración
 
+### Salud, readiness y límites HTTP
+
+`GET /healthz` confirma que el proceso responde. `GET /readyz` devuelve 200
+cuando SQLite está activo, el motor tiene cotizaciones, existen al menos dos feeds
+frescos y no hay circuit breaker, riesgo crítico ni ejecución en curso; si no,
+devuelve 503 con un arreglo `checks` explicativo.
+
+Límites configurables: `HTTP_MAX_BODY_BYTES` (1 MiB), `HTTP_TIMEOUT_SECS` (30 s),
+`HTTP_MAX_CONCURRENCY` (128), `HTTP_READ_RPM` (300) y `HTTP_MUTATION_RPM` (30).
+API, métricas y WebSocket usan `Cache-Control: no-store`; HTML revalida y los
+assets estáticos se cachean una hora.
+
+E2E del dashboard:
+
+```bash
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
 Puedes ajustar el perfil de costos y parámetros del algoritmo genético con variables de entorno:
 
 ```bash
 # Parámetros de trading
+ENABLED_EXCHANGES=Binance,Kraken,Coinbase,OKX \
+SYMBOLS=BTC/USD,BTC/USDT,ETH/USD \
+PERSISTENCE_QUEUE_CAPACITY=2048 \
 MAX_OPERACION_BTC=0.18 \
 MIN_UTILIDAD_USD=1.25 \
 MIN_DIFERENCIAL_NETO_BPS=0.65 \
@@ -365,14 +420,19 @@ MOVIMIENTO_BRUSCO_BPS=7.0 \
 REBALANCE_UMBRAL_PCT=35.0 \
 REBALANCE_MAX_TRANSFER_PCT=35.0 \
 PORT=8080 \
-ADMIN_TOKEN=opcional_para_proteger_posts \
-AUDITORIA_DB_PATH=/tmp/mayab-auditoria.sqlite \
+ADMIN_TOKEN=obligatorio_en_produccion_minimo_32_caracteres \
+AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite \
+STORAGE_MODE=sqlite_ephemeral \
 CAPITAL_INICIAL_USD=250000.0 \
 BALANCE_INICIAL_BTC=1.25 \
 cargo run
 ```
 
-`AUDITORIA_DB_PATH` apunta a un SQLite local. En una máquina o volumen persistente conserva la auditoría entre reinicios; en Cloud Run con `/tmp` conserva evidencia durante la vida de la instancia, pero se debe exportar JSON/CSV o montar almacenamiento externo si se requiere retención permanente.
+`AUDITORIA_DB_PATH` apunta a SQLite local. `STORAGE_MODE=sqlite_ephemeral` es el valor seguro por defecto y no promete retención entre instancias. Usa `STORAGE_MODE=sqlite_persistent` solamente cuando `/data` esté respaldado por un volumen durable; la API expone `storageMode`, `storageStatus` y `storagePersistent`.
+
+`ENABLED_EXCHANGES` y `SYMBOLS` son listas separadas por comas. La persistencia
+usa un worker con cola acotada; `queueCapacity`, `queuePending` y `queueDropped`
+permiten observar backpressure sin meter SQLite en el hot path.
 
 Comisiones por casa de cambio:
 

@@ -70,6 +70,7 @@ struct State {
     latencia_ewma: f64,
     precios_ref: Vec<PuntoSerie>,
     circuit_breaker_activo: bool,
+    kill_switch_activo: bool,
     modo_conservador: bool,
     historial_rutas: HashMap<String, f64>,
     historial_spreads: HashMap<String, Vec<f64>>,
@@ -136,13 +137,21 @@ impl Motor {
         pares_extra: Vec<String>,
         persistencia: Option<Arc<dyn Auditoria>>,
     ) -> Self {
-        let exchanges: Vec<String> = [
+        let mut exchanges: Vec<String> = costos.exchanges.keys().cloned().collect();
+        let conocidos = [
             "Binance", "Kraken", "Coinbase", "OKX", "Bybit", "Bitfinex", "KuCoin", "Gate.io",
-            "Bitstamp", "Gemini",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+            "Bitstamp", "Gemini", "Jupiter", "Raydium",
+        ];
+        // Fixtures con exchanges ficticios conservan los venues que requieren
+        // los escenarios demo; una configuración real reducida sí se respeta.
+        if !exchanges
+            .iter()
+            .any(|exchange| conocidos.contains(&exchange.as_str()))
+        {
+            exchanges.extend(conocidos.into_iter().map(str::to_string));
+        }
+        exchanges.sort();
+        exchanges.dedup();
         let carteras = Carteras::new(&exchanges, capital_inicial_usd, balance_inicial_btc);
         let exchanges_activos = exchanges.into_iter().map(|e| (e, true)).collect();
         let ahora = Utc::now();
@@ -182,6 +191,7 @@ impl Motor {
                 latencia_ewma: 0.0,
                 precios_ref: Vec::with_capacity(256),
                 circuit_breaker_activo: false,
+                kill_switch_activo: false,
                 modo_conservador: false,
                 historial_rutas: HashMap::new(),
                 historial_spreads: HashMap::new(),
@@ -333,7 +343,7 @@ impl Motor {
                 cotizaciones,
                 costos,
                 state.carteras.clone(),
-                state.circuit_breaker_activo,
+                state.circuit_breaker_activo || state.kill_switch_activo,
                 state.historial_rutas.clone(),
                 state.enfriamiento.clone(),
                 pesos,
@@ -643,7 +653,7 @@ impl Motor {
                 operaciones_fallidas: self.ops_fallidas.load(Ordering::SeqCst),
                 rebalanceos_totales: state.rebalanceos_total as usize,
                 costo_rebalanceo_acumulado_usd: state.costo_rebalanceo_acumulado_usd,
-                circuit_breaker_activo: state.circuit_breaker_activo,
+                circuit_breaker_activo: state.circuit_breaker_activo || state.kill_switch_activo,
                 modo_conservador: state.modo_conservador,
                 ejecucion_en_curso: self.ejecucion_en_curso.load(Ordering::SeqCst),
             },
@@ -659,37 +669,25 @@ impl Motor {
 
     fn persistir_operacion(&self, op: &Operacion) {
         if let Some(persistencia) = &self.persistencia {
-            let persistencia = persistencia.clone();
-            let op = op.clone();
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                if let Err(err) = persistencia.registrar_operacion(&op) {
-                    tracing::warn!(error = %err, id = %op.id, "no se pudo persistir operacion");
-                }
-            }));
+            if let Err(err) = persistencia.registrar_operacion(op) {
+                tracing::warn!(error = %err, id = %op.id, "no se pudo encolar operacion");
+            }
         }
     }
 
     fn persistir_evento(&self, evento: &EventoEjecucion) {
         if let Some(persistencia) = &self.persistencia {
-            let persistencia = persistencia.clone();
-            let evento = evento.clone();
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                if let Err(err) = persistencia.registrar_evento(&evento) {
-                    tracing::warn!(error = %err, id = %evento.id, "no se pudo persistir evento");
-                }
-            }));
+            if let Err(err) = persistencia.registrar_evento(evento) {
+                tracing::warn!(error = %err, id = %evento.id, "no se pudo encolar evento");
+            }
         }
     }
 
     fn persistir_rebalanceo(&self, rebalanceo: &Rebalanceo) {
         if let Some(persistencia) = &self.persistencia {
-            let persistencia = persistencia.clone();
-            let rebalanceo = rebalanceo.clone();
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                if let Err(err) = persistencia.registrar_rebalanceo(&rebalanceo) {
-                    tracing::warn!(error = %err, id = %rebalanceo.id, "no se pudo persistir rebalanceo");
-                }
-            }));
+            if let Err(err) = persistencia.registrar_rebalanceo(rebalanceo) {
+                tracing::warn!(error = %err, id = %rebalanceo.id, "no se pudo encolar rebalanceo");
+            }
         }
     }
 
@@ -698,13 +696,9 @@ impl Motor {
             return;
         }
         if let Some(persistencia) = &self.persistencia {
-            let persistencia = persistencia.clone();
-            let oportunidades = oportunidades.to_vec();
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                if let Err(err) = persistencia.registrar_oportunidades(&oportunidades) {
-                    tracing::warn!(error = %err, total = oportunidades.len(), "no se pudieron persistir oportunidades");
-                }
-            }));
+            if let Err(err) = persistencia.registrar_oportunidades(oportunidades) {
+                tracing::warn!(error = %err, total = oportunidades.len(), "no se pudieron encolar oportunidades");
+            }
         }
     }
 
@@ -713,13 +707,9 @@ impl Motor {
             return;
         }
         if let Some(persistencia) = &self.persistencia {
-            let persistencia = persistencia.clone();
-            let auditorias = auditorias.to_vec();
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                if let Err(err) = persistencia.registrar_auditorias(&auditorias) {
-                    tracing::warn!(error = %err, total = auditorias.len(), "no se pudieron persistir auditorias");
-                }
-            }));
+            if let Err(err) = persistencia.registrar_auditorias(auditorias) {
+                tracing::warn!(error = %err, total = auditorias.len(), "no se pudieron encolar auditorias");
+            }
         }
     }
 
@@ -756,6 +746,7 @@ impl Motor {
         state.utilidad = 0.0;
         state.precios_ref.clear();
         state.circuit_breaker_activo = false;
+        state.kill_switch_activo = false;
         state.modo_conservador = false;
         state.historial_rutas.clear();
         state.historial_spreads.clear();
@@ -794,6 +785,22 @@ impl Motor {
         }
         state.exchanges_activos.insert(nombre.to_string(), activo);
         true
+    }
+
+    /// Pausa inmediatamente nuevas ejecuciones simuladas. Los feeds continúan
+    /// para conservar observabilidad y permitir una recuperación controlada.
+    pub async fn set_kill_switch(&self, activo: bool) {
+        let mut state = self.state.write().await;
+        state.kill_switch_activo = activo;
+        if activo {
+            insertar_evento_sistema(
+                &mut state,
+                "kill_switch",
+                "ejecuciones simuladas pausadas manualmente",
+                "alta",
+                Utc::now(),
+            );
+        }
     }
 
     /// Estado JSON compacto del algoritmo genético.
@@ -968,9 +975,11 @@ impl Motor {
             EscenarioDemo::FillParcial => {
                 state.circuit_breaker_activo = false;
                 let precio = precio_referencia(state.cotizaciones.values());
+                let inventario_venta = state.carteras.balance("OKX").btc;
                 let op = operacion_demo_fill_parcial(
                     &state.costos,
                     precio,
+                    inventario_venta,
                     ahora.timestamp_millis() as u64,
                     ahora,
                 );
@@ -1330,7 +1339,7 @@ impl Motor {
                     .sum();
                 pnls.push(pnl);
             }
-            pnls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            pnls.sort_by(f64::total_cmp);
             let mediana = pnls[pnls.len() / 2];
             let p05 = pnls[pnls.len() * 5 / 100];
             let p95 = pnls[pnls.len() * 95 / 100];
@@ -2482,12 +2491,20 @@ fn oportunidad_desde_operacion(op: &Operacion) -> Oportunidad {
 fn operacion_demo_fill_parcial(
     costos: &MapaCostos,
     precio_ref: f64,
+    inventario_venta_btc: f64,
     seed: u64,
     ahora: DateTime<Utc>,
 ) -> Operacion {
     let precio_base = precio_ref.clamp(20_000.0, 250_000.0);
-    let requested = costos.max_operacion_btc.clamp(0.08, 0.55);
-    let filled = (requested * 0.37).max(0.025);
+    // Mantiene el escenario ejecutable aun cuando el inventario inicial se
+    // distribuye entre todos los adaptadores conocidos de la demo.
+    let requested = costos.max_operacion_btc.clamp(0.08, 0.45);
+    // Debe caber incluso cuando el inventario inicial está repartido entre
+    // todos los venues configurados; sigue siendo claramente menor al pedido.
+    let filled = (requested * 0.12)
+        .max(0.025)
+        .min(requested * 0.5)
+        .min((inventario_venta_btc * 0.8).max(0.0));
     let precio_compra = precio_base * 0.9997;
     let mid = precio_base;
     let fee_compra = config_exchange(costos, "Binance").fee_taker;
@@ -3623,5 +3640,50 @@ mod tests {
             .eventos_ejecucion
             .iter()
             .any(|e| e.tipo == "circuit_breaker"));
+    }
+
+    #[test]
+    fn feed_stale_no_es_ruteable() {
+        let mut vieja = cot("A", 100.0, 101.0, 1.0, 1.0);
+        vieja.recibida_en = Utc::now() - chrono::Duration::seconds(2);
+        assert!(!cotizacion_valida(&vieja, Utc::now(), 100));
+    }
+
+    #[test]
+    fn drawdown_mide_caida_desde_el_pico() {
+        let ahora = Utc::now();
+        let serie = [10.0, 15.0, 7.0, 12.0].map(|valor| PuntoSerie {
+            tiempo: ahora,
+            valor,
+        });
+        assert_relative_eq!(max_drawdown(&serie), 8.0);
+    }
+
+    #[test]
+    fn wallet_skew_dispara_rebalanceo_acotado() {
+        let exchanges = vec!["A".to_string(), "B".to_string()];
+        let mut carteras = Carteras::new(&exchanges, 20_000.0, 2.0);
+        carteras.balances.get_mut("A").unwrap().usd = 50.0;
+        carteras.balances.get_mut("B").unwrap().usd = 19_950.0;
+        let antes = carteras.balance("B").usd;
+        let eventos = carteras.rebalancear(50_000.0, &cfg_test(), Utc::now());
+        assert!(!eventos.is_empty());
+        assert!(carteras.balance("B").usd < antes);
+        assert!(carteras.balances.values().all(|balance| balance.usd >= 0.0));
+    }
+
+    #[tokio::test]
+    async fn kill_switch_pausa_y_reanuda_simulacion() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor.set_kill_switch(true).await;
+        assert!(motor.estado().await.metricas.circuit_breaker_activo);
+        assert!(motor
+            .estado()
+            .await
+            .eventos_ejecucion
+            .iter()
+            .any(|e| e.tipo == "kill_switch"));
+        motor.set_kill_switch(false).await;
+        assert!(!motor.estado().await.metricas.circuit_breaker_activo);
     }
 }

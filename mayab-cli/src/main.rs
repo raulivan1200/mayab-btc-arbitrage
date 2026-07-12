@@ -51,6 +51,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = config::Config::from_env();
+    cfg.validate().context("configuracion insegura")?;
+
+    // Fail-closed: require ADMIN_TOKEN in production
+    if cfg.entorno == "production" && cfg.token_admin.is_none() {
+        tracing::error!("ADMIN_TOKEN es requerido en entorno production");
+        anyhow::bail!("ADMIN_TOKEN es requerido en entorno production. Configure ADMIN_TOKEN o use ENTORNO=development para desarrollo.");
+    }
+
     let persistencia: Option<Arc<dyn auditoria::Auditoria>> =
         match persistencia::Persistencia::abrir(&cfg.auditoria_db_path) {
             Ok(persistencia) => {
@@ -79,13 +87,21 @@ async fn main() -> anyhow::Result<()> {
             persistencia
         }
     };
+    let persistencia = persistencia.map(|backend| {
+        let capacidad = std::env::var("PERSISTENCE_QUEUE_CAPACITY")
+            .ok()
+            .and_then(|valor| valor.parse().ok())
+            .unwrap_or(2048);
+        Arc::new(auditoria::AuditoriaEnCola::nueva(backend, capacidad))
+            as Arc<dyn auditoria::Auditoria>
+    });
     let motor = Arc::new(motor::Motor::new(
         cfg.costos.clone(),
         cfg.capital_inicial_usd,
         cfg.balance_inicial_btc,
         cfg.par_base.clone(),
         cfg.pares_extra.clone(),
-        persistencia.map(|p| p as Arc<dyn auditoria::Auditoria>),
+        persistencia,
     ));
     let estado = motor.estado().await;
     for par in &estado.pares_activos {

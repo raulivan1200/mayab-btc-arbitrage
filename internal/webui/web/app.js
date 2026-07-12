@@ -12,16 +12,16 @@ const INTERVALO_CANVAS_MS = 1000 / 30;
 let ultimoFrameCanvas = 0;
 const reducirMovimiento = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const animacionGa = { firma: "", inicio: 0 };
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.has("token")) {
-  localStorage.setItem("mayabAdminToken", urlParams.get("token"));
-  window.history.replaceState({}, document.title, window.location.pathname);
-}
 const formatoHoraGrafica = new Intl.DateTimeFormat("es-MX", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
 });
+
+function formatearHoraLocal(valor) {
+  const fecha = new Date(valor);
+  return Number.isNaN(fecha.getTime()) ? "—" : formatoHoraGrafica.format(fecha);
+}
 let ultimoPreflightMs = 0;
 let preflightCache = null;
 let preflightEnCurso = false;
@@ -2860,7 +2860,7 @@ function renderResumenLlm(datos) {
     ? `EV ${dinero.format(datos.mlEdge.expectedValueUsd || 0)}, confianza ${formato((datos.mlEdge.confianza || 0) * 100, 1)}%, decisión ${datos.mlEdge.decision || "sin código"}.`
     : "Esperando decisión auditada.";
   const persistencia = datos.persistencia?.activa
-    ? `Auditoría SQLite activa: ${numero.format(datos.persistencia.operaciones || 0)} trades, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} decisiones.`
+    ? `Auditoría SQLite activa (${datos.persistencia.storageStatus || "estado desconocido"}): ${numero.format(datos.persistencia.operaciones || 0)} trades, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} decisiones.`
     : "Auditoría SQLite no disponible.";
   const modoEl = $("llm-modo"); if (modoEl) modoEl.textContent = modo;
   const pnlEl = $("llm-pnl"); if (pnlEl) pnlEl.textContent = dinero.format(datos.metricas.utilidadAcumuladaUsd);

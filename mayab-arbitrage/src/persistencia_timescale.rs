@@ -201,6 +201,12 @@ impl Auditoria for TimescaleDbAuditoria {
                 rebalanceos: rebalanceos.max(0) as usize,
                 db_bytes: 0,
                 error: None,
+                storage_mode: "timescaledb".to_string(),
+                storage_status: "persistent".to_string(),
+                storage_persistent: true,
+                queue_capacity: 0,
+                queue_pending: 0,
+                queue_dropped: 0,
             }
         })
     }
