@@ -53,6 +53,8 @@ Este proyecto está diseñado como MVP demostrable y seguro para evaluación té
 
 La URL pública se puede desplegar sin `ADMIN_TOKEN` para que el comité pueda probarla. Si se quisiera convertir en producto con dinero real, la primera tarea no sería conectar órdenes, sino endurecer autenticación/autorización, rate limiting, auditoría, aislamiento de secretos, permisos por exchange y límites duros de exposición.
 
+La ruta de madurez operacional se documenta como gates verificables en [LIVE_READINESS.md](LIVE_READINESS.md). El challenge público permanece en S0/S1 (simulación y replay offline); testnet sería evidencia adicional separada y no implica que el dashboard público opere fondos.
+
 ## Cumplimiento, privacidad y crecimiento futuro
 
 El sistema está delimitado como demo técnica: no recibe depósitos, no custodia activos virtuales, no ejecuta órdenes por cuenta de clientes y no promete rendimientos. Esa separación es intencional para no cruzar el límite hacia un servicio financiero regulado.
@@ -97,7 +99,8 @@ Contrato HTTP:
 - **Circuit Breaker y Modo Conservador** por volatilidad: se duplica el umbral mínimo de spread cuando el mercado es volátil.
 - **Z-Score con ventana histórica** de 100 muestras: scoring estadístico de cada ruta.
 - **Rebalanceo inteligente de carteras simuladas** cada 100 ciclos con movimientos internos USD/BTC, umbrales configurables y bitácora de movimientos.
-- **Backtest reproducible multisemilla** vía API/UI: compara baseline contra el campeón GA publicado en 24 semillas comunes y muestra mediana, P05–P95 e intervalo de confianza.
+- **Backtest reproducible multisemilla** vía API/UI: compara baseline contra el campeón GA publicado en 24 semillas comunes y muestra mediana y P05–P95.
+- **Bootstrap temporal pareado**: 10,000 remuestras moving-block con seed explícita, sensibilidad de bloques de 30/60/120 s, IC percentiles de PnL neto, fill rate, drawdown y sus diferencias; incluye P(ΔPnL > 0), permutación por bloques, tamaño del efecto, corrección Holm y conclusión inconclusa si el IC de ΔPnL cruza cero.
 - **Preflight operacional** (`/api/preflight`) con salud de feeds, configuración, riesgo, GA, archivos del dashboard y endpoints de auditoría.
 - **Jury Mode** (`/api/jurado`) como superficie única de evaluación: rúbrica oficial, scorecard, cobertura contra benchmark finalista, checks, evidencia clave y enlaces verificables.
 - **Endpoint compatible con LLMs y revisores automáticos** (`/api/resumen-llm`) con resumen narrativo, Markdown y métricas clave sin tener que interpretar HTML.
@@ -495,11 +498,12 @@ GET  /api/estado           captura JSON completa del estado (incluye estado gen�
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
 GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación
 GET  /api/resumen-llm      snapshot compacto para jueces, scripts y agentes LLM
+POST /api/discord/interactions webhook firmado para slash commands de Discord
 GET  /api/mcp/manifest     catálogo MCP-lite de herramientas para agentes LLM
 POST /api/mcp/call         invoca herramientas MCP-lite; mutaciones respetan ADMIN_TOKEN
 GET  /api/paquete-evaluacion scorecard, evidencia y guion reproducible para jurado
 GET  /api/latencias        wire latency + pipeline p50/p95/p99, throughput y coalescing
-GET  /api/backtest         backtest Monte Carlo reproducible con costos actuales e IC 95%
+GET  /api/backtest         backtest reproducible con bootstrap temporal pareado e IC 95%
 GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/GA Edge
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
@@ -516,7 +520,63 @@ POST /api/exchanges        activar/desactivar un exchange en la simulación
 WS   /tiempo-real          transmisión del estado en vivo (180ms)
 ```
 
+### Bot de Discord (opcional)
+
+El mismo binario puede atender Discord mediante Interactions HTTP, una opción
+adecuada para Cloud Run porque no mantiene otro WebSocket abierto. Cada petición
+se valida con Ed25519 antes de leerla. El bot publica `/estado`, `/resumen`,
+`/demo-rentable` y `/mayab pregunta:<texto>`; este último usa NVIDIA NIM como
+agente con tools locales sobre la simulación.
+
+Perfil sugerido en Discord Developer Portal:
+
+- **Name:** `Mayab Arbitraje BTC`
+- **Description:** `Monitorea una demo segura de arbitraje BTC simulado: feeds públicos, PnL, riesgo y evolución genética. Consulta el estado desde Discord y prepara escenarios reproducibles; no ejecuta órdenes reales, no custodia fondos y no usa llaves de exchanges.`
+- **Tags:** `bitcoin`, `analytics`, `simulation`, `finance`, `developer-tools`
+
+Configura el entorno sin versionar el token:
+
+```bash
+cp .env.example .env
+# Edita .env y reemplaza <YOUR_BOT_TOKEN> con el token de la página Bot.
+cargo run
+```
+
+En **General Information → Interactions Endpoint URL**, usa la URL pública:
+
+```text
+https://TU_SERVICIO/api/discord/interactions
+```
+
+El `Application ID` y la `Public Key` entregados para esta app ya están en
+`.env.example`; no son secretos. `DISCORD_BOT_TOKEN` sí es secreto: nunca debe
+subirse al repositorio. Si defines `DISCORD_GUILD_ID`, los comandos se registran
+en ese servidor para pruebas inmediatas; sin él, se registran globalmente. Para
+instalar la app, habilita los scopes `applications.commands` y `bot`; estos
+comandos no requieren permisos adicionales del bot.
+
+La IA requiere una key nueva y privada en `NVIDIA_API_KEY`. El agente intenta
+los modelos de `NVIDIA_MODELS` en orden y continúa con el siguiente ante errores,
+timeouts o respuestas inválidas. Los defaults son Nemotron 3 Nano Omni, Llama 4
+Maverick, Nemotron 3 Ultra y Kimi K2.6. Sus tools son:
+
+- `get_state`: métricas, riesgo, operaciones y GA.
+- `get_config`: parámetros vigentes del motor.
+- `prepare_demo`: escenario rentable estrictamente simulado.
+- `update_parameters`: modifica límites simples validados; solo aparece para
+  miembros con `Manage Server` o `Administrator`.
+
+Discord recibe primero una respuesta diferida y el resultado de NVIDIA se
+publica después, evitando exceder la ventana inicial de Interactions. Las keys
+de NVIDIA o Discord deben configurarse con Secret Manager en Cloud Run, nunca
+como argumentos, código fuente o variables incluidas en imágenes Docker.
+
 ### Modelo de seguridad de la demo
+
+La ejecución de Fase 7 está aislada en un binario opt-in para Coinbase Exchange
+Sandbox; no convierte este servidor público en un bot live. Su threat model,
+configuración fail-closed, ciclo de órdenes, ledger y despliegue privado están en
+[docs/TESTNET_EXECUTION.md](docs/TESTNET_EXECUTION.md).
 
 Los endpoints POST están abiertos en la demo pública porque no ejecutan operaciones reales ni acceden a cuentas de exchange. Su alcance se limita a cambiar parámetros del simulador en memoria: umbrales, costos asumidos, exchanges activos y configuración del GA.
 
@@ -701,6 +761,75 @@ Elitismo: 4
 Intervalo evolución: 500 ciclos
 Sigma mutación: 0.15
 ```
+
+### Evaluación cronológica A/B/C
+
+`evaluate-tape` separa una cinta ordenada en entrenamiento (A), calibración
+(B) y holdout congelado (C). El GA sólo consume A; umbrales, score e impacto se
+calibran en B; después todos los métodos recorren exactamente el mismo C una
+sola vez. El reporte conserva estrategias perdedoras y ventanas negativas.
+
+```bash
+cargo run --bin evaluate-tape -- \
+  --tape artifacts/tapes/run-001 \
+  --split 50,20,30 \
+  --seed 20260712 \
+  --output artifacts/reports/run-001
+```
+
+Genera `evaluation.json`, `evaluation.csv` y `evaluation.md`. Acepta un archivo
+o directorio con JSON (array de cotizaciones o wrapper `cotizaciones`/`eventos`)
+y JSONL/NDJSON.
+
+## Fase 9 — Microestructura y calibración (diferida)
+
+> **Estado: no implementada.** Esta fase empieza únicamente cuando las fases
+> anteriores estén cerradas. No forma parte de las capacidades actuales del
+> motor, la API ni el dashboard.
+
+La fase incorporará señales y mediciones de microestructura reproducibles:
+
+- quote age por exchange;
+- asincronía entre venues;
+- microprice;
+- OFI y OFI multinivel;
+- markouts a 100 ms, 500 ms, 1 s y 5 s;
+- riesgo estimado de la segunda pata;
+- Platt scaling e isotonic calibration;
+- reliability diagram;
+- intervalos de Wilson para la probabilidad de fill.
+
+La cadena de decisión objetivo será:
+
+```text
+microestructura
+  → probabilidad calibrada de fill
+  → tamaño
+  → modelo de impacto
+  → decisión
+  → resultado ex post
+```
+
+El resultado ex post debe alimentar la evaluación de calibración y los
+markouts, conservando trazabilidad entre la predicción, la decisión tomada y el
+resultado observado. La probabilidad de fill utilizada para dimensionar una
+operación deberá ser calibrada; no bastará con el score crudo del modelo.
+
+### Laboratorio OU separado del GA
+
+El laboratorio Ornstein–Uhlenbeck será un experimento independiente, no un peso
+ni un gen adicional dentro del GA. Su protocolo será cronológico:
+
+1. Estimar el proceso OU sobre el segmento A.
+2. Seleccionar horizonte y umbral exclusivamente sobre B.
+3. Evaluar mean reversion una sola vez sobre C, sin reajustar con ese resultado.
+4. Comparar contra dos baselines: no-trade y spread neto simple.
+5. Rechazar el modelo si no hay evidencia de estacionariedad o si sus parámetros
+   y resultados no son estables entre ventanas.
+
+La fase solo podrá marcarse como completada cuando las métricas, calibradores,
+diagramas, intervalos, baselines y criterios de rechazo estén expuestos como
+evidencia reproducible en API, UI o exports, según corresponda.
 
 ## Nota de seguridad
 

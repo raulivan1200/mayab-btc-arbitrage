@@ -17,6 +17,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
     motor::Motor,
+    tape::{EventKind, IntegrityState, TapeEvent, TapeSource},
     types::{Cotizacion, NivelOrden},
 };
 
@@ -101,6 +102,9 @@ pub(crate) struct LibroEstado {
     resyncs: u64,
     requiere_snapshot: bool,
     timestamp_confiable: bool,
+    checksum_failures: u64,
+    sequence_gaps: u64,
+    invalidada_desde_ms: Option<i64>,
 }
 
 const BOOK_SCALE: f64 = 100_000_000.0;
@@ -142,6 +146,9 @@ impl LibroEstado {
             resyncs: 0,
             requiere_snapshot: true,
             timestamp_confiable: false,
+            checksum_failures: 0,
+            sequence_gaps: 0,
+            invalidada_desde_ms: None,
         }
     }
 
@@ -192,6 +199,12 @@ impl LibroEstado {
         cotizacion.exchange_sequence = self.ultima_secuencia;
         cotizacion.integrity_status = self.integrity_status.clone();
         cotizacion.resyncs = self.resyncs;
+        cotizacion.sequence_gaps = self.sequence_gaps;
+        cotizacion.checksum_failures = self.checksum_failures;
+        cotizacion.invalidated_ms = self
+            .invalidada_desde_ms
+            .map(|desde| (Utc::now().timestamp_millis() - desde).max(0))
+            .unwrap_or(0);
         cotizacion.timestamp_confiable = self.timestamp_confiable;
         Some(cotizacion)
     }
@@ -206,6 +219,7 @@ impl LibroEstado {
         self.integrity_status = integrity_status.to_string();
         self.requiere_snapshot = false;
         self.timestamp_confiable = timestamp_confiable;
+        self.invalidada_desde_ms = None;
     }
 
     fn registrar_incremental_exacto(&mut self, secuencia: Option<u64>) -> bool {
@@ -224,6 +238,8 @@ impl LibroEstado {
             }
             if actual != anterior.saturating_add(1) {
                 self.resyncs += 1;
+                self.sequence_gaps += 1;
+                self.invalidada_desde_ms = Some(Utc::now().timestamp_millis());
                 self.requiere_snapshot = true;
                 self.integrity_status = "gap_requiere_snapshot".to_string();
                 let par = self.par.clone();
@@ -276,6 +292,8 @@ impl LibroEstado {
             .is_some_and(|anterior| previa != anterior || actual <= anterior)
         {
             self.resyncs += 1;
+            self.sequence_gaps += 1;
+            self.invalidada_desde_ms = Some(Utc::now().timestamp_millis());
             self.requiere_snapshot = true;
             self.integrity_status = "gap_requiere_snapshot".to_string();
             let par = self.par.clone();
@@ -286,6 +304,45 @@ impl LibroEstado {
         self.ultima_secuencia = Some(actual);
         self.integrity_status = "secuencia_enlazada".to_string();
         true
+    }
+
+    fn validar_checksum_kraken(&mut self, esperado: u32) -> bool {
+        let mut entrada = String::new();
+        for (precio, cantidad) in self.asks.iter().take(10) {
+            entrada.push_str(&kraken_crc_num(precio.to_f64()));
+            entrada.push_str(&kraken_crc_num(cantidad.to_f64()));
+        }
+        for (precio, cantidad) in self.bids.iter().rev().take(10) {
+            entrada.push_str(&kraken_crc_num(precio.to_f64()));
+            entrada.push_str(&kraken_crc_num(cantidad.to_f64()));
+        }
+        if crc32fast::hash(entrada.as_bytes()) == esperado {
+            self.integrity_status = "checksum_crc32_ok".to_string();
+            true
+        } else {
+            self.checksum_failures += 1;
+            self.resyncs += 1;
+            self.invalidada_desde_ms = Some(Utc::now().timestamp_millis());
+            self.requiere_snapshot = true;
+            self.integrity_status = "checksum_crc32_fallido_requiere_snapshot".to_string();
+            let par = self.par.clone();
+            self.reset(&par);
+            false
+        }
+    }
+}
+
+fn kraken_crc_num(value: f64) -> String {
+    let fixed = format!("{value:.8}");
+    let compact = fixed
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .replace('.', "");
+    let stripped = compact.trim_start_matches('0');
+    if stripped.is_empty() {
+        "0".to_string()
+    } else {
+        stripped.to_string()
     }
 }
 
@@ -366,6 +423,9 @@ fn cotizacion_desde_precio_liq(
         exchange_sequence: None,
         integrity_status: "amm_rest".to_string(),
         resyncs: 0,
+        sequence_gaps: 0,
+        checksum_failures: 0,
+        invalidated_ms: 0,
         timestamp_confiable: true,
         conectado: false,
         ultimo_mensaje: "rest_fallback".to_string(),
@@ -428,6 +488,9 @@ async fn run_solana_dex_connector(adaptador: Box<dyn ExchangeAdapter>, motor: Ar
             exchange_sequence: None,
             integrity_status: "amm_simulado".to_string(),
             resyncs: 0,
+            sequence_gaps: 0,
+            checksum_failures: 0,
+            invalidated_ms: 0,
             timestamp_confiable: true,
             conectado: true,
             ultimo_mensaje: "amm_simulado".to_string(),
@@ -762,6 +825,101 @@ fn adaptadores(par: &str) -> Vec<Box<dyn ExchangeAdapter>> {
         .collect()
 }
 
+/// Captura los libros normalizados de los CEX solicitados sin arrancar el motor.
+/// Cada frame útil se persiste como un snapshot autocontenido del top del libro;
+/// esto conserva la semántica incremental del venue (secuencias e integridad),
+/// pero hace que el tape siga siendo reconstruible aun si empieza a media sesión.
+pub async fn capture_public_books(
+    par: String,
+    exchanges: Vec<String>,
+    depth: usize,
+    tx: tokio::sync::mpsc::Sender<TapeEvent>,
+) -> anyhow::Result<()> {
+    let wanted: std::collections::HashSet<String> =
+        exchanges.iter().map(|v| v.to_ascii_lowercase()).collect();
+    let selected: Vec<_> = adaptadores(&par)
+        .into_iter()
+        .filter(|a| wanted.contains(&a.nombre().to_ascii_lowercase()))
+        .filter(|a| !a.ws_url().starts_with("solana://"))
+        .collect();
+    if selected.len() != wanted.len() {
+        anyhow::bail!("uno o más exchanges no existen o no son CEX públicos");
+    }
+    for adapter in selected {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let name = adapter.nombre().to_string();
+            loop {
+                if let Err(error) = capture_connection(adapter.as_ref(), depth, &tx).await {
+                    tracing::warn!(exchange = %name, %error, "captura WS reconectando");
+                }
+                tokio::time::sleep(Duration::from_millis(750)).await;
+            }
+        });
+    }
+    Ok(())
+}
+
+async fn capture_connection(
+    adapter: &dyn ExchangeAdapter,
+    depth: usize,
+    tx: &tokio::sync::mpsc::Sender<TapeEvent>,
+) -> anyhow::Result<()> {
+    let (mut ws, _) = connect_async(adapter.ws_url()).await?;
+    if let Some(payload) = adapter.suscripcion() {
+        ws.send(Message::Text(payload.to_string())).await?;
+    }
+    let mut book = LibroEstado::new(adapter.par());
+    let mut previous_sequence = None;
+    let mut previous_resyncs = 0;
+    while let Some(message) = ws.next().await {
+        let bytes = match message? {
+            Message::Text(text) => text.as_bytes().to_vec(),
+            Message::Binary(bytes) => bytes,
+            Message::Ping(payload) => {
+                ws.send(Message::Pong(payload)).await?;
+                continue;
+            }
+            Message::Close(_) => anyhow::bail!("conexión cerrada"),
+            _ => continue,
+        };
+        let local = Utc::now();
+        let Some(quote) = adapter.parse_ws(&bytes, &mut book) else {
+            continue;
+        };
+        let exchange_ms = (quote.evento_unix_ms > 0).then_some(quote.evento_unix_ms);
+        let gap = book.resyncs > previous_resyncs;
+        let event = TapeEvent {
+            schema_version: 1,
+            exchange_timestamp: exchange_ms.and_then(DateTime::<Utc>::from_timestamp_millis),
+            local_timestamp: local,
+            exchange: adapter.nombre().to_string(),
+            pair: quote.par,
+            source: TapeSource::WebSocket {
+                url: adapter.ws_url().to_string(),
+            },
+            kind: EventKind::Snapshot,
+            sequence_id: book.ultima_secuencia,
+            previous_sequence,
+            bids: book.snapshot_bids(depth.clamp(10, 50)).into_vec(),
+            asks: book.snapshot_asks(depth.clamp(10, 50)).into_vec(),
+            integrity: IntegrityState {
+                status: book.integrity_status.clone(),
+                gap,
+                resync: gap,
+            },
+            observed_latency_ms: exchange_ms
+                .map(|ts| local.timestamp_millis().saturating_sub(ts).max(0) as u64),
+        };
+        previous_sequence = book.ultima_secuencia.or(previous_sequence);
+        previous_resyncs = book.resyncs;
+        if tx.send(event).await.is_err() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("stream terminado")
+}
+
 fn parsear_binance(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let bids = niveles_strings(v.get("b").or_else(|| v.get("bids"))?.as_array()?, 10);
@@ -876,14 +1034,13 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         || v.get("type").and_then(Value::as_str) == Some("snapshot")
     {
         libro.reset(par);
-        libro.registrar_snapshot(None, "checksum_no_verificado", true);
+        libro.registrar_snapshot(None, "checksum_pendiente", true);
     } else {
         if libro.requiere_snapshot {
             libro.integrity_status = "esperando_snapshot".to_string();
             return None;
         }
         libro.par = normalizar_par(par);
-        libro.integrity_status = "incremental_sin_checksum".to_string();
         libro.timestamp_confiable = true;
     }
     let bids = item
@@ -903,6 +1060,13 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         .unwrap_or_default();
     libro.actualizar_bids(&bids);
     libro.actualizar_asks(&asks);
+    if let Some(checksum) = item.get("checksum").and_then(parse_u64) {
+        if !libro.validar_checksum_kraken(checksum as u32) {
+            return None;
+        }
+    } else {
+        libro.integrity_status = "checksum_no_disponible".to_string();
+    }
     libro.cotizacion(ts)
 }
 
@@ -1505,6 +1669,37 @@ mod tests {
 
         assert_eq!(c.bid, (100.0));
         assert_eq!(c.ask, (100.8));
+    }
+
+    #[test]
+    fn kraken_valida_crc32_y_resincroniza_si_falla() {
+        let mut esperado = LibroEstado::new("BTC/USD");
+        esperado.actualizar_bids(&[NivelOrden {
+            precio: 100.0,
+            cantidad: 2.0,
+        }]);
+        esperado.actualizar_asks(&[NivelOrden {
+            precio: 101.0,
+            cantidad: 1.5,
+        }]);
+        let mut entrada = String::new();
+        entrada.push_str(&kraken_crc_num(101.0));
+        entrada.push_str(&kraken_crc_num(1.5));
+        entrada.push_str(&kraken_crc_num(100.0));
+        entrada.push_str(&kraken_crc_num(2.0));
+        let checksum = crc32fast::hash(entrada.as_bytes());
+        let snapshot = format!(
+            r#"{{"channel":"book","type":"snapshot","data":[{{"symbol":"BTC/USD","bids":[{{"price":100.0,"qty":2.0}}],"asks":[{{"price":101.0,"qty":1.5}}],"checksum":{checksum},"timestamp":"2024-03-09T00:00:00Z"}}]}}"#
+        );
+        let mut libro = LibroEstado::new("BTC/USD");
+        let cotizacion = parsear_kraken(snapshot.as_bytes(), &mut libro).unwrap();
+        assert_eq!(cotizacion.integrity_status, "checksum_crc32_ok");
+
+        let malo = snapshot.replace(&checksum.to_string(), &checksum.wrapping_add(1).to_string());
+        assert!(parsear_kraken(malo.as_bytes(), &mut libro).is_none());
+        assert_eq!(libro.checksum_failures, 1);
+        assert!(libro.requiere_snapshot);
+        assert!(libro.bids.is_empty());
     }
 
     #[test]

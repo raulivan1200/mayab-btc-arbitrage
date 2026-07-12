@@ -10,14 +10,31 @@ publish = false
 name = "mayab-arbitrage"
 path = "src/main.rs"
 
+[[bin]]
+name = "capture-tape"
+path = "src/capture_tape.rs"
+
+[[bin]]
+name = "verify-tape"
+path = "src/verify_tape.rs"
+
+[[bin]]
+name = "mayab-testnet-executor"
+path = "src/testnet_executor.rs"
+required-features = ["testnet-execution"]
+
 [dependencies]
 mayab-arbitrage = { path = "../mayab-arbitrage" }
 anyhow = "1.0"
 axum = "0.7"
+dotenvy = "0.15"
 rustls = { version = "0.23", features = ["ring"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["clock"] }
 
 [features]
 timescaledb = ["mayab-arbitrage/timescaledb"]
+testnet-execution = ["mayab-arbitrage/testnet-execution"]

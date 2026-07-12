@@ -403,6 +403,13 @@ async fn integration_backtest_devuelve_metricas_comparativas() {
     assert!(json["validacionMultisemilla"]["base"]["pnlMedianoUsd"].is_number());
     assert!(json["validacionMultisemilla"]["optimizada"]["pnlMedianoUsd"].is_number());
     assert!(json["comparacion"]["ganador"].is_string());
+    assert_eq!(json["significanciaBootstrap"]["remuestras"], 10_000);
+    assert!(
+        json["significanciaBootstrap"]["principal"]["probabilidadDeltaPnlMayorCero"].is_number()
+    );
+    assert!(
+        json["significanciaBootstrap"]["permutacionPareadaBloques"]["pValueDosColas"].is_number()
+    );
 }
 
 #[tokio::test]

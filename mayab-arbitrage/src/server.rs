@@ -6,8 +6,9 @@
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    fs,
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -28,15 +29,18 @@ use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tower_http::{
     compression::CompressionLayer, services::ServeDir, set_header::SetResponseHeaderLayer,
 };
 
 use crate::{
+    discord::{self, ConfigDiscord},
     ga::ConfigGa,
+    impacto::{LadoOrden, ModeloImpacto, OrdenImpacto},
     metricas::Metricas,
     motor::{EscenarioDemo, Motor},
-    types::{Cotizacion, EstadoPublico, ExchangeConfig, MapaCostos},
+    types::{Cotizacion, EstadoPublico, ExchangeConfig, MapaCostos, NivelOrden},
 };
 
 #[derive(Clone)]
@@ -45,17 +49,20 @@ struct EstadoApp {
     token_admin: Option<String>,
     ws_tx: tokio::sync::broadcast::Sender<String>,
     metricas: Metricas,
+    discord: ConfigDiscord,
 }
 
 /// Construye el router Axum completo del binario.
 pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
     let (ws_tx, _) = tokio::sync::broadcast::channel(16);
     let metricas = Metricas::new();
+    let discord = ConfigDiscord::from_env();
     let state = EstadoApp {
         motor: motor.clone(),
         token_admin,
         ws_tx: ws_tx.clone(),
         metricas: metricas.clone(),
+        discord,
     };
 
     tokio::spawn(async move {
@@ -81,12 +88,19 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/jurado", get(jurado))
         .route("/api/preflight", get(preflight))
         .route("/api/resumen-llm", get(resumen_llm))
+        .route("/api/discord/interactions", post(discord_interactions))
         .route("/api/mcp", get(mcp_manifest))
         .route("/api/mcp/manifest", get(mcp_manifest))
         .route("/api/mcp/call", post(mcp_call))
         .route("/api/paquete-evaluacion", get(paquete_evaluacion))
         .route("/api/latencias", get(latencias))
         .route("/api/backtest", get(backtest))
+        .route("/api/research/tapes", get(research_tapes))
+        .route("/api/research/walk-forward", get(research_walk_forward))
+        .route("/api/research/impact", get(research_impact))
+        .route("/api/research/bootstrap", get(research_bootstrap))
+        .route("/api/research/ledger-audit", get(research_ledger_audit))
+        .route("/api/readiness/live", get(readiness_live))
         .route("/api/lab/sweep", get(lab_sweep))
         .route("/api/export/json", get(exportar_json))
         .route("/api/export/csv", get(exportar_csv))
@@ -198,6 +212,14 @@ async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
 async fn resumen_llm(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_resumen_llm(&estado))
+}
+
+async fn discord_interactions(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    discord::responder_interaccion(app.motor.clone(), &app.discord, &headers, body).await
 }
 
 async fn mcp_manifest() -> Json<serde_json::Value> {
@@ -371,6 +393,140 @@ async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
 async fn backtest(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(backtest_reproducible(&estado))
+}
+
+async fn research_tapes() -> Json<serde_json::Value> {
+    Json(construir_research_tapes())
+}
+
+async fn research_walk_forward(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let reporte = backtest_reproducible(&app.motor.estado().await);
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/walk-forward",
+        "split": { "train": 50, "calibration": 20, "holdout": 30 },
+        "protocol": {
+            "train": "El GA se ajusta antes del holdout.",
+            "calibration": "Las semillas 301..312 documentan calibración sin seleccionar retrospectivamente sobre holdout.",
+            "holdout": "Las semillas 401..424 no reentrenan ni reajustan el campeón."
+        },
+        "gaVsBaselines": reporte["validacionFueraMuestra"],
+        "source": { "kind": "synthetic_replay", "endpoint": "/api/backtest" },
+        "limitations": [
+            "El split porcentual describe el protocolo del evaluador de tape; este endpoint runtime usa semillas cronológicas separadas.",
+            "El replay runtime es sintético y no demuestra rentabilidad real."
+        ]
+    }))
+}
+
+async fn research_impact(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let estado = app.motor.estado().await;
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/impact",
+        "comparison": comparar_modelos_impacto(&estado.configuracion, 42),
+        "limitations": ["Los markouts de esta comparación son simulados.", "Book-walk requiere profundidad observable suficiente."]
+    }))
+}
+
+async fn research_bootstrap(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let reporte = backtest_reproducible(&app.motor.estado().await);
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/bootstrap",
+        "comparison": "campeon_ga_menos_baseline_estatico",
+        "bootstrap": reporte["significanciaBootstrap"],
+        "limitations": ["El intervalo cuantifica incertidumbre interna del replay sintético, no riesgo de mercado live."]
+    }))
+}
+
+async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let estado = app.motor.estado().await;
+    let ids = estado
+        .operaciones
+        .iter()
+        .map(|o| o.id.as_str())
+        .collect::<Vec<_>>();
+    let unicos = ids.iter().copied().collect::<HashSet<_>>().len();
+    let payload = serde_json::to_vec(&json!({
+        "corrida": estado.corrida.id,
+        "operaciones": estado.operaciones,
+        "trazas": estado.trazas_ejecucion,
+        "rebalanceos": estado.rebalanceos,
+        "balances": estado.balances,
+    }))
+    .unwrap_or_default();
+    Json(json!({
+        "schemaVersion": 1,
+        "artifact": "/api/research/ledger-audit",
+        "runId": estado.corrida.id,
+        "snapshotSha256": hex::encode(Sha256::digest(&payload)),
+        "checks": {
+            "operationIdsUnique": unicos == ids.len(),
+            "operationsMatchMetric": estado.operaciones.len() == estado.metricas.operaciones_totales,
+            "noRealExecution": !estado.corrida.ejecucion_real,
+        },
+        "counts": {
+            "operations": estado.operaciones.len(),
+            "decisionAudits": estado.auditoria_decisiones.len(),
+            "executionTransitions": estado.trazas_ejecucion.len(),
+            "rebalances": estado.rebalanceos.len(),
+        },
+        "source": "/api/export/json",
+        "limitations": ["Este hash cubre el snapshot en memoria; no sustituye un ledger persistido y encadenado entre reinicios."]
+    }))
+}
+
+async fn readiness_live(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let estado = app.motor.estado().await;
+    Json(json!({
+        "schemaVersion": 1,
+        "stage": "S0_S1",
+        "status": "not_ready_for_live_trading",
+        "marketDataLive": estado.corrida.modo == "mercado_real",
+        "liveTrading": false,
+        "realExecution": estado.corrida.ejecucion_real,
+        "capitalAtRiskUsd": 0,
+        "completedScope": ["simulación", "replay offline"],
+        "blockedStages": ["S2 shadow", "S3 testnet", "S4 production read-only", "S5 canary", "S6 live controlado"],
+        "artifact": "/LIVE_READINESS.md",
+        "limitations": [
+            "No hay órdenes reales, custodia, transferencias on-chain ni manejo de secretos de trading.",
+            "Datos live no significa trading live.",
+            "Los gates no comprobados permanecen abiertos."
+        ]
+    }))
+}
+
+fn construir_research_tapes() -> serde_json::Value {
+    let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
+    let path = configured.unwrap_or_else(|| PathBuf::from("data/captura_real.json"));
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let events = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.as_array().map(Vec::len));
+            json!({
+                "schemaVersion": 1,
+                "available": true,
+                "tapes": [{
+                    "id": "research-tape-default",
+                    "path": path.display().to_string(),
+                    "provenance": if std::env::var_os("MAYAB_RESEARCH_TAPE").is_some() { "configured_artifact" } else { "repository_capture" },
+                    "sha256": hex::encode(Sha256::digest(&bytes)),
+                    "bytes": bytes.len(),
+                    "events": events,
+                    "immutableReference": true
+                }],
+                "limitations": ["El hash prueba integridad de bytes, no autenticidad del exchange.", "La captura incluida es pequeña y no representa todos los regímenes de mercado."]
+            })
+        }
+        Err(error) => json!({
+            "schemaVersion": 1, "available": false, "tapes": [],
+            "expectedPath": path.display().to_string(), "error": error.to_string(),
+            "limitations": ["No se publica evidencia de tape cuando el artefacto no está montado."]
+        }),
+    }
 }
 
 async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
@@ -2810,6 +2966,9 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
     let validacion_base = resumen_multisemilla(cfg, umbral_base, max_btc_base, &semillas);
     let validacion_ga = resumen_multisemilla(cfg, umbral_ga, max_btc_ga, &semillas);
     let validacion_fuera_muestra = validacion_fuera_muestra(cfg, umbral_ga, max_btc_ga, fuente_ga);
+    let comparacion_impacto = comparar_modelos_impacto(cfg, 42);
+    let significancia =
+        significancia_bootstrap_bloques(cfg, (umbral_base, max_btc_base), (umbral_ga, max_btc_ga));
     let base_mediana = validacion_base["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     let ga_mediana = validacion_ga["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     json!({
@@ -2837,6 +2996,8 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
             "lectura": "La mediana de 24 corridas reduce la dependencia de una semilla favorable; el resultado se reporta aunque el GA no gane."
         },
         "validacionFueraMuestra": validacion_fuera_muestra,
+        "comparacionImpacto": comparacion_impacto,
+        "significanciaBootstrap": significancia,
         "comparacion": {
             "deltaPnlUsd": delta_pnl,
             "deltaDrawdownUsd": delta_drawdown,
@@ -2845,6 +3006,225 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
         },
         "nota": "Replay Monte Carlo sintetico y deterministico sobre BTC con costos actuales, cinco exchanges, dispersion entre libros y movimiento adverso posterior a la decision; no demuestra rentabilidad real."
     })
+}
+
+#[derive(Clone, Serialize)]
+struct FilaImpacto {
+    modelo: String,
+    #[serde(rename = "pnlUsd")]
+    pnl_usd: f64,
+    #[serde(rename = "fillRate")]
+    fill_rate: f64,
+    #[serde(rename = "maxDrawdownUsd")]
+    max_drawdown_usd: f64,
+    #[serde(rename = "impactoMedioBps")]
+    impacto_medio_bps: f64,
+    #[serde(rename = "decisionesDistintas")]
+    decisiones_distintas: u64,
+    #[serde(rename = "ordenesAceptadas")]
+    ordenes_aceptadas: u64,
+    #[serde(rename = "cantidadMediaBtc")]
+    cantidad_media_btc: f64,
+    #[serde(rename = "errorAbsolutoMedioBps")]
+    error_absoluto_medio_bps: f64,
+    #[serde(rename = "sesgoCostoBps")]
+    sesgo_costo_bps: f64,
+}
+
+#[derive(Clone)]
+struct CandidatoImpacto {
+    precio: f64,
+    cantidad: f64,
+    spread_bruto_bps: f64,
+    volatilidad_bps: f64,
+    horizonte_ms: u64,
+    niveles: Vec<NivelOrden>,
+    impacto_observado_bps: f64,
+}
+
+/// Comparación pareada: cada modelo ve exactamente los mismos candidatos, books
+/// y markouts. La decisión usa el costo estimado; el PnL usa el costo observado.
+fn comparar_modelos_impacto(cfg: &MapaCostos, seed: u64) -> serde_json::Value {
+    let mut rng = StdRng::seed_from_u64(seed ^ 0x1A4C_7004);
+    let mut tape = Vec::with_capacity(2_400);
+    for _ in 0..2_400 {
+        let precio = rng.gen_range(92_000.0..108_000.0);
+        let cantidad = rng
+            .gen_range(0.025..0.55_f64)
+            .min(cfg.max_operacion_btc.max(0.025));
+        let volatilidad_bps = rng.gen_range(18.0..85.0);
+        let horizonte_ms = rng.gen_range(120..1_500);
+        let pendiente_bps = rng.gen_range(0.35..2.8);
+        let mut niveles = Vec::with_capacity(6);
+        for nivel in 0..6 {
+            niveles.push(NivelOrden {
+                precio: precio * (1.0 + pendiente_bps * nivel as f64 / 10_000.0),
+                cantidad: rng.gen_range(0.015..0.16),
+            });
+        }
+        let orden = OrdenImpacto {
+            lado: LadoOrden::Compra,
+            cantidad_btc: cantidad,
+            precio_referencia: precio,
+            niveles: &niveles,
+            volatilidad_bps: Some(volatilidad_bps),
+            horizonte_ms: Some(horizonte_ms),
+        };
+        let book = ModeloImpacto::BookWalk.estimar(&orden);
+        let ruido_markout = rng.gen_range(-0.8_f64..2.4_f64);
+        tape.push(CandidatoImpacto {
+            precio,
+            cantidad,
+            spread_bruto_bps: rng.gen_range(0.4..8.5),
+            volatilidad_bps,
+            horizonte_ms,
+            niveles,
+            impacto_observado_bps: (book.impacto_bps + ruido_markout).max(0.0),
+        });
+    }
+    let modelos = [
+        ModeloImpacto::BookWalk,
+        ModeloImpacto::SquareRoot {
+            eta: 0.72,
+            volumen_diario_btc: 18_000.0,
+        },
+        ModeloImpacto::AlmgrenLite {
+            impacto_temporal: 0.018,
+            impacto_permanente: 0.012,
+            horizonte_ms: 750,
+        },
+    ];
+    let decisiones_book = decisiones_modelo(&modelos[0], &tape, cfg);
+    let filas = modelos
+        .iter()
+        .map(|modelo| resumir_modelo(modelo, &tape, cfg, &decisiones_book))
+        .collect::<Vec<_>>();
+    let decisiones_square = decisiones_modelo(&modelos[1], &tape, cfg);
+    let book_acepta_square_rechaza = decisiones_book
+        .iter()
+        .zip(&decisiones_square)
+        .filter(|(b, s)| **b && !**s)
+        .count();
+    let menor_error = filas
+        .iter()
+        .min_by(|a, b| {
+            a.error_absoluto_medio_bps
+                .total_cmp(&b.error_absoluto_medio_bps)
+        })
+        .map(|f| f.modelo.clone())
+        .unwrap_or_default();
+    let mayor_subestimacion = filas
+        .iter()
+        .min_by(|a, b| a.sesgo_costo_bps.total_cmp(&b.sesgo_costo_bps))
+        .map(|f| f.modelo.clone())
+        .unwrap_or_default();
+    let book = &filas[0];
+    let cambios = filas
+        .iter()
+        .skip(1)
+        .map(|f| {
+            json!({
+                "modelo": f.modelo,
+                "cambioCantidadMediaBtc": f.cantidad_media_btc - book.cantidad_media_btc,
+                "cambioPnlUsd": f.pnl_usd - book.pnl_usd,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "modeloPredeterminado": "Book-walk",
+        "cambioRecomendado": false,
+        "seed": seed,
+        "candidatos": tape.len(),
+        "tabla": filas,
+        "respuestas": {
+            "bookWalkAceptaSquareRootRechaza": book_acepta_square_rechaza,
+            "modeloQueMasSubestimaCostoExPost": mayor_subestimacion,
+            "modeloConMenorErrorContraMarkout": menor_error,
+            "cambiosVsBookWalk": cambios,
+        },
+        "metodologia": "Comparacion pareada sobre el mismo tape, ordenes y markout. La seleccion usa impacto esperado; PnL y error usan impacto observado ex post.",
+        "criterioDefault": "Book-walk permanece por defecto hasta que evidencia fuera de muestra muestre menor error y mejor PnL ajustado por drawdown de forma consistente."
+    })
+}
+
+fn decisiones_modelo(
+    modelo: &ModeloImpacto,
+    tape: &[CandidatoImpacto],
+    cfg: &MapaCostos,
+) -> Vec<bool> {
+    tape.iter()
+        .map(|c| {
+            let e = modelo.estimar(&OrdenImpacto {
+                lado: LadoOrden::Compra,
+                cantidad_btc: c.cantidad,
+                precio_referencia: c.precio,
+                niveles: &c.niveles,
+                volatilidad_bps: Some(c.volatilidad_bps),
+                horizonte_ms: Some(c.horizonte_ms),
+            });
+            e.cantidad_ejecutable > 0.0
+                && c.spread_bruto_bps - e.impacto_bps >= cfg.min_diferencial_neto_bps
+                && (c.spread_bruto_bps - e.impacto_bps) * e.cantidad_ejecutable * c.precio
+                    / 10_000.0
+                    >= cfg.min_utilidad_usd
+        })
+        .collect()
+}
+
+fn resumir_modelo(
+    modelo: &ModeloImpacto,
+    tape: &[CandidatoImpacto],
+    cfg: &MapaCostos,
+    book: &[bool],
+) -> FilaImpacto {
+    let decisiones = decisiones_modelo(modelo, tape, cfg);
+    let mut pnl = 0.0_f64;
+    let mut pico = 0.0_f64;
+    let mut drawdown = 0.0_f64;
+    let mut aceptadas = 0_u64;
+    let mut cantidad = 0.0;
+    let mut impacto = 0.0;
+    let mut error = 0.0;
+    let mut sesgo = 0.0;
+    for (i, c) in tape.iter().enumerate() {
+        let e = modelo.estimar(&OrdenImpacto {
+            lado: LadoOrden::Compra,
+            cantidad_btc: c.cantidad,
+            precio_referencia: c.precio,
+            niveles: &c.niveles,
+            volatilidad_bps: Some(c.volatilidad_bps),
+            horizonte_ms: Some(c.horizonte_ms),
+        });
+        impacto += e.impacto_bps;
+        error += (e.impacto_bps - c.impacto_observado_bps).abs();
+        sesgo += e.impacto_bps - c.impacto_observado_bps;
+        if decisiones[i] {
+            aceptadas += 1;
+            cantidad += e.cantidad_ejecutable;
+            pnl +=
+                (c.spread_bruto_bps - c.impacto_observado_bps) * e.cantidad_ejecutable * c.precio
+                    / 10_000.0;
+            pico = pico.max(pnl);
+            drawdown = drawdown.max(pico - pnl);
+        }
+    }
+    let n = tape.len().max(1) as f64;
+    FilaImpacto {
+        modelo: modelo.nombre().into(),
+        pnl_usd: pnl,
+        fill_rate: aceptadas as f64 / n,
+        max_drawdown_usd: drawdown,
+        impacto_medio_bps: impacto / n,
+        decisiones_distintas: decisiones.iter().zip(book).filter(|(a, b)| a != b).count() as u64,
+        ordenes_aceptadas: aceptadas,
+        cantidad_media_btc: if aceptadas > 0 {
+            cantidad / aceptadas as f64
+        } else {
+            0.0
+        },
+        error_absoluto_medio_bps: error / n,
+        sesgo_costo_bps: sesgo / n,
+    }
 }
 
 /// Holdout cronologico y reproducible. El campeón publicado se congela antes
@@ -3058,6 +3438,267 @@ struct ResultadoBacktest {
     profit_factor: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ResultadoTickBacktest {
+    pnl_usd: f64,
+    fills: u64,
+    rutas: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MetricasRemuestra {
+    pnl: f64,
+    fill_rate: f64,
+    drawdown: f64,
+}
+
+fn significancia_bootstrap_bloques(
+    cfg: &MapaCostos,
+    baseline: (f64, f64),
+    candidato: (f64, f64),
+) -> serde_json::Value {
+    const SEED_CINTA: u64 = 42;
+    const SEED_BOOTSTRAP: u64 = 20_260_712;
+    const REMUESTRAS: usize = 10_000;
+    const BLOQUES: [usize; 3] = [30, 60, 120];
+
+    let (_, serie_base) = simular_backtest_con_serie(cfg, baseline.0, baseline.1, SEED_CINTA, 1.0);
+    let (_, serie_ga) = simular_backtest_con_serie(cfg, candidato.0, candidato.1, SEED_CINTA, 1.0);
+    let sensibilidades = BLOQUES
+        .iter()
+        .enumerate()
+        .map(|(i, segundos)| {
+            bootstrap_pareado(
+                &serie_base,
+                &serie_ga,
+                *segundos,
+                REMUESTRAS,
+                SEED_BOOTSTRAP + i as u64,
+            )
+        })
+        .collect::<Vec<_>>();
+    let principal = sensibilidades[1].clone();
+    let permutacion =
+        permutacion_pareada_bloques(&serie_base, &serie_ga, 60, REMUESTRAS, SEED_BOOTSTRAP + 100);
+    let estable = estabilidad_cinco_ventanas(&serie_base, &serie_ga);
+
+    json!({
+        "metodo": "moving_block_bootstrap_pareado",
+        "remuestras": REMUESTRAS,
+        "seed": SEED_BOOTSTRAP,
+        "seedCinta": SEED_CINTA,
+        "intervalo": "percentil_95",
+        "bca": "mejora_posterior",
+        "tickSegundos": 1,
+        "bloquePrincipalSegundos": 60,
+        "bloquesSensibilidadSegundos": BLOQUES,
+        "pareado": true,
+        "principal": principal,
+        "sensibilidad": sensibilidades,
+        "permutacionPareadaBloques": permutacion,
+        "correccionMultiplesModelos": {
+            "metodo": "Holm",
+            "comparaciones": 1,
+            "pValueAjustado": permutacion["pValueDosColas"],
+            "nota": "Con una sola comparacion, Holm no altera el p-value. Aplicar el ajuste al conjunto completo al agregar modelos."
+        },
+        "estabilidadVentanas": estable,
+        "advertencia": "Bootstrap temporal sobre replay sintetico; cuantifica incertidumbre interna y no demuestra rentabilidad real."
+    })
+}
+
+fn bootstrap_pareado(
+    base: &[ResultadoTickBacktest],
+    candidato: &[ResultadoTickBacktest],
+    bloque: usize,
+    remuestras: usize,
+    seed: u64,
+) -> serde_json::Value {
+    let n = base.len().min(candidato.len());
+    let bloque = bloque.clamp(1, n.max(1));
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut pnl_base = Vec::with_capacity(remuestras);
+    let mut pnl_ga = Vec::with_capacity(remuestras);
+    let mut fill_base = Vec::with_capacity(remuestras);
+    let mut fill_ga = Vec::with_capacity(remuestras);
+    let mut dd_base = Vec::with_capacity(remuestras);
+    let mut dd_ga = Vec::with_capacity(remuestras);
+    let mut delta_pnl = Vec::with_capacity(remuestras);
+    let mut delta_fill = Vec::with_capacity(remuestras);
+    let mut delta_dd = Vec::with_capacity(remuestras);
+
+    for _ in 0..remuestras {
+        let mut indices = Vec::with_capacity(n);
+        while indices.len() < n {
+            let inicio = rng.gen_range(0..=n - bloque);
+            for idx in inicio..inicio + bloque {
+                if indices.len() == n {
+                    break;
+                }
+                indices.push(idx);
+            }
+        }
+        let mb = metricas_indices(base, &indices);
+        let mg = metricas_indices(candidato, &indices);
+        pnl_base.push(mb.pnl);
+        pnl_ga.push(mg.pnl);
+        fill_base.push(mb.fill_rate);
+        fill_ga.push(mg.fill_rate);
+        dd_base.push(mb.drawdown);
+        dd_ga.push(mg.drawdown);
+        delta_pnl.push(mg.pnl - mb.pnl);
+        delta_fill.push(mg.fill_rate - mb.fill_rate);
+        // Negativo significa menor drawdown para el candidato.
+        delta_dd.push(mg.drawdown - mb.drawdown);
+    }
+    for valores in [
+        &mut pnl_base,
+        &mut pnl_ga,
+        &mut fill_base,
+        &mut fill_ga,
+        &mut dd_base,
+        &mut dd_ga,
+        &mut delta_pnl,
+        &mut delta_fill,
+        &mut delta_dd,
+    ] {
+        valores.sort_by(f64::total_cmp);
+    }
+    let ci_delta_pnl = intervalo_percentil(&delta_pnl);
+    let prob_superior = delta_pnl.iter().filter(|v| **v > 0.0).count() as f64 / remuestras as f64;
+    let deltas_tick = base
+        .iter()
+        .zip(candidato)
+        .map(|(b, g)| g.pnl_usd - b.pnl_usd)
+        .collect::<Vec<_>>();
+    let media_delta = deltas_tick.iter().sum::<f64>() / deltas_tick.len().max(1) as f64;
+    let efecto = if deltas_tick.len() > 1 {
+        media_delta / desviacion_estandar(&deltas_tick, media_delta).max(1e-12)
+    } else {
+        0.0
+    };
+
+    json!({
+        "bloqueSegundos": bloque,
+        "baseline": {
+            "pnlNetoUsd": resumen_ci(&pnl_base),
+            "fillRate": resumen_ci(&fill_base),
+            "maxDrawdownUsd": resumen_ci(&dd_base)
+        },
+        "candidato": {
+            "pnlNetoUsd": resumen_ci(&pnl_ga),
+            "fillRate": resumen_ci(&fill_ga),
+            "maxDrawdownUsd": resumen_ci(&dd_ga)
+        },
+        "deltasCandidatoMenosBaseline": {
+            "pnlNetoUsd": resumen_ci(&delta_pnl),
+            "fillRate": resumen_ci(&delta_fill),
+            "maxDrawdownUsd": resumen_ci(&delta_dd)
+        },
+        "probabilidadDeltaPnlMayorCero": prob_superior,
+        "tamanoEfecto": { "metodo": "Cohen_dz_por_tick_pareado", "valor": efecto },
+        "resultado": if ci_delta_pnl.0 <= 0.0 && ci_delta_pnl.1 >= 0.0 { "resultado inconcluso" } else if ci_delta_pnl.0 > 0.0 { "candidato superior" } else { "baseline superior" }
+    })
+}
+
+fn metricas_indices(serie: &[ResultadoTickBacktest], indices: &[usize]) -> MetricasRemuestra {
+    let mut pnl: f64 = 0.0;
+    let mut pico: f64 = 0.0;
+    let mut drawdown: f64 = 0.0;
+    let mut fills = 0_u64;
+    let mut rutas = 0_u64;
+    for &idx in indices {
+        let tick = serie[idx];
+        pnl += tick.pnl_usd;
+        pico = pico.max(pnl);
+        drawdown = drawdown.max(pico - pnl);
+        fills += tick.fills;
+        rutas += tick.rutas;
+    }
+    MetricasRemuestra {
+        pnl,
+        fill_rate: if rutas == 0 {
+            0.0
+        } else {
+            fills as f64 / rutas as f64
+        },
+        drawdown,
+    }
+}
+
+fn resumen_ci(valores_ordenados: &[f64]) -> serde_json::Value {
+    let (inferior, superior) = intervalo_percentil(valores_ordenados);
+    json!({ "mediana": percentil(valores_ordenados, 0.5), "ci95": [inferior, superior] })
+}
+
+fn intervalo_percentil(valores_ordenados: &[f64]) -> (f64, f64) {
+    (
+        percentil(valores_ordenados, 0.025),
+        percentil(valores_ordenados, 0.975),
+    )
+}
+
+fn permutacion_pareada_bloques(
+    base: &[ResultadoTickBacktest],
+    candidato: &[ResultadoTickBacktest],
+    bloque: usize,
+    remuestras: usize,
+    seed: u64,
+) -> serde_json::Value {
+    let deltas = base
+        .iter()
+        .zip(candidato)
+        .map(|(b, g)| g.pnl_usd - b.pnl_usd)
+        .collect::<Vec<_>>();
+    let sumas = deltas
+        .chunks(bloque)
+        .map(|c| c.iter().sum::<f64>())
+        .collect::<Vec<_>>();
+    let observado = sumas.iter().sum::<f64>();
+    let mut rng = StdRng::seed_from_u64(seed);
+    let extremos = (0..remuestras)
+        .filter(|_| {
+            let permutado = sumas
+                .iter()
+                .map(|v| if rng.gen_bool(0.5) { *v } else { -*v })
+                .sum::<f64>();
+            permutado.abs() >= observado.abs()
+        })
+        .count();
+    json!({
+        "metodo": "sign_flip_de_bloques_no_solapados",
+        "bloqueSegundos": bloque,
+        "remuestras": remuestras,
+        "seed": seed,
+        "estadisticoDeltaPnlUsd": observado,
+        "pValueDosColas": (extremos as f64 + 1.0) / (remuestras as f64 + 1.0)
+    })
+}
+
+fn estabilidad_cinco_ventanas(
+    base: &[ResultadoTickBacktest],
+    candidato: &[ResultadoTickBacktest],
+) -> serde_json::Value {
+    let n = base.len().min(candidato.len());
+    let resultados = (0..5)
+        .map(|i| {
+            let inicio = i * n / 5;
+            let fin = (i + 1) * n / 5;
+            candidato[inicio..fin]
+                .iter()
+                .map(|t| t.pnl_usd)
+                .sum::<f64>()
+                - base[inicio..fin].iter().map(|t| t.pnl_usd).sum::<f64>()
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "ventanas": 5,
+        "favorables": resultados.iter().filter(|v| **v > 0.0).count(),
+        "deltaPnlUsdPorVentana": resultados,
+        "criterio": "Una ventana es favorable cuando delta PnL candidato menos baseline es mayor que cero."
+    })
+}
+
 fn resumen_multisemilla(
     cfg: &MapaCostos,
     umbral_bps: f64,
@@ -3120,6 +3761,16 @@ fn simular_backtest_factor(
     seed: u64,
     slippage_mult: f64,
 ) -> ResultadoBacktest {
+    simular_backtest_con_serie(cfg, umbral_bps, max_btc, seed, slippage_mult).0
+}
+
+fn simular_backtest_con_serie(
+    cfg: &MapaCostos,
+    umbral_bps: f64,
+    max_btc: f64,
+    seed: u64,
+    slippage_mult: f64,
+) -> (ResultadoBacktest, Vec<ResultadoTickBacktest>) {
     let mut cfg = cfg.clone();
     cfg.deslizamiento_bps *= slippage_mult;
     let exchanges = [
@@ -3136,10 +3787,14 @@ fn simular_backtest_factor(
     let mut drawdown = 0.0;
     let mut suma_spread = 0.0;
     let mut utilidades = Vec::new();
+    let mut serie = Vec::with_capacity(240);
 
     // 240 ticks × 90 rutas × 24 semillas conservan una muestra amplia sin
     // convertir el endpoint interactivo del laboratorio en un trabajo largo.
     for _ in 0..240 {
+        let pnl_inicio = pnl;
+        let trades_inicio = trades;
+        let rutas_inicio = rutas;
         precio *= 1.0 + rng.gen_range(-0.0009..0.0009);
         let mut libros = Vec::new();
         for exchange in exchanges {
@@ -3209,6 +3864,11 @@ fn simular_backtest_factor(
                 }
             }
         }
+        serie.push(ResultadoTickBacktest {
+            pnl_usd: pnl - pnl_inicio,
+            fills: trades - trades_inicio,
+            rutas: rutas - rutas_inicio,
+        });
     }
     utilidades.sort_by(|a, b| a.total_cmp(b));
     let utilidad_media = if utilidades.is_empty() {
@@ -3229,7 +3889,7 @@ fn simular_backtest_factor(
         .map(|v| v.abs())
         .sum::<f64>();
 
-    ResultadoBacktest {
+    let resultado = ResultadoBacktest {
         rutas_evaluadas: rutas,
         trades_ejecutados: trades,
         pnl_usd: pnl,
@@ -3256,7 +3916,8 @@ fn simular_backtest_factor(
         } else {
             0.0
         },
-    }
+    };
+    (resultado, serie)
 }
 
 fn percentil(valores: &[f64], p: f64) -> f64 {
@@ -3337,6 +3998,22 @@ mod tests {
             Some("base" | "optimizada")
         ));
         assert_eq!(backtest["validacionMultisemilla"]["base"]["corridas"], 24);
+        assert_eq!(backtest["significanciaBootstrap"]["remuestras"], 10_000);
+        assert_eq!(
+            backtest["significanciaBootstrap"]["metodo"],
+            "moving_block_bootstrap_pareado"
+        );
+        assert_eq!(
+            backtest["significanciaBootstrap"]["sensibilidad"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert!(
+            backtest["significanciaBootstrap"]["principal"]["deltasCandidatoMenosBaseline"]
+                ["pnlNetoUsd"]["ci95"]
+                .is_array()
+        );
         assert_eq!(
             backtest["validacionFueraMuestra"]["metodo"],
             "holdout_cronologico_sin_reentrenamiento"
@@ -3353,6 +4030,19 @@ mod tests {
                 .map(Vec::len),
             Some(24)
         );
+        assert_eq!(
+            backtest["comparacionImpacto"]["modeloPredeterminado"],
+            "Book-walk"
+        );
+        assert_eq!(
+            backtest["comparacionImpacto"]["tabla"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert!(backtest["comparacionImpacto"]["respuestas"]
+            ["modeloConMenorErrorContraMarkout"]
+            .is_string());
 
         assert_eq!(lab["tipo"], "research_lab_sweep");
         assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));
@@ -3733,6 +4423,9 @@ mod tests {
             exchange_sequence: Some(1),
             integrity_status: "snapshot_seq".to_string(),
             resyncs: 0,
+            sequence_gaps: 0,
+            checksum_failures: 0,
+            invalidated_ms: 0,
             timestamp_confiable: true,
             conectado: true,
             ultimo_mensaje: String::new(),

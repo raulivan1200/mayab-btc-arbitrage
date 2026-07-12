@@ -189,6 +189,7 @@
         <button class="tab-btn" data-tab="tab-mercado">Mercado y rutas</button>
         <button class="tab-btn" data-tab="tab-riesgo">Riesgo y escenarios</button>
         <button class="tab-btn" data-tab="tab-logs">Auditoría y backtest</button>
+        <button class="tab-btn" data-tab="tab-evidence">Evidence Lab</button>
         <button class="tab-btn" data-tab="tab-galab">Optimización GA</button>
       </nav>
 
@@ -514,7 +515,7 @@
             </div>
             <span id="transferenciasCount">0 pendientes</span>
           </div>
-          <p class="panel-ayuda">Muestra el movimiento de liquidez entre wallets, simulando costos fijos y tiempos de confirmación en cadena (settlement delays).</p>
+          <p class="panel-ayuda">Máquina (s, S): solicitado → en tránsito → confirmado → disponible. El origen se debita al solicitar y el destino sólo se acredita tras confirmación; el ETA muestra fee, retraso, costo de oportunidad y capacidad restante.</p>
           <div class="tabla-scroll transfer-scroll">
             <table>
               <thead>
@@ -841,7 +842,7 @@
           </div>
           <button id="btnBacktest" class="btn-primario btn-inline btc-icon-button">Cargando…</button>
         </div>
-        <p class="panel-ayuda">Congela el campeón y lo evalúa en un holdout no visto contra estrategias fijas conservadora, balanceada y solo-spread. Si pierde, el resultado también se muestra.</p>
+        <p class="panel-ayuda">Congela el campeón y lo evalúa contra el baseline con 10,000 remuestras temporales pareadas. Usa moving-block bootstrap de 30–120 s; si el intervalo de la diferencia cruza cero, declara el resultado inconcluso.</p>
         <div class="tabla-scroll">
           <table>
             <thead>
@@ -851,7 +852,7 @@
                 <th>PnL</th>
                 <th>Win Rate</th>
                 <th>Drawdown</th>
-                <th>IC 95%</th>
+                <th>IC trade (legacy)</th>
                 <th>Profit Factor</th>
               </tr>
             </thead>
@@ -861,6 +862,24 @@
         <div id="backtestEvidencia" class="evidence-summary" aria-live="polite">
           Pulsa Ejecutar para correr la validación multisemilla reproducible.
         </div>
+        <h3>Comparación de modelos de impacto</h3>
+        <p class="panel-ayuda">Los tres modelos reciben el mismo tape y las mismas órdenes. Book-walk permanece como modelo predeterminado.</p>
+        <div class="tabla-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Modelo</th>
+                <th>P&amp;L</th>
+                <th>Fill rate</th>
+                <th>Drawdown</th>
+                <th>Impacto medio</th>
+                <th>Decisiones distintas</th>
+              </tr>
+            </thead>
+            <tbody id="impactoResultados"></tbody>
+          </table>
+        </div>
+        <div id="impactoEvidencia" class="evidence-summary" aria-live="polite">Esperando comparación pareada.</div>
       </section>
 
       <section class="panel tabla lab-panel">
@@ -894,6 +913,21 @@
         </div>
       </section>
 
+      </div>
+
+      <div class="tab-content" id="tab-evidence">
+        <section class="panel evidence-lab-panel" aria-labelledby="evidenceLabTitle">
+          <div class="panel-titulo">
+            <div>
+              <p class="ceja">Evidence Lab</p>
+              <h2 id="evidenceLabTitle">Evidencia reproducible, sin adornos</h2>
+            </div>
+            <button id="btnEvidenceReload" class="btn-primario btn-inline" type="button">Actualizar evidencia</button>
+          </div>
+          <p class="panel-ayuda">Cada bloque enlaza el JSON autoritativo. Un artefacto ausente o un resultado inconcluso se muestra como tal.</p>
+          <div id="evidenceStatus" class="evidence-summary" role="status" aria-live="polite">Cargando artefactos…</div>
+          <div id="evidenceGrid" class="evidence-lab-grid"></div>
+        </section>
       </div>
 
       <div class="tab-content" id="tab-galab">

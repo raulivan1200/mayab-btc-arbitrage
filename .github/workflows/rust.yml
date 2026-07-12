@@ -40,6 +40,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
 
+      - name: Test isolated sandbox executor
+        run: |
+          cargo test --workspace --all-targets --locked --features testnet-execution
+          ./scripts/check-testnet-safety.sh
+
       - name: Build release binary
         run: cargo build --workspace --all-targets --release --locked
 

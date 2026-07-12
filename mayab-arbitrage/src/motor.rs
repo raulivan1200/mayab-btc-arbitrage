@@ -272,6 +272,7 @@ impl Motor {
         let evento_actual = self.eventos.load(Ordering::SeqCst);
         let (cotizaciones, costos, carteras, activo, historial, enfriamiento, pesos) = {
             let mut state = self.state.write().await;
+            procesar_transferencias(&mut state, ahora);
             if evento_actual == state.ultimo_evento_analizado {
                 state.telemetria_pipeline.ciclos_sin_cambios_omitidos += 1;
                 return;
@@ -300,9 +301,18 @@ impl Motor {
                     state.costo_rebalanceo_acumulado_usd +=
                         eventos.iter().map(|e| e.costo_usd).sum::<MoneyUnits>();
                     for e in eventos.into_iter().rev() {
+                        let transferencia = crear_transferencia(&state, &e, ahora);
+                        if !state
+                            .transferencias_inventario
+                            .iter()
+                            .any(|t| t.clave_idempotencia == transferencia.clave_idempotencia)
+                        {
+                            state.transferencias_inventario.push_front(transferencia);
+                        }
                         state.rebalanceos.push_front(e);
                     }
                     state.rebalanceos.truncate(64);
+                    state.transferencias_inventario.truncate(64);
                 }
             }
             actualizar_volatilidad(&mut state, precio_ref, ahora);
@@ -1064,10 +1074,19 @@ impl Motor {
             EscenarioDemo::Rebalanceo => {
                 let precio = precio_referencia(state.cotizaciones.values());
                 let evento = state.carteras.forzar_rebalanceo_demo(precio, ahora);
+                let transferencia = crear_transferencia(&state, &evento, ahora);
                 self.persistir_rebalanceo(&evento);
                 state.rebalanceos_total += 1;
                 state.rebalanceos.push_front(evento.clone());
                 state.rebalanceos.truncate(64);
+                if !state
+                    .transferencias_inventario
+                    .iter()
+                    .any(|t| t.clave_idempotencia == transferencia.clave_idempotencia)
+                {
+                    state.transferencias_inventario.push_front(transferencia);
+                    state.transferencias_inventario.truncate(64);
+                }
                 insertar_evento_sistema(
                     &mut state,
                     "rebalanceo_forzado",
@@ -1397,6 +1416,122 @@ fn percentil_entero<T: Copy>(valores: &[T], p: f64) -> T {
     valores[indice]
 }
 
+fn crear_transferencia(
+    state: &State,
+    rebalanceo: &Rebalanceo,
+    ahora: DateTime<Utc>,
+) -> TransferenciaInventario {
+    let precio = precio_referencia(state.cotizaciones.values()).max(1.0);
+    let fee_activo = if rebalanceo.activo == "BTC" {
+        rebalanceo.costo_usd / precio
+    } else {
+        rebalanceo.costo_usd
+    };
+    let cantidad_neta = rebalanceo.cantidad.max(0.0);
+    let cantidad_bruta = cantidad_neta + fee_activo;
+    let objetivo = state
+        .carteras
+        .inicial
+        .get(&rebalanceo.hacia)
+        .map(|b| {
+            if rebalanceo.activo == "BTC" {
+                b.btc
+            } else {
+                b.usd
+            }
+        })
+        .unwrap_or(cantidad_bruta);
+    let minimo = objetivo * 0.65;
+    let banda = objetivo * 0.05;
+    let capacidad = state
+        .carteras
+        .balances
+        .get(&rebalanceo.desde)
+        .map(|b| {
+            if rebalanceo.activo == "BTC" {
+                b.btc
+            } else {
+                b.usd
+            }
+        })
+        .unwrap_or(0.0);
+    let eta_ms = state.costos.rebalance_settlement_ms.max(100);
+    let retraso = (rebalanceo.id.bytes().map(i64::from).sum::<i64>() % (eta_ms / 3).max(1)).max(0);
+    TransferenciaInventario {
+        id: format!("tx-{}", rebalanceo.id),
+        rebalanceo_id: rebalanceo.id.clone(),
+        desde: rebalanceo.desde.clone(),
+        hacia: rebalanceo.hacia.clone(),
+        activo: rebalanceo.activo.clone(),
+        cantidad_bruta,
+        cantidad_neta,
+        costo_usd: rebalanceo.costo_usd,
+        estado: "TRANSFER_REQUESTED".to_string(),
+        nivel_minimo_s: minimo,
+        objetivo_s: objetivo,
+        banda_muerta: banda,
+        fee_activo,
+        eta_ms,
+        retraso_simulado_ms: retraso,
+        timeout_en: ahora + chrono::Duration::milliseconds((eta_ms + retraso) * 3),
+        costo_oportunidad_usd: cantidad_neta
+            * if rebalanceo.activo == "BTC" {
+                precio
+            } else {
+                1.0
+            }
+            * (eta_ms + retraso) as f64
+            / 86_400_000.0
+            * 0.05,
+        capacidad_operativa_restante: capacidad,
+        intentos: 1,
+        clave_idempotencia: rebalanceo.id.clone(),
+        creada_en: ahora,
+        liquida_en: ahora + chrono::Duration::milliseconds(eta_ms + retraso),
+        confirmada_en: None,
+        fallo: None,
+        razon: rebalanceo.razon.clone(),
+    }
+}
+
+fn procesar_transferencias(state: &mut State, ahora: DateTime<Utc>) {
+    let mut movimientos: Vec<(String, String, f64)> = Vec::new();
+    for transferencia in &mut state.transferencias_inventario {
+        match transferencia.estado.as_str() {
+            "TRANSFER_REQUESTED" => transferencia.estado = "IN_TRANSIT".to_string(),
+            "IN_TRANSIT" if ahora >= transferencia.timeout_en => {
+                transferencia.estado = "FAILED".to_string();
+                transferencia.fallo = Some("timeout de confirmacion simulado".to_string());
+                movimientos.push((
+                    transferencia.desde.clone(),
+                    transferencia.activo.clone(),
+                    transferencia.cantidad_neta,
+                ));
+            }
+            "IN_TRANSIT" if ahora >= transferencia.liquida_en => {
+                transferencia.estado = "CONFIRMED".to_string();
+                transferencia.confirmada_en = Some(ahora);
+                movimientos.push((
+                    transferencia.hacia.clone(),
+                    transferencia.activo.clone(),
+                    transferencia.cantidad_neta,
+                ));
+            }
+            "CONFIRMED" => transferencia.estado = "AVAILABLE".to_string(),
+            _ => {}
+        }
+    }
+    for (exchange, activo, cantidad) in movimientos {
+        if let Some(balance) = state.carteras.balances.get_mut(&exchange) {
+            if activo == "BTC" {
+                balance.btc += cantidad;
+            } else {
+                balance.usd += cantidad;
+            }
+        }
+    }
+}
+
 impl Carteras {
     fn new(exchanges: &[String], usd_inicial: f64, btc_inicial: f64) -> Self {
         let mut balances = HashMap::new();
@@ -1509,15 +1644,12 @@ impl Carteras {
                     if let Some(src_bal) = self.balances.get_mut(&src) {
                         src_bal.usd -= amount;
                     }
-                    if let Some(dst_bal) = self.balances.get_mut(&name) {
-                        dst_bal.usd += (amount - costos.costo_rebalanceo_usd).max(0.0);
-                    }
                     eventos.push(Rebalanceo {
                         id: format!("reb-usd-{}-{}-{}", src, name, ahora.timestamp_millis()),
                         desde: src,
                         hacia: name.clone(),
                         activo: "USD".to_string(),
-                        cantidad: 0.0,
+                        cantidad: (amount - costos.costo_rebalanceo_usd).max(0.0),
                         costo_usd: costos.costo_rebalanceo_usd.min(amount),
                         razon: "USD bajo objetivo operativo".to_string(),
                         tiempo: ahora,
@@ -1545,9 +1677,6 @@ impl Carteras {
                     if amount > fee {
                         if let Some(src_bal) = self.balances.get_mut(&src) {
                             src_bal.btc -= amount;
-                        }
-                        if let Some(dst_bal) = self.balances.get_mut(&name) {
-                            dst_bal.btc += amount - fee;
                         }
                         eventos.push(Rebalanceo {
                             id: format!("reb-btc-{}-{}-{}", src, name, ahora.timestamp_millis()),
@@ -1579,9 +1708,6 @@ impl Carteras {
         let fee = 0.00005_f64.min(cantidad * 0.5);
         if let Some(src) = self.balances.get_mut(&desde) {
             src.btc = (src.btc - cantidad).max(0.0);
-        }
-        if let Some(dst) = self.balances.get_mut(&hacia) {
-            dst.btc += (cantidad - fee).max(0.0);
         }
         Rebalanceo {
             id: format!("reb-demo-{}-{}-{}", desde, hacia, ahora.timestamp_millis()),
@@ -3021,6 +3147,9 @@ mod tests {
             exchange_sequence: None,
             integrity_status: "test_snapshot".to_string(),
             resyncs: 0,
+            sequence_gaps: 0,
+            checksum_failures: 0,
+            invalidated_ms: 0,
             timestamp_confiable: true,
             conectado: true,
             ultimo_mensaje: String::new(),

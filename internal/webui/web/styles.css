@@ -929,6 +929,54 @@ button {
   }
 }
 
+.evidence-lab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.evidence-lab-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--linea);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.evidence-lab-card h3,
+.evidence-lab-card strong,
+.evidence-lab-card small,
+.evidence-lab-card code {
+  display: block;
+  margin: 0;
+}
+
+.evidence-lab-card code {
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+}
+
+.evidence-lab-card ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.evidence-lab-card a {
+  width: fit-content;
+  color: var(--texto);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 760px) {
+  .evidence-lab-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Microinteracción juguetona sólo para dispositivos con hover real. Mantenerla
    fuera de touch evita el hover "pegado" y el scroll entrecortado en móvil. */
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {

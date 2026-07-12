@@ -68,6 +68,12 @@ pub struct Cotizacion {
     pub integrity_status: String,
     #[serde(rename = "resyncs", default)]
     pub resyncs: u64,
+    #[serde(rename = "sequenceGaps", default)]
+    pub sequence_gaps: u64,
+    #[serde(rename = "checksumFailures", default)]
+    pub checksum_failures: u64,
+    #[serde(rename = "invalidatedMs", default)]
+    pub invalidated_ms: i64,
     #[serde(rename = "timestampConfiable", default)]
     pub timestamp_confiable: bool,
     pub conectado: bool,
@@ -286,10 +292,39 @@ pub struct TransferenciaInventario {
     #[serde(rename = "costoUsd")]
     pub costo_usd: MoneyUnits,
     pub estado: String,
+    #[serde(rename = "nivelMinimoS")]
+    pub nivel_minimo_s: QtyUnits,
+    #[serde(rename = "objetivoS")]
+    pub objetivo_s: QtyUnits,
+    #[serde(rename = "bandaMuerta")]
+    pub banda_muerta: QtyUnits,
+    #[serde(rename = "feeActivo")]
+    pub fee_activo: QtyUnits,
+    #[serde(rename = "etaMs")]
+    pub eta_ms: i64,
+    #[serde(rename = "retrasoSimuladoMs")]
+    pub retraso_simulado_ms: i64,
+    #[serde(rename = "timeoutEn")]
+    pub timeout_en: DateTime<Utc>,
+    #[serde(rename = "costoOportunidadUsd")]
+    pub costo_oportunidad_usd: MoneyUnits,
+    #[serde(rename = "capacidadOperativaRestante")]
+    pub capacidad_operativa_restante: QtyUnits,
+    pub intentos: u32,
+    #[serde(rename = "claveIdempotencia")]
+    pub clave_idempotencia: String,
     #[serde(rename = "creadaEn")]
     pub creada_en: DateTime<Utc>,
     #[serde(rename = "liquidaEn")]
     pub liquida_en: DateTime<Utc>,
+    #[serde(
+        rename = "confirmadaEn",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub confirmada_en: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallo: Option<String>,
     pub razon: String,
 }
 

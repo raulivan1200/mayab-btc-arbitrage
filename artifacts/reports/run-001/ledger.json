@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "runId": "run-001",
+  "initialBalances": {"a":{"btc":"1","usd":"100000"},"b":{"btc":"1","usd":"100000"}},
+  "events": [
+    {"id":"e1","sequence":1,"previousHash":"GENESIS","hash":"37ffeda84988d4be50f65c27f0a7fb55d5a10752421fa0628de77d98fa674de7","type":"fill","fill_id":"f1","exchange":"a","side":"buy","quantity_btc":"1","execution_price_usd":"50000","reference_price_usd":"49998","fee_usd":"5"},
+    {"id":"e2","sequence":2,"previousHash":"37ffeda84988d4be50f65c27f0a7fb55d5a10752421fa0628de77d98fa674de7","hash":"6bdcdd18c4c437e7df09422877a9dde8e641fc62e80522ed0aabc4cd1cfcc007","type":"fill","fill_id":"f2","exchange":"b","side":"sell","quantity_btc":"1","execution_price_usd":"50100","reference_price_usd":"50103","fee_usd":"5"},
+    {"id":"e3","sequence":3,"previousHash":"6bdcdd18c4c437e7df09422877a9dde8e641fc62e80522ed0aabc4cd1cfcc007","hash":"e1d0dcba3a3a7d3ba88bfe1746088c75025c0ca08a04365cd9a721d5a0f5f739","type":"rebalance","from_exchange":"b","to_exchange":"a","btc":"0","usd":"10000","cost_usd":"4"},
+    {"id":"e4","sequence":4,"previousHash":"e1d0dcba3a3a7d3ba88bfe1746088c75025c0ca08a04365cd9a721d5a0f5f739","hash":"2937573f28f392ac881cb8e02724c7cba82d0027675d64330f27331b28f34f90","type":"withdrawal_amortization","exchange":"a","cost_usd":"4.5769"}
+  ],
+  "finalBalances": {"a":{"btc":"2","usd":"59990.4231"},"b":{"btc":"0","usd":"140091"}},
+  "markPriceUsd":"50050",
+  "reportedNetPnlUsd":"81.4231",
+  "eventCount":4,
+  "headHash":"2937573f28f392ac881cb8e02724c7cba82d0027675d64330f27331b28f34f90"
+}

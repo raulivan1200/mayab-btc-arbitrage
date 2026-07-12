@@ -338,6 +338,7 @@ arrancar();
 cargarConfigGa();
 iniciarBacktest();
 iniciarResearchLab();
+iniciarEvidenceLab();
 iniciarPresets();
 iniciarDemo();
 
@@ -1552,7 +1553,8 @@ function renderMercado(datos) {
     art.querySelector(".exchange-meta .edad").innerHTML = `Edad del libro <strong>${numero.format(edadMs)} ms</strong>`;
     const integridad = String(c.integrityStatus || "sin validar").replaceAll("_", " ");
     const secuencia = c.exchangeSequence == null ? "seq n/d" : `seq ${numero.format(c.exchangeSequence)}`;
-    art.querySelector(".exchange-meta .fuente").textContent = `${fuente} · ${integridad} · ${secuencia}`;
+    const integridadMetricas = `gaps ${numero.format(c.sequenceGaps || 0)} · crc fail ${numero.format(c.checksumFailures || 0)} · inválido ${numero.format(c.invalidatedMs || 0)} ms`;
+    art.querySelector(".exchange-meta .fuente").textContent = `${fuente} · ${integridad} · ${secuencia} · ${integridadMetricas}`;
   });
 
   while (container.children.length > datos.cotizaciones.length) {
@@ -2081,6 +2083,62 @@ function iniciarResearchLab() {
   hacerSweep();
 }
 
+function iniciarEvidenceLab() {
+  const boton = $("btnEvidenceReload");
+  if (!boton) return;
+  boton.addEventListener("click", cargarEvidenceLab);
+}
+
+async function cargarEvidenceLab() {
+  const status = $("evidenceStatus");
+  const grid = $("evidenceGrid");
+  const boton = $("btnEvidenceReload");
+  if (!status || !grid) return;
+  boton.disabled = true;
+  status.textContent = "Consultando seis contratos de solo lectura…";
+  const endpoints = [
+    ["tapes", "/api/research/tapes"],
+    ["walk", "/api/research/walk-forward"],
+    ["impact", "/api/research/impact"],
+    ["bootstrap", "/api/research/bootstrap"],
+    ["ledger", "/api/research/ledger-audit"],
+    ["readiness", "/api/readiness/live"],
+  ];
+  try {
+    const respuestas = await Promise.all(endpoints.map(async ([clave, url]) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      return [clave, url, await res.json()];
+    }));
+    const evidencia = Object.fromEntries(respuestas.map(([clave, , data]) => [clave, data]));
+    const tape = evidencia.tapes?.tapes?.[0];
+    const wf = evidencia.walk?.gaVsBaselines || {};
+    const principal = evidencia.bootstrap?.bootstrap?.principal?.deltasCandidatoMenosBaseline || {};
+    const pnlCi = principal?.pnlNetoUsd?.ci95 || [];
+    const impacto = evidencia.impact?.comparison || {};
+    const ledger = evidencia.ledger || {};
+    const cards = [
+      ["Proveniencia y hash del tape", tape
+        ? `<strong>${escapeHtml(tape.provenance)}</strong><code>${escapeHtml(tape.sha256)}</code><small>${numero.format(tape.events || 0)} eventos · ${numero.format(tape.bytes || 0)} bytes</small>`
+        : `<strong>No disponible</strong><small>${escapeHtml(evidencia.tapes?.error || "No hay tape montado")}</small>`, "/api/research/tapes"],
+      ["Split train / calibration / holdout", `<strong>50% / 20% / 30%</strong><small>Campeón congelado: ${wf.campeonCongelado ? "sí" : "no"} · holdout no visto: ${wf.semillasHoldoutNoVistas?.length || 0} semillas</small>`, "/api/research/walk-forward"],
+      ["GA vs baselines", `<strong>${escapeHtml(wf.ganador || "sin resultado")}</strong><small>${escapeHtml(wf.lectura || "Sin lectura disponible")}</small>`, "/api/research/walk-forward"],
+      ["Comparación de impacto", `<strong>Default: ${escapeHtml(impacto.modeloPredeterminado || "—")}</strong><small>${numero.format(impacto.candidatos || 0)} candidatos pareados · menor error: ${escapeHtml(impacto.respuestas?.modeloConMenorErrorContraMarkout || "—")}</small>`, "/api/research/impact"],
+      ["Bootstrap CI", `<strong>Δ PnL IC 95%: ${pnlCi.length === 2 ? `${dinero.format(pnlCi[0])} a ${dinero.format(pnlCi[1])}` : "no disponible"}</strong><small>${numero.format(evidencia.bootstrap?.bootstrap?.remuestras || 0)} remuestras · bloque principal ${numero.format(evidencia.bootstrap?.bootstrap?.bloquePrincipalSegundos || 0)} s</small>`, "/api/research/bootstrap"],
+      ["Auditoría del ledger", `<strong>${Object.values(ledger.checks || {}).every(Boolean) ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
+      ["Limitaciones conocidas", `<strong>${escapeHtml(evidencia.readiness?.status || "estado desconocido")}</strong><ul>${(evidencia.readiness?.limitations || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`, "/api/readiness/live"],
+    ];
+    grid.innerHTML = cards.map(([titulo, contenido, url]) => `<article class="evidence-lab-card"><h3>${escapeHtml(titulo)}</h3>${contenido}<a href="${url}" target="_blank" rel="noopener">Abrir artefacto JSON</a></article>`).join("");
+    status.textContent = "6 de 6 contratos respondieron. Los resultados reflejan esta instancia.";
+  } catch (error) {
+    status.textContent = `No se pudo completar Evidence Lab: ${error.message}`;
+    grid.innerHTML = "";
+    debugError("Evidence Lab", error);
+  } finally {
+    boton.disabled = false;
+  }
+}
+
 function renderBacktest(datos) {
   const tbody = $("backtestResultados");
   if (!tbody) return;
@@ -2105,13 +2163,56 @@ function renderBacktest(datos) {
     const base = validacion.base || {};
     const optimizada = validacion.optimizada || {};
     const delta = Number(validacion.deltaPnlMedianoUsd || 0);
-    evidencia.classList.toggle("evidence-positive", delta >= 0);
     const holdout = datos?.validacionFueraMuestra || {};
+    const bootstrap = datos?.significanciaBootstrap || {};
+    const principal = bootstrap.principal || {};
+    const deltaPnl = principal?.deltasCandidatoMenosBaseline?.pnlNetoUsd || {};
+    const deltaDd = principal?.deltasCandidatoMenosBaseline?.maxDrawdownUsd || {};
+    const ciPnl = Array.isArray(deltaPnl.ci95) ? deltaPnl.ci95 : [0, 0];
+    const probabilidad = Number(principal.probabilidadDeltaPnlMayorCero || 0);
+    const estable = bootstrap.estabilidadVentanas || {};
+    const concluyente = principal.resultado !== "resultado inconcluso";
+    evidencia.classList.toggle("evidence-positive", concluyente && ciPnl[0] > 0);
     evidencia.innerHTML = `
-      <strong>${escapeHtml(holdout.gaGana ? "El campeón GA gana fuera de muestra" : "El baseline gana fuera de muestra")}</strong>
-      <span>${numero.format((holdout.semillasHoldoutNoVistas || []).length)} semillas holdout · campeón congelado · Δ GA ${dinero.format(holdout.deltaGaVsMejorBaselineMedianoUsd || 0)}</span>
+      <strong>${escapeHtml(principal.resultado || (holdout.gaGana ? "El campeón GA gana fuera de muestra" : "El baseline gana fuera de muestra"))}</strong>
+      <span>Δ P&amp;L mediano ${dinero.format(deltaPnl.mediana || 0)} · Bootstrap 95% CI [${dinero.format(ciPnl[0] || 0)}, ${dinero.format(ciPnl[1] || 0)}] · P(ΔPnL &gt; 0) ${formato(probabilidad * 100, 1)}%</span>
+      <small>Δ drawdown mediano ${dinero.format(deltaDd.mediana || 0)} · estable en ${numero.format(estable.favorables || 0)}/${numero.format(estable.ventanas || 5)} ventanas · ${numero.format(bootstrap.remuestras || 0)} remuestras pareadas, bloques de ${numero.format(bootstrap.bloquePrincipalSegundos || 0)} s.</small>
       <small>${escapeHtml(holdout.lectura || validacion.lectura || "Comparación reproducible multisemilla.")}</small>
       <small>Control: ${numero.format(base.corridas || 0)} semillas · Δ mediano previo ${dinero.format(delta)} · GA positivo en ${numero.format(optimizada.corridasPnlPositivo || 0)}/${numero.format(optimizada.corridas || 0)} corridas.</small>
+    `;
+  }
+  renderComparacionImpacto(datos?.comparacionImpacto);
+  aplicarFiltroTabla(tbody.closest("table"));
+}
+
+function renderComparacionImpacto(comparacion) {
+  const tbody = $("impactoResultados");
+  if (!tbody) return;
+  tbody.textContent = "";
+  (comparacion?.tabla || []).forEach((r) => {
+    const tr = document.createElement("tr");
+    [
+      r.modelo || "Modelo",
+      dinero.format(r.pnlUsd || 0),
+      `${formato((r.fillRate || 0) * 100, 1)}%`,
+      dinero.format(r.maxDrawdownUsd || 0),
+      `${formato(r.impactoMedioBps || 0, 2)} bps`,
+      numero.format(r.decisionesDistintas || 0),
+    ].forEach((valor, i) => {
+      const td = document.createElement("td");
+      td.textContent = valor;
+      if (i === 1) td.className = (r.pnlUsd || 0) >= 0 ? "positivo" : "negativo";
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  const evidencia = $("impactoEvidencia");
+  const respuestas = comparacion?.respuestas || {};
+  if (evidencia) {
+    evidencia.innerHTML = `
+      <strong>Default: ${escapeHtml(comparacion?.modeloPredeterminado || "Book-walk")}</strong>
+      <span>${numero.format(respuestas.bookWalkAceptaSquareRootRechaza || 0)} oportunidades acepta book-walk y rechaza square-root.</span>
+      <small>Menor error contra markout: ${escapeHtml(respuestas.modeloConMenorErrorContraMarkout || "sin datos")}. Mayor subestimación ex post: ${escapeHtml(respuestas.modeloQueMasSubestimaCostoExPost || "sin datos")}.</small>
     `;
   }
   aplicarFiltroTabla(tbody.closest("table"));
@@ -2200,10 +2301,10 @@ function renderTransferencias(datos) {
   
   const df = document.createDocumentFragment();
   transferencias.forEach((t) => {
-    if (t.estado === "PENDIENTE") pendientesCount++;
+    if (["TRANSFER_REQUESTED", "IN_TRANSIT", "CONFIRMED"].includes(t.estado)) pendientesCount++;
     const tr = document.createElement("tr");
     
-    let color = t.estado === "PENDIENTE" ? "var(--amarillo)" : "var(--verde)";
+    let color = t.estado === "FAILED" ? "var(--rojo)" : t.estado === "AVAILABLE" ? "var(--verde)" : "var(--amarillo)";
     
     tr.innerHTML = `
       <td><span style="color: ${color}; font-weight: bold; text-transform: lowercase;">${escapeHtml(t.estado)}</span></td>
@@ -2212,7 +2313,7 @@ function renderTransferencias(datos) {
       <td class="text-right">${t.activo === "BTC" ? btc.format(t.cantidadBruta) : dinero.format(t.cantidadBruta)}</td>
       <td class="text-right">${t.activo === "BTC" ? btc.format(t.cantidadNeta) : dinero.format(t.cantidadNeta)}</td>
       <td class="text-right">${dinero.format(t.costoUsd)}</td>
-      <td class="text-right"><small>${formatearHoraLocal(t.liquidaEn)}</small></td>
+      <td class="text-right" title="ETA ${numero.format(t.etaMs || 0)} ms · retraso ${numero.format(t.retrasoSimuladoMs || 0)} ms · costo oportunidad ${dinero.format(t.costoOportunidadUsd || 0)} · capacidad ${numero.format(t.capacidadOperativaRestante || 0)}"><small>${formatearHoraLocal(t.liquidaEn)}</small></td>
     `;
     df.appendChild(tr);
   });
@@ -3715,6 +3816,10 @@ document.addEventListener("DOMContentLoaded", () => {
         
         if (targetId === "tab-galab") {
           cargarAblacionGA();
+        }
+        if (targetId === "tab-evidence" && !targetContent.dataset.loaded) {
+          targetContent.dataset.loaded = "true";
+          cargarEvidenceLab();
         }
 
         // Forzar resize para que los canvas recalcule su bounding rect (ya que display: none devuelve width/height 0)

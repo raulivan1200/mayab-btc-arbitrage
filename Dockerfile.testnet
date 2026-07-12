@@ -1,0 +1,15 @@
+FROM rust:1.96-slim-bookworm AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY mayab-arbitrage ./mayab-arbitrage
+COPY mayab-cli ./mayab-cli
+RUN cargo build --locked --release --bin mayab-testnet-executor --features testnet-execution && \
+    objcopy --compress-debug-sections target/release/mayab-testnet-executor /mayab-testnet-executor
+
+FROM debian:bookworm-slim
+RUN groupadd --system nonroot && useradd --system --gid nonroot --no-create-home nonroot && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /mayab-testnet-executor /app/mayab-testnet-executor
+RUN mkdir -p /ledger /var/run/secrets/mayab && chown -R nonroot:nonroot /app /ledger /var/run/secrets/mayab
+USER nonroot:nonroot
+ENTRYPOINT ["/app/mayab-testnet-executor"]

@@ -13,7 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[cfg(feature = "timescaledb")]
 use mayab_arbitrage::persistencia_timescale;
-use mayab_arbitrage::{auditoria, config, mercado, motor, persistencia, server};
+use mayab_arbitrage::{auditoria, config, discord, mercado, motor, persistencia, server};
 
 fn abrir_dashboard_local(url: &str) {
     if !cfg!(debug_assertions)
@@ -37,6 +37,8 @@ fn abrir_dashboard_local(url: &str) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Facilita desarrollo local; en Cloud Run las variables se inyectan en el entorno.
+    let _ = dotenvy::dotenv();
 
     let default_filter = if cfg!(debug_assertions) {
         "info"
@@ -110,6 +112,11 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let discord_config = discord::ConfigDiscord::from_env();
+    if discord_config.habilitado() {
+        tracing::info!("endpoint de Discord Interactions habilitado");
+        tokio::spawn(discord::registrar_comandos(discord_config));
+    }
     let app = server::router(motor, cfg.token_admin.clone());
     let addr: SocketAddr = format!("0.0.0.0:{}", cfg.port)
         .parse()
