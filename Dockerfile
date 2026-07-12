@@ -7,8 +7,8 @@ WORKDIR /build
 # Cache dependencies: copy manifests first
 COPY Cargo.toml Cargo.lock ./
 COPY mayab-arbitrage/Cargo.toml mayab-arbitrage/Cargo.toml
+COPY mayab-arbitrage/benches ./mayab-arbitrage/benches
 COPY mayab-cli/Cargo.toml mayab-cli/Cargo.toml
-COPY mayab-arbitrage/benches mayab-arbitrage/benches
 RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
     echo '' > mayab-arbitrage/src/lib.rs && \
     echo 'fn main() {}' > mayab-cli/src/main.rs && \
