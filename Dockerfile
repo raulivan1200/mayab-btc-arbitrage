@@ -11,7 +11,7 @@ COPY mayab-cli/Cargo.toml mayab-cli/Cargo.toml
 RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
     echo '' > mayab-arbitrage/src/lib.rs && \
     echo 'fn main() {}' > mayab-cli/src/main.rs && \
-    cargo build --release 2>/dev/null; \
+    cargo build --release; \
     rm -rf mayab-arbitrage/src mayab-cli/src \
            target/release/deps/mayab_arbitrage-* \
            target/release/deps/libmayab_arbitrage-* \

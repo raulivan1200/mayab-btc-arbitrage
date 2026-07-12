@@ -10,7 +10,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -21,8 +21,7 @@ use axum::{
     },
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::Next,
-    response::{IntoResponse, Response},
-    routing::{get, post},
+    response::{Html, IntoResponse, Response},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -30,8 +29,10 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
-    compression::CompressionLayer, services::ServeDir, set_header::SetResponseHeaderLayer,
+    compression::CompressionLayer, limit::RequestBodyLimitLayer, services::ServeDir,
+    set_header::SetResponseHeaderLayer, timeout::TimeoutLayer,
 };
 
 use crate::{
@@ -44,12 +45,18 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct EstadoApp {
+pub(crate) struct EstadoApp {
     motor: Arc<Motor>,
     token_admin: Option<String>,
     ws_tx: tokio::sync::broadcast::Sender<String>,
     metricas: Metricas,
     discord: ConfigDiscord,
+    rate_limiter: Arc<RateLimiter>,
+}
+
+#[derive(Default)]
+struct RateLimiter {
+    buckets: tokio::sync::Mutex<HashMap<String, (Instant, u32)>>,
 }
 
 /// Construye el router Axum completo del binario.
@@ -63,8 +70,12 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         ws_tx: ws_tx.clone(),
         metricas: metricas.clone(),
         discord,
+        rate_limiter: Arc::new(RateLimiter::default()),
     };
+    let origin_policy = crate::http::origin::OriginPolicy::new();
+    let cors = crate::http::origin::cors_layer(&origin_policy);
 
+    let metricas_ws = metricas.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(450));
         loop {
@@ -72,71 +83,42 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
             if ws_tx.receiver_count() == 0 {
                 continue;
             }
+            let inicio_snapshot = Metricas::ahora();
             let mut estado = motor.estado().await;
             compactar_estado_ws(&mut estado);
+            metricas_ws.registrar_etapa("snapshot", inicio_snapshot.elapsed());
+            let inicio_serializacion = Metricas::ahora();
             if let Ok(payload) = serde_json::to_string(&estado) {
+                metricas_ws.registrar_etapa("serializacion", inicio_serializacion.elapsed());
+                let inicio_broadcast = Metricas::ahora();
                 let _ = ws_tx.send(payload);
+                metricas_ws.registrar_etapa("ws_broadcast", inicio_broadcast.elapsed());
             }
         }
     });
     let archivos_estaticos =
         ServeDir::new("internal/webui/web").append_index_html_on_directories(true);
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/api/healthz", get(healthz))
-        .route("/api/estado", get(estado))
-        .route("/api/jurado", get(jurado))
-        .route("/api/preflight", get(preflight))
-        .route("/api/resumen-llm", get(resumen_llm))
-        .route("/api/discord/interactions", post(discord_interactions))
-        .route("/api/mcp", get(mcp_manifest))
-        .route("/api/mcp/manifest", get(mcp_manifest))
-        .route("/api/mcp/call", post(mcp_call))
-        .route("/api/paquete-evaluacion", get(paquete_evaluacion))
-        .route("/api/latencias", get(latencias))
-        .route("/api/backtest", get(backtest))
-        .route("/api/research/tapes", get(research_tapes))
-        .route("/api/research/walk-forward", get(research_walk_forward))
-        .route("/api/research/impact", get(research_impact))
-        .route("/api/research/bootstrap", get(research_bootstrap))
-        .route("/api/research/microstructure", get(research_microstructure))
-        .route("/api/research/ou", get(research_ou))
-        .route("/api/research/ledger-audit", get(research_ledger_audit))
-        .route("/api/readiness/live", get(readiness_live))
-        .route("/api/lab/sweep", get(lab_sweep))
-        .route("/api/export/json", get(exportar_json))
-        .route("/api/export/csv", get(exportar_csv))
-        .route("/api/export/evidence", get(exportar_evidence))
-        .route("/metrics", get(metrics))
-        .route("/api/metrics", get(metrics))
-        .route("/api/config", post(actualizar_config_http))
-        .route("/api/demo", post(demo_escenario))
-        .route("/api/demo/caos", post(demo_caos_http))
-        .route("/api/demo/final", post(demo_final_http))
-        .route("/api/demo/reset", post(reset_demo_http))
-        .route("/api/demo/capturar/iniciar", post(captura_iniciar_http))
-        .route("/api/demo/capturar/detener", post(captura_detener_http))
-        .route("/api/demo/capturar/estado", get(captura_estado_http))
-        .route("/api/demo/capturar/replay", post(captura_replay_http))
-        .route("/api/ga/estado", get(ga_estado))
-        .route("/api/ga/sensibilidad", get(ga_sensibilidad))
-        .route("/api/ga/ablacion", get(ga_sensibilidad))
-        .route("/api/ga/config", get(obtener_config_ga).post(actualizar_config_ga_http))
-        .route("/api/ga/evolucionar", post(evolucionar_ga_http))
-        .route("/api/exchanges", post(alternar_exchange_http))
-        .route("/api/rebalance/rules", post(actualizar_reglas_rebalanceo_http))
-        .route("/api/adverso", post(trigger_adverso_http))
-        .route("/tiempo-real", get(tiempo_real))
+    crate::http::router::api_routes()
+        .nest_service("/screenshots", ServeDir::new("screenshots"))
         .fallback_service(archivos_estaticos)
+        .layer(cors)
+        .layer(axum::middleware::from_fn_with_state(
+            origin_policy,
+            crate::http::origin::origin_middleware,
+        ))
+        .layer(axum::middleware::from_fn(cache_headers))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(axum::middleware::from_fn_with_state(
             metricas,
             contar_peticiones,
         ))
         .layer(CompressionLayer::new())
-        .layer(SetResponseHeaderLayer::overriding(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-cache, must-revalidate"),
+        .layer(RequestBodyLimitLayer::new(env_usize("HTTP_MAX_BODY_BYTES", 1_048_576)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(env_u64("HTTP_TIMEOUT_SECS", 30)),
         ))
+        .layer(ConcurrencyLimitLayer::new(env_usize("HTTP_MAX_CONCURRENCY", 128)))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
@@ -162,12 +144,156 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .with_state(state)
 }
 
-async fn healthz() -> Json<serde_json::Value> {
+async fn rate_limit(State(app): State<EstadoApp>, req: Request, next: Next) -> Response {
+    if matches!(req.uri().path(), "/healthz" | "/readyz") {
+        return next.run(req).await;
+    }
+    let mutating = !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
+    let limit = if mutating {
+        env_u32("HTTP_MUTATION_RPM", 30)
+    } else {
+        env_u32("HTTP_READ_RPM", 300)
+    };
+    let client = if env_bool("TRUST_PROXY_HEADERS", false) {
+        req.headers()
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("proxy-unknown")
+    } else {
+        "direct"
+    };
+    let key = format!("{}:{}", client, if mutating { "write" } else { "read" });
+    let now = Instant::now();
+    let mut buckets = app.rate_limiter.buckets.lock().await;
+    buckets.retain(|_, (started, _)| now.duration_since(*started) < Duration::from_secs(120));
+    let bucket = buckets.entry(key).or_insert((now, 0));
+    if now.duration_since(bucket.0) >= Duration::from_secs(60) {
+        *bucket = (now, 0);
+    }
+    if bucket.1 >= limit {
+        return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "60")], Json(json!({
+            "ok": false,
+            "error": { "code": "rate_limited", "message": "demasiadas peticiones; intente de nuevo más tarde" }
+        }))).into_response();
+    }
+    bucket.1 += 1;
+    drop(buckets);
+    next.run(req).await
+}
+
+pub(crate) async fn healthz() -> Json<serde_json::Value> {
     Json(json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "name": env!("CARGO_PKG_NAME"),
     }))
+}
+
+pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
+    let estado = match tokio::time::timeout(Duration::from_secs(2), app.motor.estado()).await {
+        Ok(estado) => estado,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ready": false,
+                    "checks": [{"name": "motor_snapshot", "ok": false, "reason": "motor state lock timed out"}]
+                })),
+            )
+                .into_response();
+        }
+    };
+    let mut checks = Vec::new();
+    let mut ready = true;
+
+    // Check persistence
+    let persistencia_ok = estado
+        .persistencia
+        .as_ref()
+        .map(|p| p.activa)
+        .unwrap_or(false);
+    let persistencia_error = estado.persistencia.as_ref().and_then(|p| p.error.clone());
+    checks.push(json!({
+        "name": "persistence",
+        "ok": persistencia_ok,
+        "reason": if persistencia_ok { "SQLite active" } else { "persistence not available" },
+        "detail": persistencia_error
+    }));
+    if !persistencia_ok {
+        ready = false;
+    }
+
+    // Check motor initialized (has at least one quote)
+    let quotes_ok = !estado.cotizaciones.is_empty();
+    checks.push(json!({
+        "name": "motor_initialized",
+        "ok": quotes_ok,
+        "reason": if quotes_ok { "motor has quotes" } else { "no quotes yet" }
+    }));
+    if !quotes_ok {
+        ready = false;
+    }
+
+    // Check minimum fresh feeds (at least 2 exchanges with fresh snapshots)
+    let stale_ms = estado.configuracion.stale_ms;
+    let fresh_exchanges: std::collections::HashSet<_> = estado
+        .cotizaciones
+        .iter()
+        .filter(|c| {
+            let age_ms = (estado.generado_en - c.recibida_en)
+                .num_milliseconds()
+                .max(0);
+            age_ms <= stale_ms && c.bid > 0.0 && c.ask > c.bid
+        })
+        .map(|c| c.exchange.as_str())
+        .collect();
+    let fresh_feeds_ok = fresh_exchanges.len() >= 2;
+    checks.push(json!({
+        "name": "fresh_feeds",
+        "ok": fresh_feeds_ok,
+        "reason": format!("{} fresh exchanges (need >= 2)", fresh_exchanges.len()),
+        "exchanges": fresh_exchanges.into_iter().collect::<Vec<_>>()
+    }));
+    if !fresh_feeds_ok {
+        ready = false;
+    }
+
+    // Check degraded state
+    let degraded = estado.metricas.circuit_breaker_activo
+        || estado.metricas.estado_riesgo == "critico"
+        || estado.metricas.ejecucion_en_curso;
+    checks.push(json!({
+        "name": "degraded_state",
+        "ok": !degraded,
+        "reason": if degraded { "system in degraded state" } else { "system healthy" },
+        "circuit_breaker": estado.metricas.circuit_breaker_activo,
+        "risk_state": estado.metricas.estado_riesgo,
+        "execution_in_progress": estado.metricas.ejecucion_en_curso
+    }));
+    if degraded {
+        ready = false;
+    }
+
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(json!({
+            "ready": ready,
+            "checks": checks,
+            "timestamp": estado.generado_en
+        })),
+    )
+        .into_response()
 }
 
 async fn contar_peticiones(State(metricas): State<Metricas>, req: Request, next: Next) -> Response {
@@ -184,9 +310,17 @@ async fn contar_peticiones(State(metricas): State<Metricas>, req: Request, next:
     resp
 }
 
-async fn metrics(State(app): State<EstadoApp>) -> Response {
+pub(crate) async fn metrics(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if is_production() && !env_bool("METRICS_PUBLIC", false) {
+        if let Some(response) = autorizar_mutacion(&app, &headers) {
+            return response;
+        }
+    }
     let estado = app.motor.estado().await;
+    let inicio = Metricas::ahora();
     let texto = app.metricas.render(&estado);
+    app.metricas
+        .registrar_etapa("metrics_render", inicio.elapsed());
     (
         [(
             header::CONTENT_TYPE,
@@ -197,26 +331,95 @@ async fn metrics(State(app): State<EstadoApp>) -> Response {
         .into_response()
 }
 
-async fn estado(State(app): State<EstadoApp>) -> Json<crate::types::EstadoPublico> {
-    Json(app.motor.estado().await)
+pub(crate) async fn estado(State(app): State<EstadoApp>) -> Json<crate::types::EstadoPublico> {
+    let inicio = Metricas::ahora();
+    let estado = app.motor.estado().await;
+    app.metricas.registrar_etapa("snapshot", inicio.elapsed());
+    Json(estado)
 }
 
-async fn preflight(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn operator() -> Html<&'static str> {
+    Html(include_str!("../../internal/webui/web/operator.html"))
+}
+
+async fn cache_headers(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut response = next.run(req).await;
+    let value = if path.starts_with("/api/")
+        || matches!(
+            path.as_str(),
+            "/healthz" | "/readyz" | "/metrics" | "/tiempo-real"
+        ) {
+        HeaderValue::from_static("no-store")
+    } else if path == "/" || path.ends_with(".html") {
+        HeaderValue::from_static("no-cache, must-revalidate")
+    } else {
+        HeaderValue::from_static("public, max-age=3600, stale-while-revalidate=86400")
+    };
+    response.headers_mut().insert(header::CACHE_CONTROL, value);
+    response
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
+fn is_production() -> bool {
+    ["MAYAB_ENV", "ENTORNO"].iter().any(|key| {
+        std::env::var(key)
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("production"))
+    })
+}
+
+pub(crate) async fn preflight(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_preflight(&estado))
 }
 
-async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_modo_jurado(&estado))
 }
 
-async fn resumen_llm(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn resumen_llm(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_resumen_llm(&estado))
 }
 
-async fn discord_interactions(
+pub(crate) async fn discord_interactions(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -224,11 +427,11 @@ async fn discord_interactions(
     discord::responder_interaccion(app.motor.clone(), &app.discord, &headers, body).await
 }
 
-async fn mcp_manifest() -> Json<serde_json::Value> {
+pub(crate) async fn mcp_manifest() -> Json<serde_json::Value> {
     Json(construir_mcp_manifest())
 }
 
-async fn mcp_call(
+pub(crate) async fn mcp_call(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudMcp>, JsonRejection>,
@@ -374,12 +577,12 @@ async fn mcp_call(
     Json(respuesta).into_response()
 }
 
-async fn paquete_evaluacion(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn paquete_evaluacion(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_paquete_evaluacion(&estado))
 }
 
-async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(json!({
         "generadoEn": estado.generado_en,
@@ -392,16 +595,16 @@ async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     }))
 }
 
-async fn backtest(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn backtest(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(backtest_reproducible(&estado))
 }
 
-async fn research_tapes() -> Json<serde_json::Value> {
+pub(crate) async fn research_tapes() -> Json<serde_json::Value> {
     Json(construir_research_tapes())
 }
 
-async fn research_walk_forward(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn research_walk_forward(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let reporte = backtest_reproducible(&app.motor.estado().await);
     Json(json!({
         "schemaVersion": 1,
@@ -421,7 +624,7 @@ async fn research_walk_forward(State(app): State<EstadoApp>) -> Json<serde_json:
     }))
 }
 
-async fn research_impact(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn research_impact(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(json!({
         "schemaVersion": 1,
@@ -431,7 +634,7 @@ async fn research_impact(State(app): State<EstadoApp>) -> Json<serde_json::Value
     }))
 }
 
-async fn research_bootstrap(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn research_bootstrap(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let reporte = backtest_reproducible(&app.motor.estado().await);
     Json(json!({
         "schemaVersion": 1,
@@ -442,7 +645,7 @@ async fn research_bootstrap(State(app): State<EstadoApp>) -> Json<serde_json::Va
     }))
 }
 
-async fn research_microstructure() -> Json<serde_json::Value> {
+pub(crate) async fn research_microstructure() -> Json<serde_json::Value> {
     let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
     Json(json!({
         "schemaVersion": 1,
@@ -456,7 +659,7 @@ async fn research_microstructure() -> Json<serde_json::Value> {
     }))
 }
 
-async fn research_ou() -> Json<serde_json::Value> {
+pub(crate) async fn research_ou() -> Json<serde_json::Value> {
     let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
     Json(json!({
         "schemaVersion": 1,
@@ -465,7 +668,7 @@ async fn research_ou() -> Json<serde_json::Value> {
     }))
 }
 
-async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     let ids = estado
         .operaciones
@@ -502,7 +705,7 @@ async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<serde_json:
     }))
 }
 
-async fn readiness_live(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn readiness_live(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(json!({
         "schemaVersion": 1,
@@ -554,12 +757,12 @@ fn construir_research_tapes() -> serde_json::Value {
     }
 }
 
-async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(lab_sweep_reproducible(&estado))
 }
 
-async fn exportar_json(State(app): State<EstadoApp>) -> Response {
+pub(crate) async fn exportar_json(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
     let payload = json!({
         "generadoEn": estado.generado_en,
@@ -591,7 +794,7 @@ async fn exportar_json(State(app): State<EstadoApp>) -> Response {
         .into_response()
 }
 
-async fn exportar_evidence(State(app): State<EstadoApp>) -> Response {
+pub(crate) async fn exportar_evidence(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
     let ablacion = app.motor.ga_ablacion().await;
 
@@ -687,7 +890,7 @@ async fn exportar_evidence(State(app): State<EstadoApp>) -> Response {
         .into_response()
 }
 
-async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
+pub(crate) async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
 
     let header = "tipo,tiempo,ruta,detalle,cantidad_btc,utilidad_usd,diferencial_neto_bps,score,costo_usd,decision_code,decision_reason\n".to_string();
@@ -792,7 +995,7 @@ async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ParcheConfig {
+pub(crate) struct ParcheConfig {
     #[serde(rename = "maxOperacionBtc")]
     max_operacion_btc: Option<f64>,
     #[serde(rename = "minDiferencialNetoBps")]
@@ -844,13 +1047,13 @@ struct ParcheConfig {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolicitudDemo {
+pub(crate) struct SolicitudDemo {
     escenario: EscenarioDemoApi,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum EscenarioDemoApi {
+pub(crate) enum EscenarioDemoApi {
     FalloOrden,
     FalloSegundaPierna,
     MercadoMovido,
@@ -878,7 +1081,7 @@ impl From<EscenarioDemoApi> for EscenarioDemo {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolicitudEvolucionGa {
+pub(crate) struct SolicitudEvolucionGa {
     #[serde(rename = "usarReplaySiVacio", default = "default_true")]
     usar_replay_si_vacio: bool,
     muestras: Option<usize>,
@@ -886,13 +1089,13 @@ struct SolicitudEvolucionGa {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolicitudMcp {
+pub(crate) struct SolicitudMcp {
     tool: String,
     #[serde(default)]
     arguments: Option<serde_json::Value>,
 }
 
-async fn actualizar_config_http(
+pub(crate) async fn actualizar_config_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<ParcheConfig>, JsonRejection>,
@@ -912,7 +1115,7 @@ async fn actualizar_config_http(
     Json(json!({ "ok": true })).into_response()
 }
 
-async fn demo_escenario(
+pub(crate) async fn demo_escenario(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudDemo>, JsonRejection>,
@@ -932,7 +1135,7 @@ async fn demo_escenario(
     .into_response()
 }
 
-async fn trigger_adverso_http(
+pub(crate) async fn trigger_adverso_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudDemo>, JsonRejection>,
@@ -954,11 +1157,11 @@ async fn trigger_adverso_http(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolicitudReglasRebalanceo {
+pub(crate) struct SolicitudReglasRebalanceo {
     reglas: Vec<crate::types::ReglaRebalanceo>,
 }
 
-async fn actualizar_reglas_rebalanceo_http(
+pub(crate) async fn actualizar_reglas_rebalanceo_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudReglasRebalanceo>, JsonRejection>,
@@ -974,7 +1177,7 @@ async fn actualizar_reglas_rebalanceo_http(
     Json(json!({ "ok": true })).into_response()
 }
 
-async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1032,7 +1235,7 @@ async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Re
     .into_response()
 }
 
-async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1128,7 +1331,7 @@ async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Res
     .into_response()
 }
 
-async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1145,7 +1348,10 @@ async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Re
     .into_response()
 }
 
-async fn captura_iniciar_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn captura_iniciar_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1153,7 +1359,10 @@ async fn captura_iniciar_http(State(app): State<EstadoApp>, headers: HeaderMap) 
     Json(json!({"ok": true, "modo": "captura_iniciada"})).into_response()
 }
 
-async fn captura_detener_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn captura_detener_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1161,11 +1370,14 @@ async fn captura_detener_http(State(app): State<EstadoApp>, headers: HeaderMap) 
     Json(json!({"ok": true, "modo": "captura_detenida", "snapshots": count})).into_response()
 }
 
-async fn captura_estado_http(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn captura_estado_http(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(app.motor.captura_estado().await)
 }
 
-async fn captura_replay_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+pub(crate) async fn captura_replay_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+) -> Response {
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
@@ -1173,19 +1385,19 @@ async fn captura_replay_http(State(app): State<EstadoApp>, headers: HeaderMap) -
     Json(resultado).into_response()
 }
 
-async fn ga_estado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn ga_estado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(app.motor.ga_estado().await)
 }
 
-async fn ga_sensibilidad(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn ga_sensibilidad(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(app.motor.ga_ablacion().await)
 }
 
-async fn obtener_config_ga(State(app): State<EstadoApp>) -> Json<ConfigGa> {
+pub(crate) async fn obtener_config_ga(State(app): State<EstadoApp>) -> Json<ConfigGa> {
     Json(app.motor.ga_config().await)
 }
 
-async fn actualizar_config_ga_http(
+pub(crate) async fn actualizar_config_ga_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<ConfigGa>, JsonRejection>,
@@ -1204,7 +1416,7 @@ async fn actualizar_config_ga_http(
     Json(json!({ "ok": true })).into_response()
 }
 
-async fn evolucionar_ga_http(
+pub(crate) async fn evolucionar_ga_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudEvolucionGa>, JsonRejection>,
@@ -1229,12 +1441,34 @@ async fn evolucionar_ga_http(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolicitudExchange {
+pub(crate) struct SolicitudExchange {
     exchange: String,
     activo: bool,
 }
 
-async fn alternar_exchange_http(
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SolicitudKillSwitch {
+    activo: bool,
+}
+
+pub(crate) async fn kill_switch_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    payload: Result<Json<SolicitudKillSwitch>, JsonRejection>,
+) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(err) => return rechazo_json(err).into_response(),
+    };
+    app.motor.set_kill_switch(payload.activo).await;
+    Json(json!({ "ok": true, "activo": payload.activo, "simulacion": true })).into_response()
+}
+
+pub(crate) async fn alternar_exchange_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
     payload: Result<Json<SolicitudExchange>, JsonRejection>,
@@ -1259,6 +1493,17 @@ async fn alternar_exchange_http(
 
 fn autorizar_mutacion(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> {
     let Some(token) = &app.token_admin else {
+        // Fail-closed in production: if ENTORNO=production and no token, reject
+        let entorno = std::env::var("ENTORNO").unwrap_or_else(|_| "development".to_string());
+        if entorno == "production" {
+            return Some(
+                ErrorApi::unauthorized(
+                    "token_admin_requerido",
+                    "ADMIN_TOKEN es requerido en entorno production",
+                )
+                .into_response(),
+            );
+        }
         return None;
     };
     let bearer = headers
@@ -1266,8 +1511,17 @@ fn autorizar_mutacion(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> 
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let header_token = headers.get("x-admin-token").and_then(|v| v.to_str().ok());
-    if bearer == Some(token.as_str()) || header_token == Some(token.as_str()) {
-        None
+    let provided = bearer.or(header_token);
+    if let Some(provided) = provided {
+        // Timing-safe comparison
+        if subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), token.as_bytes()).into() {
+            None
+        } else {
+            Some(
+                ErrorApi::forbidden("token_admin_invalido", "token de admin inválido")
+                    .into_response(),
+            )
+        }
     } else {
         Some(
             ErrorApi::unauthorized("token_admin_requerido", "token de admin requerido")
@@ -1276,7 +1530,7 @@ fn autorizar_mutacion(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> 
     }
 }
 
-async fn tiempo_real(State(app): State<EstadoApp>, ws: WebSocketUpgrade) -> Response {
+pub(crate) async fn tiempo_real(State(app): State<EstadoApp>, ws: WebSocketUpgrade) -> Response {
     let rx = app.ws_tx.subscribe();
     ws.on_upgrade(move |socket| websocket_loop(socket, rx))
 }
@@ -1336,6 +1590,14 @@ impl ErrorApi {
     fn unauthorized(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             code,
             message: message.into(),
         }
@@ -4492,6 +4754,12 @@ mod tests {
                 rebalanceos: 1,
                 db_bytes: 4096,
                 error: None,
+                storage_mode: "sqlite_ephemeral".to_string(),
+                storage_status: "ephemeral".to_string(),
+                storage_persistent: false,
+                queue_capacity: 2048,
+                queue_pending: 0,
+                queue_dropped: 0,
             }),
             exchanges_activos,
             pares_activos: vec!["BTC/USD".to_string()],

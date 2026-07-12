@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased] - Fase Final
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning for tagged releases.
+
+## [Unreleased]
+
+### Added
+- Prometheus histograms and counters for bounded pipeline stages and HTTP latency.
+- Read-only `/operator` console backed by live engine state.
+- Architecture, security, exchange-extension and operations documentation.
+- Community health files and multi-platform release automation.
+- Open Graph and social preview metadata using repository screenshots.
+
+## [0.1.0] - 2026-07-12
 
 ### Added
 - **Modo Jurado (Readiness)**: Nuevo panel en el frontend con 5 tarjetas interactivas (Parametrización, Robustez, Wallets, UI/UX, Documentación) indicando el cumplimiento de la rúbrica de evaluación de manera inmediata.

@@ -528,7 +528,7 @@ pub struct Metricas {
 }
 
 /// Configuración de costos, riesgo y parámetros operativos.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MapaCostos {
     #[serde(rename = "maxOperacionBtc")]
     pub max_operacion_btc: QtyUnits,
@@ -650,11 +650,24 @@ pub struct EstadoPersistencia {
     pub db_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(rename = "storageMode")]
+    pub storage_mode: String,
+    #[serde(rename = "storageStatus")]
+    pub storage_status: String,
+    #[serde(rename = "storagePersistent")]
+    pub storage_persistent: bool,
+    #[serde(rename = "queueCapacity", default)]
+    pub queue_capacity: usize,
+    #[serde(rename = "queuePending", default)]
+    pub queue_pending: usize,
+    #[serde(rename = "queueDropped", default)]
+    pub queue_dropped: u64,
 }
 
 impl EstadoPersistencia {
     #[allow(dead_code)]
     pub fn inactiva(ruta: &str) -> Self {
+        let is_temp = ruta.starts_with("/tmp/") || ruta.starts_with("/var/folders/");
         Self {
             activa: false,
             backend: "timescaledb".to_string(),
@@ -666,6 +679,12 @@ impl EstadoPersistencia {
             rebalanceos: 0,
             db_bytes: 0,
             error: Some("backend no disponible".to_string()),
+            storage_mode: "timescaledb".to_string(),
+            storage_status: if is_temp { "ephemeral" } else { "persistent" }.to_string(),
+            storage_persistent: !is_temp,
+            queue_capacity: 0,
+            queue_pending: 0,
+            queue_dropped: 0,
         }
     }
 }

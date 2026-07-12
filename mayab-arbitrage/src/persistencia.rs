@@ -78,6 +78,15 @@ impl Persistencia {
     }
 
     pub fn estado(&self) -> EstadoPersistencia {
+        let storage_mode = std::env::var("STORAGE_MODE")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "sqlite_ephemeral".to_string());
+        let storage_persistent = matches!(
+            storage_mode.as_str(),
+            "sqlite_persistent" | "volume" | "timescaledb"
+        );
         EstadoPersistencia {
             activa: true,
             backend: "sqlite".to_string(),
@@ -89,6 +98,17 @@ impl Persistencia {
             rebalanceos: self.rebalanceos.load(Ordering::Relaxed),
             db_bytes: self.db_bytes.load(Ordering::Relaxed),
             error: None,
+            storage_mode,
+            storage_status: if storage_persistent {
+                "persistent"
+            } else {
+                "ephemeral"
+            }
+            .to_string(),
+            storage_persistent,
+            queue_capacity: 0,
+            queue_pending: 0,
+            queue_dropped: 0,
         }
     }
 
@@ -233,60 +253,66 @@ impl Persistencia {
     }
 
     pub fn total_pnl(&self) -> f64 {
-        self.conn()
-            .ok()
-            .and_then(|conn| {
-                conn.query_row(
-                    "SELECT COALESCE(SUM(CAST(utilidad_usd AS REAL)), 0) FROM operaciones",
-                    [],
-                    |row| row.get(0),
-                )
-                .ok()
-            })
-            .unwrap_or(0.0)
+        self.try_total_pnl().unwrap_or_else(|error| {
+            tracing::error!(%error, "no se pudo consultar el P&L persistido");
+            0.0
+        })
+    }
+
+    pub fn try_total_pnl(&self) -> anyhow::Result<f64> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COALESCE(SUM(CAST(utilidad_usd AS REAL)), 0) FROM operaciones",
+            [],
+            |row| row.get(0),
+        )
+        .context("no se pudo sumar el P&L persistido")
     }
 
     pub fn win_rate(&self) -> f64 {
-        self.conn()
-            .ok()
-            .map(|conn| {
-                let total: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM operaciones", [], |row| row.get(0))
-                    .unwrap_or(0);
-                if total == 0 {
-                    return 0.0;
-                }
-                let ganadoras: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM operaciones WHERE CAST(utilidad_usd AS REAL) > 0",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                ganadoras as f64 / total as f64
-            })
-            .unwrap_or(0.0)
+        self.try_win_rate().unwrap_or_else(|error| {
+            tracing::error!(%error, "no se pudo consultar el win rate persistido");
+            0.0
+        })
+    }
+
+    pub fn try_win_rate(&self) -> anyhow::Result<f64> {
+        let conn = self.conn()?;
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM operaciones", [], |row| row.get(0))
+            .context("no se pudo contar operaciones")?;
+        if total == 0 {
+            return Ok(0.0);
+        }
+        let ganadoras: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM operaciones WHERE CAST(utilidad_usd AS REAL) > 0",
+                [],
+                |row| row.get(0),
+            )
+            .context("no se pudo contar operaciones ganadoras")?;
+        Ok(ganadoras as f64 / total as f64)
     }
 
     pub fn ultimas_operaciones(&self, limite: usize) -> Vec<Operacion> {
-        self.conn().ok().map_or_else(Vec::new, |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT payload_json FROM operaciones \
-                     ORDER BY tiempo DESC LIMIT ?1",
-                )
-                .unwrap();
-            stmt.query_map([limite as i64], |row| {
-                let json: String = row.get(0)?;
-                serde_json::from_str(&json)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        self.try_ultimas_operaciones(limite)
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, "no se pudieron consultar operaciones persistidas");
+                Vec::new()
             })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|r| r.ok())
-            .collect()
-        })
+    }
+
+    pub fn try_ultimas_operaciones(&self, limite: usize) -> anyhow::Result<Vec<Operacion>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT payload_json FROM operaciones ORDER BY tiempo DESC LIMIT ?1")?;
+        let rows = stmt.query_map([limite.min(i64::MAX as usize) as i64], |row| {
+            let json: String = row.get(0)?;
+            serde_json::from_str(&json)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("una operación persistida contiene JSON inválido")
     }
 
     pub fn resumen_agregado(&self) -> serde_json::Value {

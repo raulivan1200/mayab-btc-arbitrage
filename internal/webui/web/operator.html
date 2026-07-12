@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Mayab · Consola operativa</title>
+  <link rel="stylesheet" href="/operator.css">
+</head>
+<body>
+  <header><div><p class="eyebrow">MAYAB / OPERATIONS</p><h1>Consola operativa</h1></div><a href="/">Volver al dashboard</a></header>
+  <main>
+    <section id="banner" class="banner">Conectando con el motor…</section>
+    <section class="grid" aria-label="Indicadores operativos">
+      <article><span>P&amp;L simulado</span><strong id="pnl">—</strong></article>
+      <article><span>Operaciones</span><strong id="operations">—</strong></article>
+      <article><span>Feeds conectados</span><strong id="feeds">—</strong></article>
+      <article><span>Latencia media</span><strong id="latency">—</strong></article>
+      <article><span>Oportunidades</span><strong id="opportunities">—</strong></article>
+      <article><span>GA</span><strong id="ga">—</strong></article>
+    </section>
+    <section class="panel"><h2>Riesgo y persistencia</h2><dl id="risk"></dl></section>
+    <section class="panel"><h2>Exchanges</h2><div id="exchanges" class="exchanges"></div></section>
+    <section class="panel"><h2>Últimos eventos</h2><ol id="events"></ol></section>
+    <p class="note">Solo lectura. Los valores provienen de <code>/api/estado</code> y se actualizan cada 2 segundos.</p>
+  </main>
+  <script src="/operator.js" defer></script>
+</body>
+</html>

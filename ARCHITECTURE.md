@@ -41,6 +41,15 @@
 
 ## Módulos
 
+### Fronteras operativas
+
+- `server.rs` ensambla HTTP y aplica tasa, tamaño, timeout, concurrencia y cache.
+- `motor.rs` es dueño exclusivo del estado simulado, balances y P&L.
+- `persistencia.rs` encapsula SQLite; sus variantes `try_*` propagan fallos y los
+  adaptadores heredados registran errores explícitamente.
+- `internal/webui/web/` consume contratos públicos; Playwright verifica el flujo
+  navegador–API y que no haya logs fuera de `?debug=1`.
+
 | Módulo | Propósito | Dependencias externas |
 |--------|-----------|----------------------|
 | `mercado` | Feeds WS + REST por exchange, `ExchangeAdapter` trait | tokio-tungstenite, reqwest |

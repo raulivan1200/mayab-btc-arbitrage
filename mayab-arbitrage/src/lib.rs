@@ -6,6 +6,7 @@ pub mod discord;
 pub mod estrategia;
 pub mod evaluation;
 pub mod ga;
+pub mod http;
 pub mod impacto;
 pub mod ledger_audit;
 pub mod mercado;

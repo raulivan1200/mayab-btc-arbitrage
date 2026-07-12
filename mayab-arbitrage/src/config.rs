@@ -7,6 +7,45 @@ use std::{collections::HashMap, env, time::Duration};
 
 use crate::types::{ExchangeConfig, MapaCostos};
 
+#[derive(Clone, Debug, PartialEq)]
+/// Entorno de despliegue: development, staging, production.
+pub enum Environment {
+    Development,
+    Staging,
+    Production,
+}
+
+impl Environment {
+    pub fn from_env() -> Self {
+        match env::var("ENTORNO")
+            .or_else(|_| env::var("MAYAB_ENV"))
+            .unwrap_or_else(|_| "development".to_string())
+            .to_lowercase()
+            .as_str()
+        {
+            "production" | "prod" => Self::Production,
+            "staging" | "stage" => Self::Staging,
+            _ => Self::Development,
+        }
+    }
+
+    pub fn requires_admin_token(&self) -> bool {
+        matches!(self, Self::Production)
+    }
+
+    pub fn min_token_length(&self) -> usize {
+        match self {
+            Self::Production => 32,
+            Self::Staging => 16,
+            Self::Development => 0,
+        }
+    }
+
+    pub fn is_production(&self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 #[derive(Clone, Debug)]
 /// Configuración inicial del proceso.
 ///
@@ -23,6 +62,9 @@ pub struct Config {
     pub capital_inicial_usd: f64,
     pub balance_inicial_btc: f64,
     pub demo_rentable_inicial: bool,
+    pub entorno: String,
+    pub enabled_exchanges: Vec<String>,
+    pub symbols: Vec<String>,
 }
 
 impl Config {
@@ -141,6 +183,37 @@ impl Config {
             ),
         );
 
+        let enabled_exchanges = csv_env("ENABLED_EXCHANGES");
+        if !enabled_exchanges.is_empty() {
+            exchanges.retain(|nombre, _| {
+                enabled_exchanges
+                    .iter()
+                    .any(|habilitado| habilitado.eq_ignore_ascii_case(nombre))
+            });
+        }
+        let mut symbols = csv_env("SYMBOLS");
+        if symbols.is_empty() {
+            symbols.push(env_string("PAR_BASE", "BTC/USD"));
+            symbols.extend(
+                env_string("PARES_EXTRA", "ETH/USD,SOL/USD,BTC/USDT,ETH/BTC")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
+        }
+        symbols = symbols
+            .into_iter()
+            .map(|s| normalizar_simbolo(&s))
+            .collect();
+        symbols.sort();
+        symbols.dedup();
+        let par_base = symbols
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "BTC/USD".to_string());
+        let pares_extra = symbols.iter().skip(1).cloned().collect();
+
         let costos = MapaCostos {
             max_operacion_btc: (positive(env_f64("MAX_OPERACION_BTC", 0.18), 0.18)),
             min_utilidad_usd: (non_negative(env_f64("MIN_UTILIDAD_USD", 1.25), 1.25)),
@@ -188,12 +261,8 @@ impl Config {
 
         Self {
             port: env_string("PORT", "8080"),
-            par_base: env_string("PAR_BASE", "BTC/USD"),
-            pares_extra: env_string("PARES_EXTRA", "ETH/USD,SOL/USD,BTC/USDT,ETH/BTC")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
+            par_base,
+            pares_extra,
             token_admin: env_optional("ADMIN_TOKEN"),
             auditoria_db_path: env_string("AUDITORIA_DB_PATH", "/tmp/mayab-auditoria.sqlite"),
             intervalo_analisis: Duration::from_millis(positive_i64(
@@ -204,8 +273,53 @@ impl Config {
             capital_inicial_usd: positive(env_f64("CAPITAL_INICIAL_USD", 250000.0), 250000.0),
             balance_inicial_btc: positive(env_f64("BALANCE_INICIAL_BTC", 1.25), 1.25),
             demo_rentable_inicial: env_bool("DEMO_RENTABLE_INICIAL", true),
+            entorno: env_optional("MAYAB_ENV")
+                .or_else(|| env_optional("ENTORNO"))
+                .unwrap_or_else(|| "development".to_string()),
+            enabled_exchanges,
+            symbols,
         }
     }
+
+    /// Rechaza configuraciones inseguras antes de abrir sockets o arrancar el motor.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.entorno.eq_ignore_ascii_case("production") {
+            let token = self
+                .token_admin
+                .as_deref()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("ADMIN_TOKEN es obligatorio en production"))?;
+            if token.len() < 32 {
+                anyhow::bail!("ADMIN_TOKEN debe tener al menos 32 caracteres en production");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn csv_env(key: &str) -> Vec<String> {
+    env::var(key)
+        .ok()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn normalizar_simbolo(value: &str) -> String {
+    let upper = value.trim().to_ascii_uppercase().replace('-', "/");
+    if upper.contains('/') {
+        return upper;
+    }
+    for quote in ["USDT", "USDC", "USD", "BTC", "ETH"] {
+        if let Some(base) = upper.strip_suffix(quote).filter(|base| !base.is_empty()) {
+            return format!("{base}/{quote}");
+        }
+    }
+    upper
 }
 
 fn exchange(nombre: &str, fee_taker: f64, retiro_btc: f64, confiabilidad: f64) -> ExchangeConfig {
@@ -333,5 +447,16 @@ fn non_negative_i64(value: i64, fallback: i64) -> i64 {
         value
     } else {
         fallback
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::normalizar_simbolo;
+
+    #[test]
+    fn normaliza_symbols_para_adaptadores() {
+        assert_eq!(normalizar_simbolo("btc-usdt"), "BTC/USDT");
+        assert_eq!(normalizar_simbolo("ETHUSD"), "ETH/USD");
     }
 }
