@@ -7,6 +7,7 @@ WORKDIR /build
 # Cache dependencies: copy manifests first
 COPY Cargo.toml Cargo.lock ./
 COPY mayab-arbitrage/Cargo.toml mayab-arbitrage/Cargo.toml
+COPY mayab-arbitrage/benches ./mayab-arbitrage/benches
 COPY mayab-cli/Cargo.toml mayab-cli/Cargo.toml
 RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
     echo '' > mayab-arbitrage/src/lib.rs && \
@@ -25,6 +26,7 @@ RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
 # Real source
 COPY mayab-arbitrage/src ./mayab-arbitrage/src
 COPY mayab-cli/src ./mayab-cli/src
+COPY internal/webui/web/operator.html ./internal/webui/web/operator.html
 RUN touch mayab-cli/src/main.rs mayab-arbitrage/src/lib.rs && \
     cargo build --release && \
     objcopy --compress-debug-sections \
