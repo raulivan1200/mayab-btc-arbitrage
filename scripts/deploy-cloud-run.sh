@@ -16,6 +16,14 @@ MAYAB_JUDGE_MODE="${MAYAB_JUDGE_MODE:-true}"
 AUDITORIA_DB_PATH="${AUDITORIA_DB_PATH:-/data/mayab-auditoria.sqlite}"
 STORAGE_MODE="${STORAGE_MODE:-sqlite_ephemeral}"
 
+# Discord forma parte del despliegue principal de Mayab. Estos identificadores
+# son publicos; los tokens permanecen en Secret Manager. Mantener defaults aqui
+# evita que un deploy sin variables locales desconecte el bot de Cloud Run.
+DISCORD_APPLICATION_ID="${DISCORD_APPLICATION_ID:-1525827513073274891}"
+DISCORD_PUBLIC_KEY="${DISCORD_PUBLIC_KEY:-97a3f616bf4ea287de0266cc7e3cd58a26f8232975e3ea98543bcaeb75df7043}"
+DISCORD_BOT_TOKEN_SECRET="${DISCORD_BOT_TOKEN_SECRET:-mayab-discord-bot-token:latest}"
+NVIDIA_API_KEY_SECRET="${NVIDIA_API_KEY_SECRET:-mayab-nvidia-api-key:latest}"
+
 if [ -n "${CANDIDATE_TAG:-}" ]; then
   CANDIDATE_TAG="${CANDIDATE_TAG}"
 elif [ -n "${GITHUB_RUN_ID:-}" ]; then
