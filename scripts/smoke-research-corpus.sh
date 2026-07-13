@@ -25,6 +25,8 @@ jq -e '
   .classification == "public_market_capture_corpus" and
   .uniqueTapes == 1 and .totalEvents > 0 and
   .evidenceGates.multiVenue == true and
+  .evidenceGates.venueEventCoverage == true and
+  .evidenceGates.minimumEventsPerVenue >= 2 and
   .evidenceGates.publishableScale == false and
   .evidenceGates.status == "insufficient_scale"
 ' "$REPORT" >/dev/null

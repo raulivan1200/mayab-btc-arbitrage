@@ -1,6 +1,6 @@
 APP=mayab-arbitrage
 
-.PHONY: run test check contrast smoke release-check build docker
+.PHONY: run test check e2e contrast smoke release-check build docker
 
 run:
 	cargo run
@@ -12,8 +12,14 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	cargo test --workspace --all-targets --locked
-	node --check internal/webui/web/app.js
+	@for file in $$(find internal/webui/web -name '*.js' -type f | sort); do \
+		echo "node --check $$file"; \
+		node --check "$$file"; \
+	done
 	node scripts/check-webui-contrast.mjs
+
+e2e:
+	npm run test:e2e
 
 contrast:
 	node scripts/check-webui-contrast.mjs

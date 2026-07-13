@@ -35,6 +35,10 @@ name = "verify-corpus-seal"
 path = "src/verify_corpus_seal.rs"
 
 [[bin]]
+name = "query-corpus"
+path = "src/query_corpus.rs"
+
+[[bin]]
 name = "mayab-testnet-executor"
 path = "src/testnet_executor.rs"
 required-features = ["testnet-execution"]

@@ -502,32 +502,10 @@ pub(crate) async fn mcp_call(
             "result": lab_sweep_reproducible(&estado)
         }),
         "prepare_demo_final" => {
-            let ga = app.motor.evolucionar_ga(true, 96).await;
-            let rentable = app
-                .motor
-                .activar_escenario_demo(EscenarioDemo::MercadoRentable)
-                .await;
-            let fill_parcial = app
-                .motor
-                .activar_escenario_demo(EscenarioDemo::FillParcial)
-                .await;
-            let rebalanceo = app
-                .motor
-                .activar_escenario_demo(EscenarioDemo::Rebalanceo)
-                .await;
-            let estado_final = app.motor.estado().await;
             json!({
                 "ok": true,
                 "tool": tool,
-                "result": {
-                    "ga": ga,
-                    "mercadoRentable": rentable,
-                    "fillParcial": fill_parcial,
-                    "rebalanceo": rebalanceo,
-                    "metricas": estado_final.metricas,
-                    "mlEdge": estado_final.ml_edge,
-                    "preflight": construir_preflight(&estado_final),
-                }
+                "result": preparar_evidencia_jurado(&app.motor).await
             })
         }
         "evolve_ga" => {
@@ -1296,31 +1274,40 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
         return response;
     }
 
-    // Una corrida final siempre parte de estado limpio. Repetir la acción no
-    // debe acumular PnL ni inflar métricas compartidas entre visitantes.
-    let corrida_id = app.motor.reiniciar_demo_jurado().await;
-    let ga = app.motor.evolucionar_ga(true, 96).await;
-    let rentable = app
-        .motor
+    Json(preparar_evidencia_jurado(&app.motor).await).into_response()
+}
+
+/// Ejecuta el recorrido finalista completo sobre estado simulado. Se comparte
+/// entre el arranque de Jury Mode y el endpoint público para que ambos dejen
+/// exactamente la misma evidencia, sin depender de acciones del evaluador.
+pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
+    // Una corrida final siempre parte de estado limpio. Repetirla no acumula
+    // PnL ni infla métricas compartidas entre visitantes.
+    let corrida_id = motor.reiniciar_demo_jurado().await;
+    let ga = motor.evolucionar_ga(true, 96).await;
+    let rentable = motor
         .activar_escenario_demo(EscenarioDemo::MercadoRentable)
         .await;
-    let fill_parcial = app
-        .motor
+    let fill_parcial = motor
         .activar_escenario_demo(EscenarioDemo::FillParcial)
         .await;
-    let riesgo_pierna = app
-        .motor
+    let mercado_movido = motor
+        .activar_escenario_demo(EscenarioDemo::MercadoMovido)
+        .await;
+    let liquidez_insuficiente = motor
+        .activar_escenario_demo(EscenarioDemo::LiquidezInsuficiente)
+        .await;
+    let riesgo_pierna = motor
         .activar_escenario_demo(EscenarioDemo::FalloSegundaPierna)
         .await;
-    let rebalanceo = app
-        .motor
+    let rebalanceo = motor
         .activar_escenario_demo(EscenarioDemo::Rebalanceo)
         .await;
-    let estado = app.motor.estado().await;
+    let estado = motor.estado().await;
     let preflight = construir_preflight(&estado);
     let huella_auditoria = huella_estado(&estado);
 
-    Json(json!({
+    json!({
         "ok": true,
         "modo": "demo_final",
         "corridaLimpia": true,
@@ -1330,12 +1317,15 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
             "GA evolucionado con historial real o replay sintetico",
             "mercado_rentable inyectado con operaciones demo_rentable",
             "fill_parcial generado para evidenciar profundidad/inventario",
+            "mercado_movido y liquidez_insuficiente bloqueados de forma auditable",
             "segunda pierna fallida y reconciliada con unwind sin exposicion residual",
             "rebalanceo forzado para evidenciar wallets"
         ],
         "ga": ga,
         "mercadoRentable": rentable,
         "fillParcial": fill_parcial,
+        "mercadoMovido": mercado_movido,
+        "liquidezInsuficiente": liquidez_insuficiente,
         "riesgoSegundaPierna": riesgo_pierna,
         "rebalanceo": rebalanceo,
         "metricas": estado.metricas,
@@ -1355,8 +1345,7 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
             "Abrir /api/paquete-evaluacion",
             "Exportar /api/export/json o /api/export/csv"
         ]
-    }))
-    .into_response()
+    })
 }
 
 pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
@@ -1496,6 +1485,32 @@ pub(crate) async fn captura_detener_http(
 
 pub(crate) async fn captura_estado_http(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(app.motor.captura_estado().await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplayVentanaRequest {
+    #[serde(default = "default_replay_window_minutes")]
+    minutos: u32,
+}
+
+fn default_replay_window_minutes() -> u32 {
+    10
+}
+
+pub(crate) async fn captura_ventana_http(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    payload: Result<Json<ReplayVentanaRequest>, JsonRejection>,
+) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(err) => return rechazo_json(err).into_response(),
+    };
+    Json(app.motor.cargar_ventana_replay(payload.minutos).await).into_response()
 }
 
 pub(crate) async fn captura_replay_http(
@@ -2119,7 +2134,7 @@ fn construir_mcp_manifest() -> serde_json::Value {
             mcp_tool("latency_ranking", false, "Ranking EWMA/p50/p95/p99 por exchange.", json!({})),
             mcp_tool("backtest", false, "Backtest reproducible con costos actuales.", json!({})),
             mcp_tool("research_lab_sweep", false, "Compara presets conservador, balanceado, agresivo y GA Edge.", json!({})),
-            mcp_tool("prepare_demo_final", true, "Ejecuta GA, demo rentable, fill parcial y rebalanceo simulado.", json!({})),
+            mcp_tool("prepare_demo_final", true, "Ejecuta la corrida final completa: GA, rentabilidad, fill parcial, shock, liquidez, reconciliacion y rebalanceo simulados.", json!({})),
             mcp_tool("evolve_ga", true, "Fuerza evolucion GA con historial real o replay sintetico.", json!({
                 "usarReplaySiVacio": "boolean opcional, default true",
                 "muestras": "entero opcional, default 96"
@@ -2735,7 +2750,7 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
             "scorecardCuantitativa": {
                 "exchangesPublicos": 10,
                 "pruebasRustLineaBaseVerificadas": 116,
-                "pruebasRustObjetivoArbolActual": 190,
+                "pruebasRustObjetivoArbolActual": 191,
                 "pruebasObjetivoVerificadas": false,
                 "semillasPareadasBacktest": 24,
                 "remuestrasBootstrap": 10000,

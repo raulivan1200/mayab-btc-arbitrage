@@ -7,7 +7,7 @@
   <title>Mayab Replay — Laboratorio aislado</title>
   <link rel="icon" href="/icons/favicon.svg">
   <link rel="stylesheet" href="/styles.css?v=20260712-replay-shared">
-  <link rel="stylesheet" href="/replay/replay.css?v=20260712-responsive">
+  <link rel="stylesheet" href="/replay/replay.css?v=20260712-fullscreen">
   <script src="/theme-init.js"></script>
 </head>
 <body>
@@ -43,6 +43,21 @@
         <article><span>Duración</span><strong id="duration">0 s</strong></article>
         <article><span>Aislamiento</span><strong>Live intacto</strong></article>
       </div>
+      <div class="replay-window" aria-label="Elegir ventana de mercado">
+        <div>
+          <span class="replay-window-label">Ventana de mercado</span>
+          <strong id="historyStatus">Buscando historial disponible…</strong>
+        </div>
+        <label for="windowMinutes">Usar desde</label>
+        <select id="windowMinutes">
+          <option value="1">hace 1 min</option>
+          <option value="5">hace 5 min</option>
+          <option value="10" selected>hace 10 min</option>
+          <option value="30">hace 30 min</option>
+          <option value="60">hace 60 min</option>
+        </select>
+        <button id="loadWindow" class="btn-secundario" type="button">Cargar datos</button>
+      </div>
       <div class="replay-actions">
         <button id="start" class="btn-secundario">Iniciar captura</button>
         <button id="stop" class="btn-secundario" disabled>Detener captura</button>
@@ -62,6 +77,6 @@
     </section>
     <section class="panel replay-notice"><strong>Separación de estados</strong><p>El tape vive en memoria y está etiquetado como mercado público capturado. Al ejecutar, se copia a un motor nuevo; al terminar, ese motor se descarta.</p></section>
   </main>
-  <script src="/replay/replay.js"></script>
+  <script src="/replay/replay.js?v=20260712-window-motion"></script>
 </body>
 </html>

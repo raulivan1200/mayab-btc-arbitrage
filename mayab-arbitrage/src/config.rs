@@ -62,6 +62,9 @@ pub struct Config {
     pub capital_inicial_usd: f64,
     pub balance_inicial_btc: f64,
     pub demo_rentable_inicial: bool,
+    /// Jury Mode siempre precarga evidencia reproducible al arrancar, aunque
+    /// `DEMO_RENTABLE_INICIAL` se haya desactivado explícitamente.
+    pub judge_mode: bool,
     pub entorno: String,
     pub enabled_exchanges: Vec<String>,
     pub symbols: Vec<String>,
@@ -273,6 +276,7 @@ impl Config {
             capital_inicial_usd: positive(env_f64("CAPITAL_INICIAL_USD", 250000.0), 250000.0),
             balance_inicial_btc: positive(env_f64("BALANCE_INICIAL_BTC", 1.25), 1.25),
             demo_rentable_inicial: env_bool("DEMO_RENTABLE_INICIAL", true),
+            judge_mode: env_bool("MAYAB_JUDGE_MODE", false),
             entorno: env_optional("MAYAB_ENV")
                 .or_else(|| env_optional("ENTORNO"))
                 .unwrap_or_else(|| "development".to_string()),

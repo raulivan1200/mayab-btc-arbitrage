@@ -108,23 +108,12 @@ async fn main() -> anyhow::Result<()> {
         mercado::start_feeds(motor.clone(), par.clone()).await;
     }
     motor.clone().start(cfg.intervalo_analisis).await;
-    if cfg.demo_rentable_inicial {
-        let ga = motor.evolucionar_ga(true, 96).await;
-        let rentable = motor
-            .activar_escenario_demo(motor::EscenarioDemo::MercadoRentable)
-            .await;
-        let fill_parcial = motor
-            .activar_escenario_demo(motor::EscenarioDemo::FillParcial)
-            .await;
-        let rebalanceo = motor
-            .activar_escenario_demo(motor::EscenarioDemo::Rebalanceo)
-            .await;
+    if cfg.demo_rentable_inicial || cfg.judge_mode {
+        let evidencia = server::preparar_evidencia_jurado(&motor).await;
         tracing::info!(
-            ga = %ga,
-            mercado_rentable = %rentable,
-            fill_parcial = %fill_parcial,
-            rebalanceo = %rebalanceo,
-            "demo rentable inicial aplicada"
+            judge_mode = cfg.judge_mode,
+            evidencia = %evidencia,
+            "evidencia inicial reproducible aplicada"
         );
     }
 

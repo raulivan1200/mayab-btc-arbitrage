@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pinned Rust toolchain
         run: |
@@ -29,7 +29,7 @@ jobs:
           rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -67,8 +67,25 @@ jobs:
       - name: Build release binary
         run: cargo build --workspace --all-targets --release --locked
 
-      - name: Validate dashboard JavaScript
-        run: node --check internal/webui/web/app.js
+      - name: Set up Node for dashboard checks
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate all dashboard JavaScript
+        run: |
+          find internal/webui/web -name '*.js' -type f -print0 \
+            | sort -z \
+            | xargs -0 -n1 node --check
+
+      - name: Install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run dashboard end-to-end tests
+        run: npm run test:e2e -- --reporter=line
 
       - name: Smoke release binary
         env:
@@ -107,10 +124,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache Docker layers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-docker-${{ hashFiles('Dockerfile') }}
@@ -155,18 +172,18 @@ jobs:
       MAX_INSTANCES: "1"
       ADMIN_TOKEN_SECRET: ${{ vars.ADMIN_TOKEN_SECRET }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: auth
         name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
@@ -209,8 +226,9 @@ jobs:
         run: |
           set -euo pipefail
           for _ in $(seq 1 30); do
-            if curl -fsS "${BASE_URL}/api/healthz" | grep -q '"ok":true'; then
-              echo "healthz OK"
+            if curl -fsS "${BASE_URL}/healthz" | grep -q '"ok":true' \
+              && curl -fsS "${BASE_URL}/api/healthz" | grep -q '"ok":true'; then
+              echo "healthz canonical and compatibility alias OK"
               exit 0
             fi
             sleep 2
@@ -246,8 +264,17 @@ jobs:
           BASE_URL: ${{ steps.service.outputs.url }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
+          set -euo pipefail
           test -n "$ADMIN_TOKEN"
           curl -fsS -X POST "$BASE_URL/api/demo/final" \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${ADMIN_TOKEN}" \
             -d '{}' >/dev/null
+          preflight="$(curl -fsS "$BASE_URL/api/preflight")"
+          jq -e '
+            .listo == true and
+            .judgeReadiness.status == "ready" and
+            (.judgeReadiness.checks | length >= 12) and
+            all(.judgeReadiness.checks[]; .ok == true)
+          ' <<<"$preflight" >/dev/null
+          echo "public jury state ready"

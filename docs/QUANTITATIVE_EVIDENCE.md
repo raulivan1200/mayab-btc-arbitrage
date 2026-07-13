@@ -78,7 +78,10 @@ requiere el contador específico de dislocaciones netas y su metodología.
 `evidenceGates.status` permanece `insufficient_scale` hasta cumplir a la vez:
 dos venues, diez shards únicos, un millón de eventos y 24 horas realmente
 capturadas, política de entrega sin drops de aplicación y una tasa de gaps de
-secuencia menor o igual a 1%. La diferencia entre `observedSpanMs` y
+secuencia menor o igual a 1%. Además, `venueEventCoverage` exige que cada venue
+configurado aporte al menos un evento útil por cada cinco segundos capturados;
+unos snapshots iniciales de un feed que después muere no satisfacen evidencia
+multi-venue. La diferencia entre `observedSpanMs` y
 `totalCaptureDurationMs` evita presentar huecos entre sesiones como horas de
 observación efectiva.
 

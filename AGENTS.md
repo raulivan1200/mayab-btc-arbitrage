@@ -56,6 +56,7 @@ curl -sS http://127.0.0.1:8080/api/backtest
 ## Reglas de cambio
 
 - Mantener el sistema como demo segura: no agregar trading real ni manejo de secretos sin una capa explicita de seguridad.
+- En controles interactivos, usar como hover por defecto el relleno vertical de abajo hacia arriba de los CTA del hero (`Ver a Mayab decidir` e `Inspeccionar la evidencia completa`), con la misma duracion y curva al entrar y salir. No sustituirlo por cambios instantaneos de color, saltos, escalado o sombras. Se exceptuan cierres, estados deshabilitados, `prefers-reduced-motion` y superficies meramente informativas.
 - Si se agrega una promesa al README, exponerla en API/UI o quitarla.
 - Si se toca `EstadoPublico` o contratos JSON, actualizar UI y exports.
 - Si se cambia el motor, agregar o ajustar tests unitarios en `src/motor.rs`.

@@ -23,6 +23,10 @@ La medición incluye:
 - cálculo de costos canónicos;
 - embudo bruto/neto/con liquidez.
 
+La verificación SHA-256 usa lectura streaming con un buffer fijo de 256 KiB; el
+tamaño del shard no se materializa en RAM. La reconstrucción mantiene como
+estado únicamente los libros activos y su profundidad acotada.
+
 Criterion reporta throughput en eventos/s. El fixture se crea fuera de la
 región medida. La lectura del sistema de archivos puede beneficiarse del page
 cache; por eso una cifra debe declarar si la corrida fue fría o caliente.

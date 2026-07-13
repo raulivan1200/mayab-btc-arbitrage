@@ -18,7 +18,7 @@ jobs:
       # Gitleaks scans the commit range GitHub supplies for push/PR events.
       # A shallow checkout can omit the parent commit and make the scan fail
       # with "unknown revision" before inspecting any files.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@master
@@ -29,6 +29,6 @@ jobs:
         with:
           command: check advisories bans licenses sources
       - name: Reject committed secrets
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

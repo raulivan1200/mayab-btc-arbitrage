@@ -8238,3 +8238,198 @@ a,
     gap: 12px;
   }
 }
+
+/* Hover principal: el relleno sube y baja con el mismo ritmo que los CTA. */
+@media (hover: hover) and (pointer: fine) {
+  :is(
+    button:not(.btn-cerrar-notif, .dictionary-close),
+    .btn-link,
+    .tab-btn,
+    .btn-primario,
+    .btn-secundario,
+    .preset-btn,
+    .switch-btn,
+    .tema-toggle
+  ) {
+    background-position: 0 100%;
+    background-size: 100% 0;
+    transition:
+      color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-size 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :is(
+    button:not(.btn-cerrar-notif, .dictionary-close),
+    .btn-link,
+    .tab-btn,
+    .btn-primario,
+    .btn-secundario,
+    .preset-btn,
+    .switch-btn,
+    .tema-toggle
+  ):not(:disabled):is(:hover, :focus-visible) {
+    background-color: var(--button-rest-bg, transparent);
+    background-image: linear-gradient(var(--button-hover-fill, var(--blue)), var(--button-hover-fill, var(--blue)));
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 100% 100%;
+    border-color: var(--button-hover-fill, var(--blue));
+    color: var(--button-hover-ink, #ffffff);
+  }
+
+  /* Las pestañas usan una capa porque cada seccion conserva su propio color. */
+  .tabs-nav .tab-btn[data-tab]::after,
+  .tabs-nav .tab-btn[data-tab]:not(:disabled):is(:hover, :focus-visible)::after {
+    transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Los CTA del hero reutilizan el barrido del menu, sin burbujas, salto ni sombra. */
+  .landing-cta {
+    --landing-cta-fill: var(--yellow);
+    --landing-cta-hover-ink: #111111;
+    isolation: isolate;
+    transition:
+      color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-cta-secondary {
+    --landing-cta-fill: var(--blue);
+    --landing-cta-hover-ink: #ffffff;
+  }
+
+  .landing-cta::before {
+    display: none;
+  }
+
+  .landing-cta::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -1px;
+    width: auto;
+    height: auto;
+    border-radius: inherit;
+    background: var(--landing-cta-fill);
+    opacity: 1;
+    transform: scaleY(0);
+    transform-origin: center bottom;
+    transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-cta:is(:hover, :focus-visible) {
+    color: var(--landing-cta-hover-ink) !important;
+    border-color: var(--landing-cta-fill) !important;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .landing-cta:is(:hover, :focus-visible)::after {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+
+  /* Ayuda flotante: mismo relleno vertical, sin el barrido horizontal antiguo. */
+  #dictionaryToggle.dictionary-fab,
+  #tutorialToggle.dictionary-fab.tutorial-fab {
+    transform: none;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
+  }
+
+  #dictionaryToggle.dictionary-fab::before,
+  #tutorialToggle.dictionary-fab.tutorial-fab::before {
+    display: none;
+  }
+
+  #dictionaryToggle.dictionary-fab {
+    --button-rest-bg: var(--yellow);
+    --button-hover-fill: var(--blue);
+    --button-hover-ink: #ffffff;
+  }
+
+  #tutorialToggle.dictionary-fab.tutorial-fab {
+    --button-rest-bg: var(--blue);
+    --button-hover-fill: var(--rojo);
+    --button-hover-ink: #111111;
+  }
+
+  #dictionaryToggle.dictionary-fab:is(:hover, :focus-visible),
+  #tutorialToggle.dictionary-fab.tutorial-fab:is(:hover, :focus-visible) {
+    background-color: var(--button-rest-bg);
+    background-image: linear-gradient(var(--button-hover-fill), var(--button-hover-fill));
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 100% 100%;
+    border-color: var(--button-hover-fill);
+    color: var(--button-hover-ink);
+    transform: none;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
+  }
+
+  #dictionaryToggle.dictionary-fab[aria-expanded="true"],
+  #tutorialToggle.dictionary-fab.tutorial-fab[aria-expanded="true"] {
+    background-size: 100% 100%;
+    color: var(--button-hover-ink);
+  }
+
+  #dictionaryToggle.dictionary-fab img {
+    transition:
+      filter 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Navegacion de la landing: mismo barrido, sin salto vertical. */
+  .landing-nav-link,
+  .data-lens-item:not(.is-active) {
+    --nav-hover-fill: #111111;
+    --nav-hover-ink: #ffffff;
+    position: relative;
+    overflow: hidden;
+    background-color: transparent;
+    background-image: linear-gradient(var(--nav-hover-fill), var(--nav-hover-fill));
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 100% 0;
+    transition:
+      color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-size 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .data-lens-item[data-data-lens="replay"] {
+    --nav-hover-fill: var(--blue);
+  }
+
+  .data-lens-item[data-data-lens="demo"] {
+    --nav-hover-fill: var(--purple);
+  }
+
+  .data-lens-item:not(.is-active) small {
+    transition: color 560ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-nav-link:is(:hover, :focus-visible),
+  .data-lens-item:not(.is-active):is(:hover, :focus-visible) {
+    background-color: transparent !important;
+    background-image: linear-gradient(var(--nav-hover-fill), var(--nav-hover-fill)) !important;
+    background-position: 0 100%;
+    background-size: 100% 100%;
+    color: var(--nav-hover-ink) !important;
+    transform: none;
+  }
+
+  .data-lens-item:not(.is-active):is(:hover, :focus-visible) small {
+    color: color-mix(in srgb, var(--nav-hover-ink) 72%, transparent);
+  }
+
+  [data-theme="dark"] .landing-nav-link {
+    --nav-hover-fill: #ffffff;
+    --nav-hover-ink: #111111;
+  }
+
+  .dictionary-close,
+  .btn-cerrar-notif {
+    background-image: none;
+  }
+}

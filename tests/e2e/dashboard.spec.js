@@ -17,6 +17,26 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
   expect(logs).toEqual([]);
 });
 
+test("replay y consola operativa cargan sin errores de navegador", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+
+  await page.goto("/replay/");
+  await expect(page.locator("#status")).toBeVisible();
+  await expect(page.locator("#resultTitle")).toContainText("Todavía no hay replay");
+  await expect(page.locator('[data-data-lens="replay"]')).toHaveAttribute("aria-current", "page");
+
+  await page.goto("/operator");
+  await expect(page.locator("#banner")).toBeVisible();
+  await expect(page.locator("#risk")).toBeAttached();
+  await expect(page.locator("#exchanges")).toBeAttached();
+
+  expect(errors).toEqual([]);
+});
+
 test("salud, readiness y caching exponen contratos operativos", async ({ request }) => {
   const health = await request.get("/healthz");
   expect(health.ok()).toBeTruthy();

@@ -83,7 +83,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. La instancia pública queda precargada por el deploy con una demo auditada. Con `MAYAB_JUDGE_MODE=true`, el jurado puede reiniciar y ejecutar únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
+4. La instancia pública queda precargada automáticamente al arrancar en `MAYAB_JUDGE_MODE=true` con una corrida auditada completa: GA, PnL positivo, fill parcial, mercado movido, liquidez insuficiente, segunda pierna rechazada con unwind a exposición cero y rebalanceo. El jurado puede reiniciar y repetir únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
 5. En local, o como operador autenticado, pulsa **Preparar demo auditada** y **Forzar rebalanceo** para reproducir la corrida y el movimiento interno con costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
@@ -937,12 +937,31 @@ cargo run -p mayab-cli --bin capture-corpus -- \
 ```
 
 Cada shard se verifica inmediatamente; uno corrupto queda en cuarentena con
-prefijo `failed-` y nunca se incorpora al conteo del corpus.
+prefijo `failed-` y nunca se incorpora al conteo del corpus. El gate de escala
+también exige continuidad por venue: un exchange que sólo emite snapshots al
+inicio y luego queda congelado no puede inflar una captura multi-venue.
 
 La captura produce además `corpus.sqlite`, un índice transaccional de metadatos
 para consultar el corpus sin meter escrituras SQLite en el WebSocket. Los JSONL
 siguen siendo la evidencia autoritativa. `verify-corpus` también acepta
 `--sqlite-index artifacts/evidence/corpus.sqlite`.
+
+El índice normaliza shards, exchanges y pares, y permite consultas de rango con
+paginación por cursor (sin el costo creciente de `OFFSET`):
+
+```bash
+cargo run -p mayab-cli --bin query-corpus -- \
+  --database artifacts/tapes/btc-usd/corpus.sqlite \
+  --exchange Kraken --pair BTC/USD --limit 100
+```
+
+Si la respuesta devuelve `hasMore: true`, la siguiente página se obtiene con
+los valores `nextStartedAt` y `nextSha256` como `--after-start` y `--after-sha`.
+Los filtros temporales `--from` y `--to` aceptan RFC3339. El límite máximo por
+página es 500. Sin `--corpus` se consulta el reporte indexado más reciente; el
+filtro permite consultar una versión histórica por SHA sin mezclar cursores
+entre snapshots. El índice es reconstruible con `verify-corpus`; no reemplaza
+los JSONL ni sus hashes.
 
 El embudo cuantitativo a escala se obtiene en una sola pasada y memoria acotada:
 

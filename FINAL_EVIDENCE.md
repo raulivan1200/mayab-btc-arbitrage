@@ -81,9 +81,11 @@ SQLite transaccional e idempotente; dos validan memoria acotada y hash canónico
 del escáner streaming; dos impiden publicar un scan malformado o perteneciente a
 otro corpus; uno garantiza que un benchmark sintético jamás supera el gate de
 publicación; uno valida publicación JSON atómica sin temporales filtrados; y dos
-validan los intervalos Wilson 95% incluso en extremos. El árbol actual suma 190 pruebas Rust verdes, pero la UI
-conserva 160 como última cifra verificada hasta una
-nueva corrida verde.
+validan los intervalos Wilson 95% incluso en extremos. Playwright valida por
+separado el dashboard principal, las
+superficies de replay y operación, los contratos HTTP, la procedencia del corpus
+y la demo rentable; el conteo autoritativo sigue siendo el publicado por CI para
+el SHA entregable.
 
 Cada contrato HTTP corresponde a una URI distinta y falla con el nombre exacto
 de la superficie rota. Un loop con muchas aserciones no se contabiliza como

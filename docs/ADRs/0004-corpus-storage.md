@@ -32,7 +32,15 @@ verificar el corpus y puede reconstruirse desde los manifiestos.
 - Transacción atómica con foreign keys.
 - WAL y `synchronous=FULL`.
 - Reinserción idempotente del mismo corpus.
-- Consultas rápidas por tiempo, dataset y exchange.
+- Tablas normalizadas e índices para consultas rápidas por tiempo, dataset,
+  exchange y par.
+- Paginación por cursor `(started_at, sha256)`, sin `OFFSET` creciente.
+- Hash SHA-256 streaming con buffer fijo; verificar y sellar no carga un shard
+  completo en memoria.
+
+El esquema SQLite usa `PRAGMA user_version = 2`. Un índice anterior se migra de
+forma aditiva al volver a ejecutar `verify-corpus --sqlite-index ...`; SQLite no
+es la fuente de verdad y siempre puede reconstruirse.
 
 ## Consecuencias
 
@@ -45,4 +53,3 @@ export Parquet derivado cuando la evaluación deje de materializar todo en RAM.
 - **Un JSONL gigante:** difícil de reanudar y poner en cuarentena.
 - **Solo Parquet:** menos apropiado como log incremental autoritativo.
 - **Postgres obligatorio:** reduce reproducibilidad local.
-

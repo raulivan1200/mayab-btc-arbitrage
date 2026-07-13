@@ -1108,10 +1108,16 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
 
 fn parsear_coinbase(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
     let v: Value = serde_json::from_slice(bytes).ok()?;
-    if !matches!(
-        v.get("channel").and_then(Value::as_str)?,
-        "level2" | "l2_data"
-    ) {
+    let channel = v.get("channel").and_then(Value::as_str)?;
+    let secuencia = v.get("sequence_num").and_then(parse_u64);
+    if !matches!(channel, "level2" | "l2_data") {
+        // Coinbase usa una secuencia global por conexión y puede intercalar el
+        // acuse `subscriptions` entre frames `l2_data`. Aunque ese frame no
+        // modifica el libro, su número debe consumirse para no convertir el
+        // siguiente update legítimo en un falso gap permanente.
+        if secuencia.is_some() {
+            let _ = libro.registrar_incremental_exacto(secuencia);
+        }
         return None;
     }
     let ts = v
@@ -1119,7 +1125,6 @@ fn parsear_coinbase(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion>
         .and_then(Value::as_str)
         .and_then(rfc3339_ms)
         .unwrap_or_default();
-    let secuencia = v.get("sequence_num").and_then(parse_u64);
     let es_snapshot = v
         .get("events")?
         .as_array()?
@@ -1712,6 +1717,26 @@ mod tests {
         assert_eq!(libro.integrity_status, "gap_requiere_snapshot");
         assert_eq!(libro.resyncs, 1);
         assert!(libro.bids.is_empty());
+    }
+
+    #[test]
+    fn coinbase_consume_secuencia_de_frame_subscriptions() {
+        let snapshot = br#"{"channel":"l2_data","sequence_num":0,"timestamp":"2024-03-09T00:00:00Z","events":[{"type":"snapshot","product_id":"BTC-USD","updates":[{"side":"bid","price_level":"100.0","new_quantity":"2.0"},{"side":"offer","price_level":"101.0","new_quantity":"1.5"}]}]}"#;
+        let update_uno = br#"{"channel":"l2_data","sequence_num":1,"timestamp":"2024-03-09T00:00:00.001Z","events":[{"type":"update","product_id":"BTC-USD","updates":[{"side":"bid","price_level":"100.5","new_quantity":"2.0"}]}]}"#;
+        let subscriptions = br#"{"channel":"subscriptions","sequence_num":2,"events":[{"subscriptions":{"level2":["BTC-USD"]}}]}"#;
+        let update_dos = br#"{"channel":"l2_data","sequence_num":3,"timestamp":"2024-03-09T00:00:00.002Z","events":[{"type":"update","product_id":"BTC-USD","updates":[{"side":"offer","price_level":"100.8","new_quantity":"1.0"}]}]}"#;
+        let mut libro = LibroEstado::new("BTC/USD");
+
+        parsear_coinbase(snapshot, &mut libro).unwrap();
+        parsear_coinbase(update_uno, &mut libro).unwrap();
+        assert!(parsear_coinbase(subscriptions, &mut libro).is_none());
+        let quote = parsear_coinbase(update_dos, &mut libro).unwrap();
+
+        assert_eq!(quote.exchange_sequence, Some(3));
+        assert_eq!(quote.bid, 100.5);
+        assert_eq!(quote.ask, 100.8);
+        assert_eq!(quote.sequence_gaps, 0);
+        assert_eq!(quote.integrity_status, "secuencia_continua");
     }
 
     #[test]

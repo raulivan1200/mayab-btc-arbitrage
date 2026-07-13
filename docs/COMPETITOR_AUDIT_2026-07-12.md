@@ -56,8 +56,11 @@ maximizar la probabilidad.
 - Paquete de evidencia sellado con commit, dirty flag, timestamps y SHA-256.
 - Video de 90–120 segundos: mercado público → decisión neta → fallo de segunda
   pierna → unwind → `0 BTC` → evidencia descargable.
-- Corregir todos los números contradictorios de pruebas (129/152/156) y citar
-  únicamente el conteo producido por la corrida CI entregable.
+- Citar únicamente el conteo de pruebas producido por la corrida CI del SHA
+  entregable; los conteos históricos contradictorios ya no aparecen en la UI.
+- Exigir en el job de deploy tanto `/healthz` como `/api/healthz` y verificar
+  `judgeReadiness.status=ready` después de preparar la demo; un servicio que sólo
+  arranca pero queda en `review` no cuenta como deploy aprobado.
 
 ### P1 — ejecución pendiente capaz de destronar la evidencia de ArbitrAI
 

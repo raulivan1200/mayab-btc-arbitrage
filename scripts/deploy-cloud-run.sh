@@ -26,6 +26,7 @@ require_cmd gcloud
 require_cmd curl
 require_cmd grep
 require_cmd mktemp
+require_cmd python3
 
 if [ -z "$PROJECT" ]; then
   PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
@@ -164,7 +165,28 @@ if [ -n "${GITHUB_SHA:-}" ]; then
 fi
 
 smoke_get "/api/preflight" "$TMP_DIR/preflight.json"
-grep -q '"judgeReadiness"' "$TMP_DIR/preflight.json"
+python3 - "$TMP_DIR/preflight.json" <<'PY'
+import json
+import sys
+
+preflight = json.load(open(sys.argv[1]))
+readiness = preflight.get("judgeReadiness") or {}
+checks = readiness.get("checks") or []
+if not (
+    preflight.get("listo") is True
+    and readiness.get("status") == "ready"
+    and readiness.get("evidenceStatus") == "complete"
+    and checks
+    and all(check.get("ok") is True for check in checks)
+):
+    raise SystemExit("preflight del deploy no quedó completamente verde")
+PY
+
+smoke_get "/api/export/csv" "$TMP_DIR/auditoria.csv"
+test -s "$TMP_DIR/auditoria.csv"
+grep -q '^tipo,tiempo,ruta,detalle,cantidad_btc' "$TMP_DIR/auditoria.csv"
+grep -q '^operacion,' "$TMP_DIR/auditoria.csv"
+grep -q '^transicion,' "$TMP_DIR/auditoria.csv"
 
 smoke_get "/api/resumen-llm" "$TMP_DIR/resumen-llm.json"
 grep -q '"resumen"' "$TMP_DIR/resumen-llm.json"

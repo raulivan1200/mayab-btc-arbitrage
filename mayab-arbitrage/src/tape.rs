@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -259,6 +259,43 @@ pub struct CorpusTape {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CorpusIndexQuery {
+    pub corpus_sha256: Option<String>,
+    pub exchange: Option<String>,
+    pub pair: Option<String>,
+    pub started_at_or_after: Option<DateTime<Utc>>,
+    pub ended_at_or_before: Option<DateTime<Utc>>,
+    pub after_started_at: Option<DateTime<Utc>>,
+    pub after_sha256: Option<String>,
+    pub limit: usize,
+}
+
+impl Default for CorpusIndexQuery {
+    fn default() -> Self {
+        Self {
+            corpus_sha256: None,
+            exchange: None,
+            pair: None,
+            started_at_or_after: None,
+            ended_at_or_before: None,
+            after_started_at: None,
+            after_sha256: None,
+            limit: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorpusIndexPage {
+    pub schema_version: u32,
+    pub tapes: Vec<CorpusTape>,
+    pub next_started_at: Option<DateTime<Utc>>,
+    pub next_sha256: Option<String>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorpusReport {
@@ -287,6 +324,8 @@ pub struct CorpusReport {
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceGates {
     pub multi_venue: bool,
+    pub venue_event_coverage: bool,
+    pub minimum_events_per_venue: u64,
     pub minimum_ten_shards: bool,
     pub preliminary_100k_events: bool,
     pub million_event_scale: bool,
@@ -382,6 +421,7 @@ fn verify_corpus_classified(
         .max()
         .context("corpus sin fin")?;
     let mut events_by_exchange = BTreeMap::<String, u64>::new();
+    let mut configured_exchanges = std::collections::BTreeSet::new();
     let mut pairs = std::collections::BTreeSet::new();
     let mut corpus_hashes = Vec::with_capacity(verifications.len());
     let mut tapes = Vec::with_capacity(verifications.len());
@@ -420,6 +460,7 @@ fn verify_corpus_classified(
                 .checked_add(*count)
                 .context("overflow en eventsByExchange")?;
         }
+        configured_exchanges.extend(verified.exchanges.iter().cloned());
         pairs.extend(verified.pairs.iter().cloned());
         corpus_hashes.push(verified.sha256.clone());
         tapes.push(CorpusTape {
@@ -441,6 +482,15 @@ fn verify_corpus_classified(
     }
 
     let multi_venue = events_by_exchange.len() >= 2;
+    // Un venue con uno o dos snapshots iniciales no demuestra cobertura
+    // multi-venue durante una captura larga. Exigimos al menos un evento útil
+    // cada cinco segundos de tiempo capturado por venue configurado. Es un gate
+    // de continuidad del dataset, no una afirmación de rentabilidad.
+    let (venue_event_coverage, minimum_events_per_venue) = venue_event_coverage(
+        &configured_exchanges,
+        &events_by_exchange,
+        total_capture_duration_ms,
+    )?;
     let minimum_ten_shards = tapes.len() >= 10;
     let preliminary_100k_events = total_events >= 100_000;
     let million_event_scale = total_events >= 1_000_000;
@@ -453,6 +503,7 @@ fn verify_corpus_classified(
         _ => "unsupported_corpus",
     };
     let scale_requirements_met = multi_venue
+        && venue_event_coverage
         && minimum_ten_shards
         && million_event_scale
         && twenty_four_captured_hours
@@ -480,6 +531,8 @@ fn verify_corpus_classified(
         pairs: pairs.into_iter().collect(),
         evidence_gates: EvidenceGates {
             multi_venue,
+            venue_event_coverage,
+            minimum_events_per_venue,
             minimum_ten_shards,
             preliminary_100k_events,
             million_event_scale,
@@ -507,6 +560,19 @@ fn corpus_publication_status(
     }
 }
 
+fn venue_event_coverage(
+    configured: &std::collections::BTreeSet<String>,
+    counts: &BTreeMap<String, u64>,
+    capture_duration_ms: i64,
+) -> anyhow::Result<(bool, u64)> {
+    let minimum = (u64::try_from(capture_duration_ms.max(0))? / 5_000).max(2);
+    let covered = configured.len() >= 2
+        && configured
+            .iter()
+            .all(|exchange| counts.get(exchange).copied().unwrap_or_default() >= minimum);
+    Ok((covered, minimum))
+}
+
 /// Materializa un índice SQLite transaccional del corpus. Los eventos crudos
 /// permanecen en shards append-only; SQLite guarda únicamente metadatos y
 /// conteos para consultas rápidas sin introducir contención en la captura.
@@ -515,8 +581,12 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
         fs::create_dir_all(parent)?;
     }
     let mut connection = Connection::open(database)?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
+    let previous_schema_version: i64 =
+        connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS corpus (
             corpus_sha256 TEXT PRIMARY KEY,
@@ -553,18 +623,79 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
             PRIMARY KEY(corpus_sha256, exchange),
             FOREIGN KEY(corpus_sha256) REFERENCES corpus(corpus_sha256) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS shard_exchange (
+            corpus_sha256 TEXT NOT NULL,
+            shard_sha256 TEXT NOT NULL,
+            exchange TEXT NOT NULL,
+            PRIMARY KEY(corpus_sha256, shard_sha256, exchange),
+            FOREIGN KEY(corpus_sha256, shard_sha256)
+                REFERENCES shard(corpus_sha256, sha256) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS shard_pair (
+            corpus_sha256 TEXT NOT NULL,
+            shard_sha256 TEXT NOT NULL,
+            pair TEXT NOT NULL,
+            PRIMARY KEY(corpus_sha256, shard_sha256, pair),
+            FOREIGN KEY(corpus_sha256, shard_sha256)
+                REFERENCES shard(corpus_sha256, sha256) ON DELETE CASCADE
+        );
         CREATE INDEX IF NOT EXISTS idx_shard_time ON shard(corpus_sha256, started_at, ended_at);
         CREATE INDEX IF NOT EXISTS idx_shard_dataset ON shard(dataset_id);
-        CREATE INDEX IF NOT EXISTS idx_exchange_events ON exchange_count(corpus_sha256, events DESC);",
+        CREATE INDEX IF NOT EXISTS idx_exchange_events ON exchange_count(corpus_sha256, events DESC);
+        CREATE INDEX IF NOT EXISTS idx_shard_exchange_lookup
+            ON shard_exchange(exchange, corpus_sha256, shard_sha256);
+        CREATE INDEX IF NOT EXISTS idx_shard_pair_lookup
+            ON shard_pair(pair, corpus_sha256, shard_sha256);",
     )?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
     let transaction = connection.transaction()?;
+    if previous_schema_version < 2 {
+        let legacy_shards = {
+            let mut statement = transaction
+                .prepare("SELECT corpus_sha256, sha256, exchanges_json, pairs_json FROM shard")?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (corpus_sha256, shard_sha256, exchanges_json, pairs_json) in legacy_shards {
+            for exchange in serde_json::from_str::<Vec<String>>(&exchanges_json)? {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO shard_exchange
+                     (corpus_sha256, shard_sha256, exchange) VALUES (?1, ?2, ?3)",
+                    params![&corpus_sha256, &shard_sha256, exchange],
+                )?;
+            }
+            for pair in serde_json::from_str::<Vec<String>>(&pairs_json)? {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO shard_pair
+                     (corpus_sha256, shard_sha256, pair) VALUES (?1, ?2, ?3)",
+                    params![&corpus_sha256, &shard_sha256, pair],
+                )?;
+            }
+        }
+    }
     transaction.execute(
-        "INSERT OR REPLACE INTO corpus (
+        "INSERT INTO corpus (
             corpus_sha256, classification, generated_at, unique_tapes,
             total_events, total_bytes, total_capture_duration_ms, earliest_event,
             latest_event, publishable_scale, report_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(corpus_sha256) DO UPDATE SET
+            classification=excluded.classification,
+            generated_at=excluded.generated_at,
+            unique_tapes=excluded.unique_tapes,
+            total_events=excluded.total_events,
+            total_bytes=excluded.total_bytes,
+            total_capture_duration_ms=excluded.total_capture_duration_ms,
+            earliest_event=excluded.earliest_event,
+            latest_event=excluded.latest_event,
+            publishable_scale=excluded.publishable_scale,
+            report_json=excluded.report_json",
         params![
             &report.corpus_sha256,
             &report.classification,
@@ -611,6 +742,20 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
                 pairs_json,
             ],
         )?;
+        for exchange in &shard.exchanges {
+            transaction.execute(
+                "INSERT INTO shard_exchange (corpus_sha256, shard_sha256, exchange)
+                 VALUES (?1, ?2, ?3)",
+                params![&report.corpus_sha256, &shard.sha256, exchange],
+            )?;
+        }
+        for pair in &shard.pairs {
+            transaction.execute(
+                "INSERT INTO shard_pair (corpus_sha256, shard_sha256, pair)
+                 VALUES (?1, ?2, ?3)",
+                params![&report.corpus_sha256, &shard.sha256, pair],
+            )?;
+        }
     }
     for (exchange, events) in &report.events_by_exchange {
         transaction.execute(
@@ -619,8 +764,126 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
         )?;
     }
     transaction.commit()?;
+    connection.pragma_update(None, "user_version", 2)?;
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     Ok(())
+}
+
+/// Consulta el índice reconstruible con paginación por llave. El cursor
+/// `(started_at, sha256)` evita el costo creciente de `OFFSET` en corpus grandes.
+pub fn query_corpus_sqlite(
+    database: &Path,
+    query: &CorpusIndexQuery,
+) -> anyhow::Result<CorpusIndexPage> {
+    let connection = Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let limit = query.limit.clamp(1, 500);
+    if query.after_started_at.is_some() != query.after_sha256.is_some() {
+        bail!("el cursor requiere afterStartedAt y afterSha256 juntos");
+    }
+    let mut statement = connection.prepare(
+        "SELECT s.dataset_id, s.relative_path, s.events, s.sequence_gaps,
+                s.reconnect_events, s.started_at, s.ended_at,
+                s.exchanges_json, s.pairs_json, s.sha256
+         FROM shard s
+         WHERE s.corpus_sha256 = COALESCE(
+               ?1,
+               (SELECT corpus_sha256 FROM corpus
+                ORDER BY generated_at DESC, corpus_sha256 DESC LIMIT 1))
+           AND (?2 IS NULL OR EXISTS (
+               SELECT 1 FROM shard_exchange se
+               WHERE se.corpus_sha256=s.corpus_sha256 AND se.shard_sha256=s.sha256
+                 AND se.exchange=?2))
+           AND (?3 IS NULL OR EXISTS (
+               SELECT 1 FROM shard_pair sp
+               WHERE sp.corpus_sha256=s.corpus_sha256 AND sp.shard_sha256=s.sha256
+                 AND sp.pair=?3))
+           AND (?4 IS NULL OR s.started_at >= ?4)
+           AND (?5 IS NULL OR s.ended_at <= ?5)
+           AND (?6 IS NULL OR s.started_at > ?6 OR (s.started_at = ?6 AND s.sha256 > ?7))
+         ORDER BY s.started_at, s.sha256
+         LIMIT ?8",
+    )?;
+    let started_at_or_after = query.started_at_or_after.map(|value| value.to_rfc3339());
+    let ended_at_or_before = query.ended_at_or_before.map(|value| value.to_rfc3339());
+    let after_started_at = query.after_started_at.map(|value| value.to_rfc3339());
+    let rows = statement.query_map(
+        params![
+            query.corpus_sha256.as_deref(),
+            query.exchange.as_deref(),
+            query.pair.as_deref(),
+            started_at_or_after.as_deref(),
+            ended_at_or_before.as_deref(),
+            after_started_at.as_deref(),
+            query.after_sha256.as_deref(),
+            i64::try_from(limit + 1)?,
+        ],
+        |row| {
+            let started_at: String = row.get(5)?;
+            let ended_at: String = row.get(6)?;
+            let exchanges_json: String = row.get(7)?;
+            let pairs_json: String = row.get(8)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                started_at,
+                ended_at,
+                exchanges_json,
+                pairs_json,
+                row.get::<_, String>(9)?,
+            ))
+        },
+    )?;
+    let mut tapes = Vec::with_capacity(limit + 1);
+    for row in rows {
+        let (
+            dataset_id,
+            relative_path,
+            events,
+            gaps,
+            reconnects,
+            started,
+            ended,
+            exchanges,
+            pairs,
+            sha256,
+        ) = row?;
+        tapes.push(CorpusTape {
+            dataset_id,
+            relative_path: PathBuf::from(relative_path),
+            events: u64::try_from(events)?,
+            sequence_gaps: u64::try_from(gaps)?,
+            reconnect_events: u64::try_from(reconnects)?,
+            started_at: DateTime::parse_from_rfc3339(&started)?.with_timezone(&Utc),
+            ended_at: DateTime::parse_from_rfc3339(&ended)?.with_timezone(&Utc),
+            exchanges: serde_json::from_str(&exchanges)?,
+            pairs: serde_json::from_str(&pairs)?,
+            sha256,
+        });
+    }
+    let has_more = tapes.len() > limit;
+    tapes.truncate(limit);
+    let (next_started_at, next_sha256) = if has_more {
+        tapes
+            .last()
+            .map(|tape| (Some(tape.started_at), Some(tape.sha256.clone())))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+    Ok(CorpusIndexPage {
+        schema_version: 1,
+        tapes,
+        next_started_at,
+        next_sha256,
+        has_more,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1212,7 +1475,17 @@ fn hex_sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 fn file_sha(path: &Path) -> anyhow::Result<String> {
-    Ok(hex_sha(&fs::read(path)?))
+    let mut file = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 256 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 fn git_commit() -> String {
     Command::new("git")
@@ -1473,6 +1746,8 @@ mod tests {
             pairs: vec!["BTC/USD".into()],
             evidence_gates: EvidenceGates {
                 multi_venue: false,
+                venue_event_coverage: false,
+                minimum_events_per_venue: 2,
                 minimum_ten_shards: false,
                 preliminary_100k_events: false,
                 million_event_scale: false,
@@ -1497,6 +1772,41 @@ mod tests {
             }],
         };
         let database = root.join("corpus.sqlite");
+        let legacy = Connection::open(&database).unwrap();
+        legacy
+            .execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE corpus (
+                    corpus_sha256 TEXT PRIMARY KEY, classification TEXT NOT NULL,
+                    generated_at TEXT NOT NULL, unique_tapes INTEGER NOT NULL,
+                    total_events INTEGER NOT NULL, total_bytes INTEGER NOT NULL,
+                    total_capture_duration_ms INTEGER NOT NULL, earliest_event TEXT NOT NULL,
+                    latest_event TEXT NOT NULL, publishable_scale INTEGER NOT NULL,
+                    report_json TEXT NOT NULL);
+                 CREATE TABLE shard (
+                    corpus_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL, relative_path TEXT NOT NULL,
+                    events INTEGER NOT NULL, sequence_gaps INTEGER NOT NULL,
+                    reconnect_events INTEGER NOT NULL, started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL, exchanges_json TEXT NOT NULL,
+                    pairs_json TEXT NOT NULL, PRIMARY KEY(corpus_sha256, sha256),
+                    FOREIGN KEY(corpus_sha256) REFERENCES corpus(corpus_sha256) ON DELETE CASCADE);
+                 CREATE TABLE exchange_count (
+                    corpus_sha256 TEXT NOT NULL, exchange TEXT NOT NULL, events INTEGER NOT NULL,
+                    PRIMARY KEY(corpus_sha256, exchange),
+                    FOREIGN KEY(corpus_sha256) REFERENCES corpus(corpus_sha256) ON DELETE CASCADE);
+                 INSERT INTO corpus VALUES (
+                    'legacy-corpus', 'public_market_capture_corpus',
+                    '1970-01-01T00:00:00+00:00', 1, 5, 512, 1000,
+                    '1970-01-01T00:00:03+00:00', '1970-01-01T00:00:04+00:00', 0, '{}');
+                 INSERT INTO shard VALUES (
+                    'legacy-corpus', 'legacy-shard', 'legacy-dataset', 'shard-legacy',
+                    5, 0, 0, '1970-01-01T00:00:03+00:00', '1970-01-01T00:00:04+00:00',
+                    '[\"Coinbase\"]', '[\"ETH/USD\"]');
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        drop(legacy);
         index_corpus_sqlite(&report, &database).unwrap();
         index_corpus_sqlite(&report, &database).unwrap();
         let connection = Connection::open(&database).unwrap();
@@ -1507,10 +1817,62 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM shard", [], |row| row.get(0))
             .unwrap();
         let indexed_events: i64 = connection
-            .query_row("SELECT total_events FROM corpus", [], |row| row.get(0))
+            .query_row(
+                "SELECT total_events FROM corpus WHERE corpus_sha256='corpus-fixture'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!((corpus_count, shard_count, indexed_events), (1, 1, 10));
+        let normalized_exchanges: i64 = connection
+            .query_row("SELECT COUNT(*) FROM shard_exchange", [], |row| row.get(0))
+            .unwrap();
+        let normalized_pairs: i64 = connection
+            .query_row("SELECT COUNT(*) FROM shard_pair", [], |row| row.get(0))
+            .unwrap();
+        let schema_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((corpus_count, shard_count, indexed_events), (2, 2, 10));
+        assert_eq!(
+            (normalized_exchanges, normalized_pairs, schema_version),
+            (2, 2, 2)
+        );
         drop(connection);
+        let page = query_corpus_sqlite(
+            &database,
+            &CorpusIndexQuery {
+                exchange: Some("Kraken".into()),
+                pair: Some("BTC/USD".into()),
+                limit: 10,
+                ..CorpusIndexQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.tapes.len(), 1);
+        assert_eq!(page.tapes[0].dataset_id, "dataset-fixture");
+        assert!(!page.has_more);
+        let migrated = query_corpus_sqlite(
+            &database,
+            &CorpusIndexQuery {
+                corpus_sha256: Some("legacy-corpus".into()),
+                exchange: Some("Coinbase".into()),
+                pair: Some("ETH/USD".into()),
+                limit: 10,
+                ..CorpusIndexQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(migrated.tapes[0].dataset_id, "legacy-dataset");
+        let missing = query_corpus_sqlite(
+            &database,
+            &CorpusIndexQuery {
+                exchange: Some("Gemini".into()),
+                limit: 10,
+                ..CorpusIndexQuery::default()
+            },
+        )
+        .unwrap();
+        assert!(missing.tapes.is_empty());
         fs::write(
             root.join("corpus.json"),
             serde_json::to_vec_pretty(&report).unwrap(),
@@ -1610,6 +1972,23 @@ mod tests {
     }
 
     #[test]
+    fn venue_coverage_rejects_a_token_second_feed() {
+        let counts = BTreeMap::from([("Coinbase".to_string(), 3), ("Kraken".to_string(), 97)]);
+        let configured = ["Coinbase".to_string(), "Kraken".to_string()]
+            .into_iter()
+            .collect();
+
+        assert_eq!(
+            venue_event_coverage(&configured, &counts, 40_000).unwrap(),
+            (false, 8)
+        );
+        assert_eq!(
+            venue_event_coverage(&configured, &counts, 10_000).unwrap(),
+            (true, 2)
+        );
+    }
+
+    #[test]
     fn atomic_json_publish_replaces_complete_document_without_temp_leaks() {
         let root = std::env::temp_dir().join(format!("mayab-atomic-json-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1627,6 +2006,21 @@ mod tests {
             1
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_hash_streaming_matches_in_memory_sha256() {
+        let path = std::env::temp_dir().join(format!(
+            "mayab-streaming-sha-{}-{}.bin",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let bytes = (0..700_000_u32)
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(file_sha(&path).unwrap(), hex_sha(&bytes));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

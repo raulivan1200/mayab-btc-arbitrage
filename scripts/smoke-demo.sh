@@ -177,6 +177,10 @@ if rebalanceo.get("ok") is not True:
 
 if demo_final.get("ok") is not True:
     errors.append("/api/demo/final fallo")
+if demo_final.get("mercadoMovido", {}).get("ok") is not True:
+    errors.append("/api/demo/final no probo mercado_movido")
+if demo_final.get("liquidezInsuficiente", {}).get("ok") is not True:
+    errors.append("/api/demo/final no probo liquidez_insuficiente")
 if demo_caos.get("ok") is not True or demo_caos.get("aprobados") != demo_caos.get("totalChecks"):
     errors.append("/api/demo/caos no supero todos los checks")
 if abs(demo_caos.get("estadoFinal", {}).get("exposicionResidualBtc", 1)) >= 1e-9:

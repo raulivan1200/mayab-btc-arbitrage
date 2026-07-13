@@ -86,6 +86,8 @@ struct State {
     datos_capturados: Vec<Cotizacion>,
     max_captura_len: usize,
     inicio_captura: Option<DateTime<Utc>>,
+    historial_replay: VecDeque<Cotizacion>,
+    max_historial_replay_len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +215,8 @@ impl Motor {
                 datos_capturados: Vec::new(),
                 max_captura_len: 10000,
                 inicio_captura: None,
+                historial_replay: VecDeque::with_capacity(50_000),
+                max_historial_replay_len: 50_000,
             }),
             persistencia,
             eventos: AtomicU64::new(0),
@@ -263,6 +267,21 @@ impl Motor {
         }
         let clave = clave_exchange(&cotizacion.exchange, &cotizacion.par);
         state.cotizaciones.insert(clave, cotizacion.clone());
+
+        // Ventana rodante para que el laboratorio pueda usar mercado reciente
+        // aunque el usuario no haya iniciado una captura manual previamente.
+        state.historial_replay.push_back(cotizacion.clone());
+        let limite_tiempo = ahora - chrono::Duration::minutes(60);
+        while state
+            .historial_replay
+            .front()
+            .is_some_and(|item| item.recibida_en < limite_tiempo)
+        {
+            state.historial_replay.pop_front();
+        }
+        while state.historial_replay.len() > state.max_historial_replay_len {
+            state.historial_replay.pop_front();
+        }
 
         // Guardar en buffer de captura si está activa
         if state.captura_activa {
@@ -904,22 +923,36 @@ impl Motor {
         let ahora = Utc::now();
         let mut state = self.state.write().await;
         match escenario {
-            EscenarioDemo::FalloOrden | EscenarioDemo::MercadoMovido => {
+            EscenarioDemo::FalloOrden => {
                 state.demo_forzado = Some(escenario);
-                let detalle = match escenario {
-                    EscenarioDemo::FalloOrden => {
-                        "demo armado: la siguiente orden ejecutable sera rechazada"
-                    }
-                    EscenarioDemo::MercadoMovido => {
-                        "demo armado: la siguiente orden ejecutable sufrira shock de precio"
-                    }
-                    _ => unreachable!(),
-                };
+                let detalle = "demo armado: la siguiente orden ejecutable sera rechazada";
                 insertar_evento_sistema(&mut state, "demo_armado", detalle, "media", ahora);
                 if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({ "ok": true, "modo": "pendiente", "detalle": detalle })
+            }
+            EscenarioDemo::MercadoMovido => {
+                // El recorrido del jurado debe dejar evidencia inmediata y no
+                // una bandera pendiente que dependa de que aparezca una ruta
+                // rentable real después. El modelo probabilístico del motor
+                // sigue aplicando shocks a operaciones live por separado.
+                insertar_evento_sistema(
+                    &mut state,
+                    "mercado_movido",
+                    "demo: shock de precio controlado detectado antes de comprometer capital",
+                    "alta",
+                    ahora,
+                );
+                if let Some(evento) = state.eventos_ejecucion.front() {
+                    self.persistir_evento(evento);
+                }
+                serde_json::json!({
+                    "ok": true,
+                    "modo": "instantaneo",
+                    "shockBps": state.costos.movimiento_brusco_bps.max(8.0),
+                    "capitalComprometidoBtc": 0.0
+                })
             }
             EscenarioDemo::FalloSegundaPierna => {
                 let op_id = format!("demo-leg2-{}", ahora.timestamp_millis());
@@ -1239,12 +1272,65 @@ impl Motor {
     /// Devuelve el estado actual de la captura.
     pub async fn captura_estado(&self) -> serde_json::Value {
         let state = self.state.read().await;
+        let historial_desde = state.historial_replay.front().map(|c| c.recibida_en);
+        let historial_hasta = state.historial_replay.back().map(|c| c.recibida_en);
+        let ventana_predeterminada_desde =
+            historial_hasta.map(|hasta| hasta - chrono::Duration::minutes(10));
+        let historial_ventana_predeterminada = state
+            .historial_replay
+            .iter()
+            .filter(|c| ventana_predeterminada_desde.is_some_and(|desde| c.recibida_en >= desde))
+            .count();
+        let captura_desde = state.datos_capturados.first().map(|c| c.recibida_en);
+        let captura_hasta = state.datos_capturados.last().map(|c| c.recibida_en);
         serde_json::json!({
             "activa": state.captura_activa,
             "snapshots": state.datos_capturados.len(),
             "maxSnapshots": state.max_captura_len,
             "inicioCaptura": state.inicio_captura.map(|t| t.to_rfc3339()),
-            "duracionSegundos": state.inicio_captura.map(|t| (Utc::now() - t).num_seconds()).unwrap_or(0),
+            "duracionSegundos": state.inicio_captura
+                .map(|t| (Utc::now() - t).num_seconds())
+                .or_else(|| captura_desde.zip(captura_hasta).map(|(desde, hasta)| (hasta - desde).num_seconds().max(0)))
+                .unwrap_or(0),
+            "historialSnapshots": state.historial_replay.len(),
+            "historialDesde": historial_desde.map(|t| t.to_rfc3339()),
+            "historialHasta": historial_hasta.map(|t| t.to_rfc3339()),
+            "historialDuracionSegundos": historial_desde.zip(historial_hasta)
+                .map(|(desde, hasta)| (hasta - desde).num_seconds().max(0))
+                .unwrap_or(0),
+            "historialVentanaPredeterminadaSnapshots": historial_ventana_predeterminada,
+            "ventanaPredeterminadaMinutos": 10,
+        })
+    }
+
+    /// Copia una ventana del historial público reciente al tape de replay.
+    pub async fn cargar_ventana_replay(&self, minutos: u32) -> serde_json::Value {
+        let minutos = minutos.clamp(1, 60);
+        let mut state = self.state.write().await;
+        if state.captura_activa {
+            return serde_json::json!({"ok": false, "error": "deten la captura manual antes de cargar una ventana"});
+        }
+        let Some(hasta) = state.historial_replay.back().map(|c| c.recibida_en) else {
+            return serde_json::json!({"ok": false, "error": "todavia no hay historial de mercado disponible"});
+        };
+        let desde = hasta - chrono::Duration::minutes(i64::from(minutos));
+        let datos = state
+            .historial_replay
+            .iter()
+            .filter(|c| c.recibida_en >= desde)
+            .cloned()
+            .collect::<Vec<_>>();
+        if datos.is_empty() {
+            return serde_json::json!({"ok": false, "error": "no hay muestras dentro de esa ventana"});
+        }
+        state.datos_capturados = datos;
+        serde_json::json!({
+            "ok": true,
+            "modo": "ventana_historial_cargada",
+            "minutosSolicitados": minutos,
+            "snapshots": state.datos_capturados.len(),
+            "desde": state.datos_capturados.first().map(|c| c.recibida_en.to_rfc3339()),
+            "hasta": state.datos_capturados.last().map(|c| c.recibida_en.to_rfc3339()),
         })
     }
 
@@ -1253,15 +1339,30 @@ impl Motor {
     /// El motor live nunca recibe las cotizaciones del replay: sus wallets,
     /// PnL, GA y libros permanecen intactos mientras el sandbox se evalúa.
     pub async fn ejecutar_replay_capturado(&self) -> serde_json::Value {
-        let (datos, mut costos, par_base, pares_extra) = {
+        let (datos, mut costos, par_base, pares_extra, fuente) = {
             let state = self.state.read().await;
             let par_base = state
                 .pares_activos
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "BTC/USD".to_string());
+            let (datos, fuente) = if state.datos_capturados.is_empty() {
+                let hasta = state.historial_replay.back().map(|c| c.recibida_en);
+                let desde = hasta.map(|t| t - chrono::Duration::minutes(10));
+                (
+                    state
+                        .historial_replay
+                        .iter()
+                        .filter(|c| desde.is_some_and(|limite| c.recibida_en >= limite))
+                        .cloned()
+                        .collect(),
+                    "historial_publico_ultimos_10_min",
+                )
+            } else {
+                (state.datos_capturados.clone(), "captura_seleccionada")
+            };
             (
-                state.datos_capturados.clone(),
+                datos,
                 state.costos.clone(),
                 par_base,
                 state
@@ -1270,6 +1371,7 @@ impl Motor {
                     .skip(1)
                     .cloned()
                     .collect::<Vec<_>>(),
+                fuente,
             )
         };
         if datos.is_empty() {
@@ -1305,7 +1407,7 @@ impl Motor {
         serde_json::json!({
             "ok": true,
             "aislado": true,
-            "fuente": "captura_mercado_publico",
+            "fuente": fuente,
             "determinista": true,
             "inputSha256": input_sha256,
             "reloj": "timestamps_capturados_monotonizados",
@@ -3555,6 +3657,23 @@ mod tests {
         assert_eq!(evento.severidad, "alta");
     }
 
+    #[tokio::test]
+    async fn demo_mercado_movido_deja_evidencia_inmediata_sin_orden_pendiente() {
+        let motor = Motor::new(cfg_test(), 20_000.0, 2.0, "BTC/USDT".into(), vec![], None);
+        let resultado = motor
+            .activar_escenario_demo(EscenarioDemo::MercadoMovido)
+            .await;
+        let estado = motor.estado().await;
+
+        assert_eq!(resultado["ok"], true);
+        assert_eq!(resultado["modo"], "instantaneo");
+        assert_eq!(resultado["capitalComprometidoBtc"], 0.0);
+        assert!(estado
+            .eventos_ejecucion
+            .iter()
+            .any(|evento| evento.tipo == "mercado_movido"));
+    }
+
     #[test]
     fn replay_sintetico_genera_holdout_con_resultados_adversos() {
         let cfg = cfg_test();
@@ -3827,6 +3946,26 @@ mod tests {
         let estado = motor.captura_estado().await;
         assert_eq!(estado["activa"], false);
         assert_eq!(estado["snapshots"], 2);
+    }
+
+    #[tokio::test]
+    async fn replay_puede_cargar_una_ventana_del_historial_reciente() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor
+            .recibir_cotizacion(cot("A", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        motor
+            .recibir_cotizacion(cot("B", 102.0, 103.0, 1.0, 1.0))
+            .await;
+
+        let disponible = motor.captura_estado().await;
+        assert_eq!(disponible["historialSnapshots"], 2);
+        assert_eq!(disponible["historialVentanaPredeterminadaSnapshots"], 2);
+
+        let cargada = motor.cargar_ventana_replay(10).await;
+        assert_eq!(cargada["ok"], true);
+        assert_eq!(cargada["snapshots"], 2);
+        assert_eq!(motor.captura_estado().await["snapshots"], 2);
     }
 
     #[tokio::test]

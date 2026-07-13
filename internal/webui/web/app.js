@@ -142,7 +142,10 @@ function iniciarSelectorProcedencia() {
       event.preventDefault();
       const tab = document.querySelector(`[data-tab="${DATA_LENS_COPY[lens]?.tab}"]`);
       tab?.click();
-      $("dashboard")?.scrollIntoView({ behavior: reducirMovimiento ? "auto" : "smooth" });
+      // La pestaña restaura su scroll en el siguiente frame. Esperar ese frame y
+      // mover el contenedor principal evita dos animaciones simultaneas que, en
+      // especial en Safari/touch, pueden dejar el gesto hacia arriba bloqueado.
+      requestAnimationFrame(() => irAlDashboard(!reducirMovimiento));
     });
   });
 

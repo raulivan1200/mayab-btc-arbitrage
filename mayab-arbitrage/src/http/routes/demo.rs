@@ -39,6 +39,10 @@ pub(crate) fn routes() -> Router<EstadoApp> {
             "/api/replay/captura/estado",
             get(server::captura_estado_http),
         )
+        .route(
+            "/api/replay/captura/ventana",
+            post(server::captura_ventana_http),
+        )
         .route("/api/replay/ejecutar", post(server::captura_replay_http))
         .route("/api/adverso", post(server::trigger_adverso_http))
 }
