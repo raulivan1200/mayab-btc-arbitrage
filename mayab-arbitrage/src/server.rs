@@ -947,12 +947,7 @@ fn construir_research_tapes() -> serde_json::Value {
         };
     }
     let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
-    let path = configured.unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-            .join("data/captura_real.json")
-    });
+    let path = configured.unwrap_or_else(default_research_tape_path);
     match fs::read(&path) {
         Ok(bytes) => {
             let events = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -982,6 +977,24 @@ fn construir_research_tapes() -> serde_json::Value {
             "limitations": ["No se publica evidencia de tape cuando el artefacto no está montado."]
         }),
     }
+}
+
+fn default_research_tape_path() -> PathBuf {
+    let junto_al_binario = std::env::current_exe().ok().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join("data/captura_real.json"))
+    });
+    let desde_directorio_trabajo = PathBuf::from("data/captura_real.json");
+    let desde_workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+        .join("data/captura_real.json");
+
+    junto_al_binario
+        .into_iter()
+        .chain([desde_directorio_trabajo.clone(), desde_workspace])
+        .find(|path| path.is_file())
+        .unwrap_or(desde_directorio_trabajo)
 }
 
 fn validar_scan_corpus(corpus_sha: &str, bytes: &[u8]) -> Result<Value, &'static str> {
@@ -5456,6 +5469,18 @@ mod tests {
         assert_eq!(health["buildTime"], build.build_time);
         assert_eq!(health["version"], build.version);
         assert_eq!(health["environment"], build.environment);
+    }
+
+    #[test]
+    fn tape_incluido_se_resuelve_fuera_del_directorio_de_compilacion() {
+        let path = default_research_tape_path();
+
+        assert!(
+            path.is_file(),
+            "fixture no encontrado en {}",
+            path.display()
+        );
+        assert!(path.ends_with("data/captura_real.json"));
     }
 
     #[test]
