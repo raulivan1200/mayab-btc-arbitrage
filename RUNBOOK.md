@@ -9,6 +9,11 @@ curl http://localhost:8080/healthz
 
 ## Deploy Cloud Run
 
+Cloud Run hospeda la imagen Docker; no es una alternativa a Docker. La URL
+pública de evaluación puede operar con el fallback explícito de SQLite efímero,
+que debe verificarse en `/api/jurado` y cuyos datos se pierden al reemplazar la
+instancia. El procedimiento siguiente es el perfil durable con TimescaleDB.
+
 ```bash
 export PROJECT=mi-proyecto
 export RUNTIME_SERVICE_ACCOUNT=mayab-runtime@mi-proyecto.iam.gserviceaccount.com
@@ -29,9 +34,13 @@ La conexión administrada usa TLS por defecto (`sslmode=require`). `default` y
 desarrollo con el opt-in exacto `ALLOW_INSECURE_DATABASE=true`; producción lo
 rechaza siempre.
 
-Validación automática: `/healthz`, `/readyz`, `/api/version`, `/api/preflight`,
+Validación automática: `/api/healthz` (y `/healthz` en la revisión actual del
+código fuente), `/readyz`, `/api/version`, `/api/preflight`,
 `/api/resumen-llm`, el tape versionado, los exports y los estáticos del dashboard.
-En producción, preflight no queda verde si `storagePersistent` es falso.
+En el perfil durable, preflight no queda verde si `storagePersistent` es falso.
+En la demo pública sólo acepta `false` cuando
+`ALLOW_EPHEMERAL_PRODUCTION=true`, `storageMode=sqlite_ephemeral` y las colas no
+registran pérdidas.
 Cloud Run se despliega con `TRUST_PROXY_HEADERS=false`; no lo habilites sin un
 proxy o WAF que elimine encabezados de cliente y reconstruya la cadena confiable.
 

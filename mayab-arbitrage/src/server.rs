@@ -235,24 +235,40 @@ fn ruta_sujeta_a_rate_limit(path: &str) -> bool {
 }
 
 pub(crate) async fn healthz() -> Json<serde_json::Value> {
+    let build = crate::version::current();
     Json(json!({
         "ok": true,
-        "version": env!("CARGO_PKG_VERSION"),
         "name": env!("CARGO_PKG_NAME"),
+        "version": build.version,
+        "gitSha": build.git_sha,
+        "buildTime": build.build_time,
+        "environment": build.environment,
     }))
 }
 
-fn persistencia_saludable(persistencia: Option<&EstadoPersistencia>, production: bool) -> bool {
+fn persistencia_saludable(
+    persistencia: Option<&EstadoPersistencia>,
+    production: bool,
+    allow_ephemeral_production: bool,
+) -> bool {
     persistencia.is_some_and(|p| {
+        let timescaledb_durable =
+            p.storage_persistent && p.backend == "timescaledb" && p.storage_mode == "timescaledb";
+        let sqlite_efimero_explicito = allow_ephemeral_production
+            && !p.storage_persistent
+            && p.backend == "sqlite"
+            && p.storage_mode == "sqlite_ephemeral"
+            && p.storage_status == "ephemeral";
         p.activa
             && p.queue_dropped == 0
             && p.queue_failed == 0
             && !matches!(p.storage_status.as_str(), "degraded" | "unavailable")
-            && (!production
-                || (p.storage_persistent
-                    && p.backend == "timescaledb"
-                    && p.storage_mode == "timescaledb"))
+            && (!production || timescaledb_durable || sqlite_efimero_explicito)
     })
+}
+
+fn permite_sqlite_efimero_en_produccion() -> bool {
+    std::env::var("ALLOW_EPHEMERAL_PRODUCTION").is_ok_and(|value| value == "true")
 }
 
 pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
@@ -276,7 +292,12 @@ pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
         crate::config::Environment::from_env(),
         crate::config::Environment::Production
     );
-    let persistencia_ok = persistencia_saludable(estado.persistencia.as_ref(), production);
+    let ephemeral_production_override = production && permite_sqlite_efimero_en_produccion();
+    let persistencia_ok = persistencia_saludable(
+        estado.persistencia.as_ref(),
+        production,
+        ephemeral_production_override,
+    );
     let persistencia_error = estado.persistencia.as_ref().and_then(|p| p.error.clone());
     let persistencia_reason = estado.persistencia.as_ref().map_or_else(
         || "persistence not configured".to_string(),
@@ -296,7 +317,9 @@ pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
         "name": "persistence",
         "ok": persistencia_ok,
         "reason": persistencia_reason,
-        "detail": persistencia_error
+        "detail": persistencia_error,
+        "durabilityRequired": production && !ephemeral_production_override,
+        "ephemeralProductionOverride": ephemeral_production_override
     }));
     if !persistencia_ok {
         ready = false;
@@ -3105,7 +3128,12 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         crate::config::Environment::from_env(),
         crate::config::Environment::Production
     );
-    let persistencia_ok = persistencia_saludable(estado.persistencia.as_ref(), production);
+    let ephemeral_production_override = production && permite_sqlite_efimero_en_produccion();
+    let persistencia_ok = persistencia_saludable(
+        estado.persistencia.as_ref(),
+        production,
+        ephemeral_production_override,
+    );
     let rest_fallbacks = estado
         .cotizaciones
         .iter()
@@ -3324,7 +3352,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             check("ml_edge_explicable", ml_edge_ok, estado.ml_edge.as_ref().map(|m| format!("{} score={:.3}, EV={:.2} USD, confianza={:.1}%", m.version, m.score_actual, m.expected_value_usd, m.confianza * 100.0)).unwrap_or_else(|| "esperando auditoría para calcular ML Edge".into())),
             check("dashboard_estatico", dashboard_ok, "index.html, app.js y styles.css encontrados"),
             check("auditoria_exportable", export_ok, "/api/export/json y /api/export/csv disponibles"),
-            check("persistencia_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("backend={}, durable={}, status={}, cola pendiente={}, descartada={}, fallida={}, {} ops, {} ejecuciones, {} auditorias en {}", p.backend, p.storage_persistent, p.storage_status, p.queue_pending, p.queue_dropped, p.queue_failed, p.operaciones, p.ejecuciones, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
+            check("persistencia_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("backend={}, durable={}, status={}, excepcionEfimeraProduccion={}, cola pendiente={}, descartada={}, fallida={}, {} ops, {} ejecuciones, {} auditorias en {}", p.backend, p.storage_persistent, p.storage_status, ephemeral_production_override, p.queue_pending, p.queue_dropped, p.queue_failed, p.operaciones, p.ejecuciones, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
             check("rest_fallback", rest_fallback_ok, format!("{rest_fallbacks} feeds usan snapshot REST público como respaldo; WS sigue siendo la fuente primaria")),
             check("telemetria_pipeline", estado.telemetria_pipeline.muestras > 0, format!("{} muestras; compute p50/p95/p99={}/{}/{} us; scheduling p50/p95/p99={}/{}/{} us; {:.1} eventos/s", estado.telemetria_pipeline.muestras, estado.telemetria_pipeline.compute_p50_us, estado.telemetria_pipeline.compute_p95_us, estado.telemetria_pipeline.compute_p99_us, estado.telemetria_pipeline.scheduling_p50_us, estado.telemetria_pipeline.scheduling_p95_us, estado.telemetria_pipeline.scheduling_p99_us, estado.telemetria_pipeline.eventos_por_segundo)),
         ],
@@ -5416,6 +5444,55 @@ mod tests {
         for path in ["/api/estado", "/api/demo", "/metrics", "/tiempo-real"] {
             assert!(ruta_sujeta_a_rate_limit(path), "protected path: {path}");
         }
+    }
+
+    #[tokio::test]
+    async fn health_publica_identifica_la_revision_compilada() {
+        let Json(health) = healthz().await;
+        let build = crate::version::current();
+
+        assert_eq!(health["ok"], true);
+        assert_eq!(health["gitSha"], build.git_sha);
+        assert_eq!(health["buildTime"], build.build_time);
+        assert_eq!(health["version"], build.version);
+        assert_eq!(health["environment"], build.environment);
+    }
+
+    #[test]
+    fn produccion_solo_acepta_sqlite_efimero_con_excepcion_explicita() {
+        let estado = estado_publico_test(true, true);
+        let sqlite = estado
+            .persistencia
+            .as_ref()
+            .expect("fixture con persistencia SQLite");
+
+        assert!(persistencia_saludable(Some(sqlite), false, false));
+        assert!(!persistencia_saludable(Some(sqlite), true, false));
+        assert!(persistencia_saludable(Some(sqlite), true, true));
+
+        let mut sqlite_no_declarado = sqlite.clone();
+        sqlite_no_declarado.storage_mode = "sqlite_persistent".to_string();
+        assert!(!persistencia_saludable(
+            Some(&sqlite_no_declarado),
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn timescaledb_durable_es_saludable_sin_excepcion_efimera() {
+        let mut timescaledb = estado_publico_test(true, true)
+            .persistencia
+            .expect("fixture con persistencia");
+        timescaledb.backend = "timescaledb".to_string();
+        timescaledb.ruta = "timescaledb://[redacted]".to_string();
+        timescaledb.storage_mode = "timescaledb".to_string();
+        timescaledb.storage_status = "durable".to_string();
+        timescaledb.storage_persistent = true;
+
+        assert!(persistencia_saludable(Some(&timescaledb), true, false));
+        timescaledb.queue_failed = 1;
+        assert!(!persistencia_saludable(Some(&timescaledb), true, false));
     }
 
     #[tokio::test]

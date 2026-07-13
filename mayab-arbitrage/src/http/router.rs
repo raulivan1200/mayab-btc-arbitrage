@@ -41,6 +41,7 @@ mod tests {
 
         for path in [
             "/healthz",
+            "/api/healthz",
             "/api/version",
             "/api/estado",
             "/api/export/json",

@@ -39,7 +39,8 @@ Los errores validados usan:
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| `GET` | `/healthz` | Liveness mínimo; alias `/api/healthz` |
+| `GET` | `/api/healthz` | Liveness público canónico con `gitSha`, fecha de build, versión y ambiente |
+| `GET` | `/healthz` | Alias de compatibilidad local; no se usa como gate de Cloud Run |
 | `GET` | `/readyz` | Readiness del proceso; alias `/api/readyz` |
 | `GET` | `/api/version` | Build, schema, sesión y hashes canónicos de dataset/configuración |
 

@@ -15,6 +15,7 @@ MAYAB_ENV="${MAYAB_ENV:-production}"
 MAYAB_JUDGE_MODE="${MAYAB_JUDGE_MODE:-true}"
 AUDITORIA_DB_PATH="${AUDITORIA_DB_PATH:-/data/mayab-auditoria.sqlite}"
 STORAGE_MODE="${STORAGE_MODE:-sqlite_ephemeral}"
+ALLOW_EPHEMERAL_PRODUCTION="${ALLOW_EPHEMERAL_PRODUCTION:-false}"
 
 # Discord forma parte del despliegue principal de Mayab. Estos identificadores
 # son publicos; los tokens permanecen en Secret Manager. Mantener defaults aqui
@@ -75,6 +76,14 @@ case "$MAYAB_JUDGE_MODE" in
     ;;
 esac
 
+case "$ALLOW_EPHEMERAL_PRODUCTION" in
+  true|false) ;;
+  *)
+    echo "ALLOW_EPHEMERAL_PRODUCTION debe ser true o false" >&2
+    exit 2
+    ;;
+esac
+
 if [ "$MIN_INSTANCES" -gt "$MAX_INSTANCES" ]; then
   echo "MIN_INSTANCES no puede ser mayor que MAX_INSTANCES" >&2
   exit 2
@@ -90,8 +99,9 @@ if [ "$MAYAB_ENV" = "production" ] && [ -z "$RUNTIME_SERVICE_ACCOUNT" ]; then
   exit 2
 fi
 
-if [ "$MAYAB_ENV" = "production" ] && [ "$STORAGE_MODE" != "timescaledb" ]; then
-  echo "DATABASE_URL_SECRET es obligatorio en producción para persistencia durable" >&2
+if [ "$MAYAB_ENV" = "production" ] && [ "$STORAGE_MODE" != "timescaledb" ] \
+  && [ "$ALLOW_EPHEMERAL_PRODUCTION" != "true" ]; then
+  echo "DATABASE_URL_SECRET es obligatorio en producción durable; la demo efímera exige ALLOW_EPHEMERAL_PRODUCTION=true" >&2
   exit 2
 fi
 
@@ -160,7 +170,7 @@ fi
 # cliente ya envió el encabezado. El limitador de la app usa por defecto la IP
 # observada por el socket; habilitar proxy headers requiere una capa perimetral
 # que limpie la cadena antes de llegar al servicio.
-ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},MAYAB_JUDGE_MODE=${MAYAB_JUDGE_MODE},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=false"
+ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},MAYAB_JUDGE_MODE=${MAYAB_JUDGE_MODE},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},ALLOW_EPHEMERAL_PRODUCTION=${ALLOW_EPHEMERAL_PRODUCTION},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=false"
 
 # Optional env vars with defaults
 if [ -n "${DISCORD_APPLICATION_ID:-}" ]; then
@@ -411,14 +421,27 @@ smoke_get() {
 }
 
 check_preflight() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$STORAGE_MODE" "$ALLOW_EPHEMERAL_PRODUCTION" <<'PY'
 import json
 import sys
 
 preflight = json.load(open(sys.argv[1]))
+expected_storage = sys.argv[2]
+allow_ephemeral = sys.argv[3] == "true"
 readiness = preflight.get("judgeReadiness") or {}
 checks = readiness.get("checks") or []
 persistence = preflight.get("persistencia") or {}
+persistence_profile_ok = (
+    persistence.get("backend") == "timescaledb"
+    and persistence.get("storageMode") == "timescaledb"
+    and persistence.get("storagePersistent") is True
+) if expected_storage == "timescaledb" else (
+    allow_ephemeral
+    and persistence.get("backend") == "sqlite"
+    and persistence.get("storageMode") == "sqlite_ephemeral"
+    and persistence.get("storageStatus") == "ephemeral"
+    and persistence.get("storagePersistent") is False
+)
 if not (
     preflight.get("listo") is True
     and readiness.get("status") == "ready"
@@ -431,8 +454,7 @@ if not (
     and (readiness.get("executionMatrix") or {}).get("total") == 12
     and (readiness.get("executionMatrix") or {}).get("allPassed") is True
     and ((readiness.get("twoLegEvidence") or {}).get("invariants") or {}).get("allPassed") is True
-    and persistence.get("backend") == "timescaledb"
-    and persistence.get("storagePersistent") is True
+    and persistence_profile_ok
     and persistence.get("queueDropped", 0) == 0
     and persistence.get("queueFailed", 0) == 0
 ):
@@ -441,10 +463,8 @@ PY
 }
 
 echo "Validando revisión candidata fuera de tráfico en ${CANDIDATE_URL}"
-smoke_get "/healthz" "$TMP_DIR/healthz-canonical.json"
-smoke_get "/api/healthz" "$TMP_DIR/healthz-alias.json"
+smoke_get "/api/healthz" "$TMP_DIR/healthz-canonical.json"
 grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/healthz-canonical.json"
-grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/healthz-alias.json"
 
 ready=false
 ready_attempt=0
@@ -466,6 +486,7 @@ grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/readyz-alias.json"
 
 smoke_get "/api/version" "$TMP_DIR/version.json"
 if [ -n "${GITHUB_SHA:-}" ]; then
+  grep -Fq "\"gitSha\":\"${GITHUB_SHA}\"" "$TMP_DIR/healthz-canonical.json"
   grep -Fq "\"gitSha\":\"${GITHUB_SHA}\"" "$TMP_DIR/version.json"
 fi
 

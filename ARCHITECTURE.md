@@ -46,7 +46,9 @@
 - `server.rs` ensambla HTTP y aplica tasa, tamaño, timeout, concurrencia y cache.
 - `motor.rs` es dueño exclusivo del estado simulado, balances y P&L.
 - `persistencia.rs` encapsula SQLite local y `persistencia_timescale.rs` el
-  backend durable productivo; `AuditoriaEnCola` mantiene ambos fuera del hot path.
+  backend durable disponible para el perfil con retención; la demo pública usa
+  SQLite efímero de forma explícita. `AuditoriaEnCola` mantiene ambos fuera del
+  hot path.
 - `internal/webui/web/` consume contratos públicos; Playwright verifica el flujo
   navegador–API y que no haya logs fuera de `?debug=1`.
 

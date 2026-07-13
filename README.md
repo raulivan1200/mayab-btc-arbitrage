@@ -53,7 +53,15 @@ reinicio del proceso lo devuelve a cero.
 
 La cifra operacional principal no es un spread bruto: es **cero exposición residual después de una segunda pierna rechazada**, con la transición completa y su pérdida de unwind auditadas. Las cifras runtime se publican desde el proceso evaluado; no se congelan en marketing.
 
-[Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
+[Producción pública: Cloud Run sobre una imagen Docker](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
+
+> **Estado del deploy público (verificado el 13 de julio de 2026):** el dashboard
+> y `GET /api/healthz` responden en Cloud Run; `/api/healthz` y `/api/version`
+> publican el SHA y la fecha de build de la imagen desplegada. Esta instancia de
+> evaluación usa SQLite efímero, por
+> lo que su auditoría se reinicia con la revisión; TimescaleDB está implementado
+> para retención durable, pero no se afirma como activo mientras
+> `/api/jurado#/evidenciaClave/persistencia` reporte `sqlite_ephemeral`.
 
 [Repositorio público en GitHub](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx)
 
@@ -187,7 +195,7 @@ La demo no depende de que aparezca una oportunidad real: `POST /api/demo/final` 
 | USD y USDT separados por defecto | Evita arbitrajes falsos causados por el basis fiat/stablecoin | El cruce requiere opt-in y costo explícito |
 | WebSocket-first + REST fallback etiquetado | Mantiene continuidad observable sin ocultar degradación del feed | Un snapshot REST no se presenta como continuidad WebSocket |
 | Demo sintética determinista | Permite evaluar ejecución, P&L, GA y caos aunque el mercado esté plano | Nunca se usa como evidencia de rentabilidad live |
-| SQLite local / TimescaleDB en producción | Auditoría simple en desarrollo y durable en Cloud Run | SQLite en `/tmp` se declara efímero y producción falla cerrado sin TimescaleDB |
+| SQLite efímero para la demo / TimescaleDB para retención durable | La URL pública privilegia una evaluación reproducible; el modo endurecido conserva evidencia fuera de la instancia | El estado de persistencia se expone en API y nunca se presenta SQLite como durable |
 
 Los ADR completos están en [`docs/ADRs`](docs/ADRs), y los límites de arquitectura, seguridad y evidencia están en [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY_MODEL.md](docs/SECURITY_MODEL.md) y [QUANTITATIVE_EVIDENCE.md](docs/QUANTITATIVE_EVIDENCE.md).
 
@@ -323,7 +331,7 @@ La revisión rápida y reproducible está en [docs/EVIDENCE_MATRIX.md](docs/EVID
   reporte runtime como la matriz determinista 12/12 con la misma huella.
 - Expone un snapshot compacto para agentes y scripts en `/api/resumen-llm`, incluyendo decisión actual, mejor ruta, GA, riesgo, PnL y últimos eventos.
 - Expone `/api/paquete-evaluacion` como evidencia autocontenida para jueces: score por criterio, guion de demo, resumen ejecutivo, backtest y enlaces de auditoría.
-- Persiste evidencia en SQLite para desarrollo local y en TimescaleDB durable para producción.
+- Persiste evidencia en SQLite para desarrollo y demos; ofrece TimescaleDB con TLS para un despliegue que requiera retención durable.
 
 ## Tecnologías utilizadas
 
@@ -443,7 +451,7 @@ Guion detallado para revisión o videollamada: [docs/defensa-comite.md](docs/def
 - Decision inspector: sí, `decisionCode`, `decisionReason`, umbral, valor actual, score, pesos GA y breakdown de costos.
 - Risk guards: sí, stale-book guard, circuit breaker, modo conservador, revalidación pre-ejecución y reservas `(exchange, activo)` sin lock global del hot path.
 - Web dashboard: sí, UI en tiempo real con rutas, PnL, wallets, latencias, GA, eventos y auditoría.
-- Public deployment: sí, Cloud Run como ruta principal.
+- Public deployment: sí, Cloud Run como hosting principal de una imagen Docker reproducible; la revisión pública actual declara SQLite efímero.
 - Tests: sí, `cargo fmt -- --check` y `cargo test`; recomendado correr `cargo clippy -- -D warnings` antes de release.
 
 ## Qué no hace
@@ -535,9 +543,12 @@ cargo build --release
 
 ### Salud, readiness y límites HTTP
 
-`GET /healthz` confirma que el proceso responde. `GET /readyz` devuelve 200
+`GET /healthz` confirma que el proceso responde en el binario actual;
+`GET /api/healthz` es la comprobación pública canónica y compatible con la
+revisión desplegada. `GET /readyz` devuelve 200
 cuando el backend de auditoría seleccionado está activo, su cola no ha perdido
-escrituras, la persistencia es TimescaleDB durable en producción, el motor tiene
+escrituras, la persistencia es TimescaleDB durable en el perfil
+`MAYAB_ENV=production` sin excepción efímera, el motor tiene
 cotizaciones, existen al menos dos feeds frescos y no hay circuit breaker,
 riesgo crítico ni ejecución en curso; si no, devuelve 503 con un arreglo
 `checks` explicativo.
@@ -596,14 +607,17 @@ cargo run
 
 `AUDITORIA_DB_PATH` apunta a SQLite local. `STORAGE_MODE=sqlite_ephemeral` es el valor seguro por defecto y no promete retención entre instancias. Usa `STORAGE_MODE=sqlite_persistent` solamente cuando `/data` esté respaldado por un volumen durable; la API expone `storageMode`, `storageStatus` y `storagePersistent`.
 
-Para producción, `STORAGE_MODE=timescaledb` selecciona el backend PostgreSQL/
+Para producción con retención durable, `STORAGE_MODE=timescaledb` selecciona el backend PostgreSQL/
 TimescaleDB sin fallback silencioso. Requiere compilar el feature `timescaledb`,
 una `DATABASE_URL` con `sslmode=require` y el esquema versionado. El modo
 `sslmode=disable` falla cerrado incluso en desarrollo salvo que el operador
 declare además `ALLOW_INSECURE_DATABASE=true`; nunca se admite en producción:
 
-El binario rechaza valores desconocidos de `STORAGE_MODE` y, cuando
-`MAYAB_ENV=production`, no arranca con SQLite: exige `timescaledb`.
+El binario rechaza valores desconocidos de `STORAGE_MODE`. Cuando
+`MAYAB_ENV=production`, exige `timescaledb` salvo que el operador habilite de
+forma explícita `ALLOW_EPHEMERAL_PRODUCTION=true`; esa excepción existe para la
+demo pública, queda visible en el estado y no debe describirse como persistencia
+durable ni usarse para trading real.
 
 ```bash
 psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/timescaledb/schema.sql
@@ -635,7 +649,17 @@ RETIRO_BTC_BYBIT=0.00010
 
 ## Despliegue
 
-La demo pública actual apunta a Cloud Run. Es la opción recomendada para el comité porque soporta WebSockets, HTTPS automático, logs centralizados y despliegue directo desde el repo.
+La producción pública está en Cloud Run y ejecuta la misma imagen Docker que se
+construye y prueba en CI. No hay que escoger entre “Cloud Run o Docker”: Docker
+es el artefacto portable y Cloud Run es el servicio que lo hospeda. Esta es la
+ruta recomendada para el comité porque entrega una URL HTTPS, soporta WebSockets,
+publica el SHA del build y centraliza logs sin cambiar el binario evaluado.
+
+La revisión pública observada el 13 de julio de 2026 usa el fallback explícito
+de SQLite efímero. Es suficiente para la demo simulada y sus exports, pero un
+reinicio puede borrar la auditoría. El bloque siguiente describe el despliegue
+durable objetivo con TimescaleDB; no pretende afirmar que ese backend ya esté
+activo en la URL pública.
 
 Deploy manual desde el código fuente. El script deja una sola instancia
 caliente porque wallets, GA y WebSocket viven en el proceso; la auditoría queda
@@ -654,6 +678,18 @@ DATABASE_URL_SECRET=mayab-database-url:latest \
 ./scripts/deploy-cloud-run.sh
 ```
 
+Para reproducir el perfil público efímero sin afirmar retención durable, omite
+`DATABASE_URL_SECRET` y habilita la excepción de forma visible:
+
+```bash
+PROJECT=arahli-495117 \
+REGION=us-central1 \
+RUNTIME_SERVICE_ACCOUNT=tu-cuenta-runtime@arahli-495117.iam.gserviceaccount.com \
+ADMIN_TOKEN_SECRET=mayab-admin-token:latest \
+ALLOW_EPHEMERAL_PRODUCTION=true \
+./scripts/deploy-cloud-run.sh
+```
+
 Variables útiles para la demo final:
 
 ```bash
@@ -669,6 +705,7 @@ Después del deploy:
 
 ```bash
 BASE_URL=https://tu-url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
+curl -sS https://tu-url-publica/api/healthz
 curl -sS https://tu-url-publica/api/preflight
 ```
 
@@ -695,19 +732,23 @@ WIF_PROVIDER
 WIF_SERVICE_ACCOUNT
 RUNTIME_SERVICE_ACCOUNT
 ADMIN_TOKEN_SECRET
-DATABASE_URL_SECRET
+DATABASE_URL_SECRET # opcional; si existe activa TimescaleDB durable
+MAYAB_RELEASE_VERSION # etiqueta legible; el SHA sigue siendo la identidad exacta
 ```
 
 `RUNTIME_SERVICE_ACCOUNT` es la identidad dedicada del contenedor y sólo debe
 tener acceso a los secretos y servicios que necesita en runtime.
-`ADMIN_TOKEN_SECRET` y `DATABASE_URL_SECRET` son referencias `nombre:versión`
-de Secret Manager. El workflow lee el mismo `ADMIN_TOKEN_SECRET` desplegado para
-el smoke; no necesita duplicar el token como GitHub Actions Secret.
+`ADMIN_TOKEN_SECRET` y, cuando se configura, `DATABASE_URL_SECRET` son
+referencias `nombre:versión` de Secret Manager. El workflow lee el mismo
+`ADMIN_TOKEN_SECRET` desplegado para el smoke; no necesita duplicar el token
+como GitHub Actions Secret. Sin `DATABASE_URL_SECRET`, el workflow declara
+`ALLOW_EPHEMERAL_PRODUCTION=true` y valida que la API siga reportando
+`storagePersistent=false`.
 
 Permisos mínimos que no deben confundirse entre identidades:
 
 - la cuenta runtime necesita `roles/secretmanager.secretAccessor` sobre
-  `ADMIN_TOKEN_SECRET` y `DATABASE_URL_SECRET`;
+  `ADMIN_TOKEN_SECRET` y, si se usa, `DATABASE_URL_SECRET`;
 - la cuenta `WIF_SERVICE_ACCOUNT` necesita `roles/run.admin`,
   `roles/artifactregistry.writer`, acceso a leer `ADMIN_TOKEN_SECRET` para el
   smoke y `roles/iam.serviceAccountUser` **sobre** la cuenta runtime;
@@ -770,9 +811,12 @@ es un benchmark reproducible de una corrida y sus condiciones de red, no una
 promesa universal de latencia ni un SLA de los exchanges. Usa `CLEANUP=0` solo
 si necesitas inspeccionar temporalmente las réplicas y elimínalas después.
 
-Render también está soportado vía `render.yaml`, pero el plan gratuito puede dormir la app y hacer que la primera carga sea lenta.
+Render también conserva una configuración portable vía `render.yaml`, pero no
+es la URL entregada ni mejora la evidencia frente al Cloud Run ya verificable;
+el plan gratuito además puede dormir la app y hacer lenta la primera carga.
 
-Fly.io también está preparado con `fly.toml`, aunque requiere instalar `flyctl`:
+Fly.io también está preparado con `fly.toml` como plan de contingencia, aunque
+no es el entorno de producción declarado y requiere instalar `flyctl`:
 
 ```bash
 fly launch --copy-config

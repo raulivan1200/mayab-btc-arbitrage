@@ -10,7 +10,7 @@ Mayab consumes public market data and simulates trades. It has no exchange crede
 - Read endpoints expose public demo state; mutable endpoints change shared simulated state only.
 - `ADMIN_TOKEN`, when configured, protects mutations through `Authorization: Bearer` or `X-Admin-Token`. Never put it in a URL or commit it.
 - `WEBHOOK_URL` is private configuration because providers often embed credentials in the URL; it is never serialized into public state, WebSocket snapshots or exports.
-- `DATABASE_URL` is injected from Secret Manager, requires TLS by default and is always represented publicly as `timescaledb://[redacted]`.
+- When TimescaleDB is configured, `DATABASE_URL` is injected from Secret Manager, requires TLS by default and is always represented publicly as `timescaledb://[redacted]`.
 - `MAYAB_JUDGE_MODE=true` is an explicit evaluation-only exception: it makes only `/api/demo/reset`, `/api/demo/final`, and `/api/demo/caos` public. These deterministic routes mutate simulated in-memory state and remain rate-limited; configuration, exchange toggles, arbitrary wallet/risk changes, GA controls, capture, and MCP mutations still require `ADMIN_TOKEN`.
 - Browser Origin checks are defense in depth, not authentication.
 - `/metrics` can reveal operational detail and should be ingress-restricted in production.
@@ -27,7 +27,7 @@ Mayab consumes public market data and simulates trades. It has no exchange crede
 
 ## Deployment guidance
 
-Use a strong `ADMIN_TOKEN`, exact `ALLOWED_ORIGINS`, HTTPS, least-privilege Cloud Run identity, restricted `/metrics`, immutable image tags and `MIN_INSTANCES=1` only when latency warrants its cost. The production deploy requires durable TimescaleDB and fails closed when its schema or connection is unavailable.
+Use a strong `ADMIN_TOKEN`, exact `ALLOWED_ORIGINS`, HTTPS, least-privilege Cloud Run identity, restricted `/metrics`, immutable image tags and `MIN_INSTANCES=1` only when latency warrants its cost. The durable production profile requires TimescaleDB and fails closed when its schema or connection is unavailable. The public evaluation deployment may opt into ephemeral SQLite explicitly; it reports `storagePersistent=false`, does not promise retention across revisions and remains unsuitable for real trading.
 
 The production image runs as `nonroot`, handles `SIGTERM`, keeps application
 files root-owned and excludes source documentation/scripts from the runtime

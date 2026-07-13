@@ -32,7 +32,10 @@ La demo es segura: no usa llaves API, no firma órdenes, no custodia fondos y to
 
 6. Cerrar con export.
    - Descargar `/api/export/json` o `/api/export/csv`.
-   - Explicar que el export sella la corrida y que producción conserva operaciones, ejecuciones, oportunidades, eventos, auditorías y rebalanceos en TimescaleDB.
+   - Explicar que el export permite conservar la corrida fuera de la instancia.
+     La URL pública reporta SQLite efímero; TimescaleDB es el perfil disponible
+     para una operación que requiera retención durable, no una propiedad que se
+     deba atribuir al deploy actual.
 
 ## Smoke verificable
 
@@ -87,7 +90,7 @@ Optimiza pesos de scoring, umbral mínimo, tamaño máximo y tolerancia de laten
 
 ### ¿Cómo se audita la decisión?
 
-`auditoriaDecisiones` registra ruta, par, decisión, `decisionCode`, `decisionReason`, score, pesos GA, utilidad, net bps, costo total, latencia, Z-Score y balances previos. También se exporta a JSON/CSV y se persiste en SQLite local o TimescaleDB productivo.
+`auditoriaDecisiones` registra ruta, par, decisión, `decisionCode`, `decisionReason`, score, pesos GA, utilidad, net bps, costo total, latencia, Z-Score y balances previos. También se exporta a JSON/CSV y se persiste en SQLite para la demo o en TimescaleDB cuando se configura retención durable.
 
 ### ¿Qué diferencia a Mayab de una demo web común?
 

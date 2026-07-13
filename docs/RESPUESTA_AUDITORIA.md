@@ -25,7 +25,10 @@ reproducible y separa claramente lo implementado de lo que sigue fuera de alcanc
 - Un replay demuestra comportamiento reproducible bajo sus datos y supuestos; no demuestra
   rentabilidad futura.
 - Los rebalanceos son movimientos contables simulados con settlement y costo, no retiros reales.
-- SQLite local es efímero por defecto; el deploy productivo exige TimescaleDB externo y bloquea readiness si deja de estar saludable.
+- SQLite local es efímero por defecto. La URL pública de evaluación lo declara
+  como `sqlite_ephemeral`; el flujo durable de Cloud Run exige TimescaleDB
+  externo y bloquea readiness si deja de estar saludable. No se confunden ambos
+  perfiles ni se afirma retención entre revisiones en la demo pública.
 - Una cotización REST fallback está identificada como tal y no se presenta como WebSocket live.
 
 ## Verificación mínima para jurado

@@ -36,7 +36,7 @@ Estado auditado contra las dos revisiones comparativas recibidas el 12 de julio 
 ## Orden de cierre recomendado
 
 1. Dejar CI y cobertura verdes en el SHA final.
-2. Desplegar y ejecutar `/healthz`, `/api/preflight`, `/api/resumen-llm`, `/api/ga/estado` y el dashboard.
+2. Desplegar y ejecutar `/api/healthz`, `/api/version`, `/api/preflight`, `/api/resumen-llm`, `/api/ga/estado` y el dashboard.
 3. Crear `v1.0.0-finalist`, publicar release notes y registrar el SHA.
 4. Recorrer Judge Mode, demo rentable y segunda pierna fallida en menos de tres minutos.
 5. No agregar features nuevas después del tag; solo corregir defectos bloqueantes con evidencia.

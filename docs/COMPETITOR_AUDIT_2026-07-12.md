@@ -58,9 +58,10 @@ maximizar la probabilidad.
   pierna → unwind → `0 BTC` → evidencia descargable.
 - Citar únicamente el conteo de pruebas producido por la corrida CI del SHA
   entregable; los conteos históricos contradictorios ya no aparecen en la UI.
-- Exigir en el job de deploy tanto `/healthz` como `/api/healthz` y verificar
-  `judgeReadiness.status=ready` después de preparar la demo; un servicio que sólo
-  arranca pero queda en `review` no cuenta como deploy aprobado.
+- Exigir en el job de deploy `/api/healthz`, la ruta pública canónica, y verificar
+  `judgeReadiness.status=ready` después de preparar la demo; `/healthz` es un
+  alias local opcional. Un servicio que sólo arranca pero queda en `review` no
+  cuenta como deploy aprobado.
 
 ### P1 — ejecución pendiente capaz de destronar la evidencia de ArbitrAI
 

@@ -85,4 +85,4 @@ Despues de `mercado_rentable`, debe haber operaciones, PnL positivo, eventos `de
 - Script: `./scripts/deploy-cloud-run.sh`.
 - Para evaluación final, considerar `MIN_INSTANCES=1` temporalmente para evitar cold start.
 - Render/Fly existen como alternativas, pero no son la ruta principal de entrega.
-- Despues de deploy, validar la URL pública con `/healthz`, `/api/preflight`, `/api/resumen-llm`, `/api/ga/estado` y el dashboard.
+- Despues de deploy, validar la URL pública con `/api/healthz`, `/api/version`, `/api/preflight`, `/api/resumen-llm`, `/api/ga/estado` y el dashboard. `/healthz` queda como alias local; no debe bloquear un rollout si la ruta canónica responde.

@@ -7,15 +7,24 @@ info:
     y aliases se documenta en API_REFERENCE.md.
   version: 0.1.0
 servers:
+  - url: https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app
+    description: Producción pública en Cloud Run
   - url: http://127.0.0.1:8080
     description: Desarrollo local
 paths:
-  /healthz:
+  /api/healthz:
     get:
-      summary: Liveness probe
+      summary: Liveness público canónico
       responses:
         '200':
-          description: OK
+          description: OK con gitSha, buildTime, versión y ambiente de la revisión
+  /healthz:
+    get:
+      summary: Alias local de liveness
+      deprecated: true
+      responses:
+        '200':
+          description: OK en el binario local
   /api/estado:
     get:
       summary: Estado público del motor

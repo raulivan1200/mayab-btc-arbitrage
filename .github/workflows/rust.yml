@@ -134,10 +134,12 @@ jobs:
 
       - name: Build one provenance-stable candidate image
         shell: bash
+        env:
+          MAYAB_RELEASE_VERSION: ${{ vars.MAYAB_RELEASE_VERSION }}
         run: |
           set -euo pipefail
           build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
-          release_version="$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+          release_version="${MAYAB_RELEASE_VERSION:-$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)}"
           test -n "$build_time"
           test -n "$release_version"
           docker build --pull --no-cache --tag mayab-btc-arbitrage:ci \
@@ -210,8 +212,7 @@ jobs:
       vars.WIF_SERVICE_ACCOUNT != '' &&
       vars.GAR_REPOSITORY != '' &&
       vars.RUNTIME_SERVICE_ACCOUNT != '' &&
-      vars.ADMIN_TOKEN_SECRET != '' &&
-      vars.DATABASE_URL_SECRET != ''
+      vars.ADMIN_TOKEN_SECRET != ''
     needs: [ci, container]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -231,6 +232,10 @@ jobs:
       MAX_INSTANCES: "1"
       ADMIN_TOKEN_SECRET: ${{ vars.ADMIN_TOKEN_SECRET }}
       DATABASE_URL_SECRET: ${{ vars.DATABASE_URL_SECRET }}
+      # La demo pública puede operar explícitamente con SQLite efímero. Si se
+      # configura DATABASE_URL_SECRET, el script selecciona TimescaleDB y esta
+      # excepción deja de afectar el perfil de persistencia.
+      ALLOW_EPHEMERAL_PRODUCTION: ${{ vars.DATABASE_URL_SECRET == '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
 
