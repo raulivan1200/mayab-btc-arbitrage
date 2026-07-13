@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = config::Config::from_env();
-    cfg.validate().context("configuracion insegura")?;
+    cfg.validate().context("configuración insegura")?;
 
     // Fail-closed: require ADMIN_TOKEN in production
     if cfg.entorno == "production" && cfg.token_admin.is_none() {
@@ -62,11 +62,11 @@ async fn main() -> anyhow::Result<()> {
     let persistencia: Option<Arc<dyn auditoria::Auditoria>> =
         match persistencia::Persistencia::abrir(&cfg.auditoria_db_path) {
             Ok(persistencia) => {
-                tracing::info!(ruta = %cfg.auditoria_db_path, "auditoria SQLite activa");
+                tracing::info!(ruta = %cfg.auditoria_db_path, "auditoría SQLite activa");
                 Some(Arc::new(persistencia))
             }
             Err(err) => {
-                tracing::warn!(ruta = %cfg.auditoria_db_path, error = %err, "auditoria SQLite desactivada");
+                tracing::warn!(ruta = %cfg.auditoria_db_path, error = %err, "auditoría SQLite desactivada");
                 None
             }
         };
@@ -75,11 +75,11 @@ async fn main() -> anyhow::Result<()> {
         if let Ok(url) = std::env::var("DATABASE_URL") {
             match persistencia_timescale::TimescaleDbAuditoria::abrir(&url).await {
                 Ok(ts) => {
-                    tracing::info!(ruta = %url, "auditoria TimescaleDB activa");
+                    tracing::info!(ruta = %url, "auditoría TimescaleDB activa");
                     Some(Arc::new(ts))
                 }
                 Err(err) => {
-                    tracing::warn!(ruta = %url, error = %err, "auditoria TimescaleDB no disponible, usando SQLite");
+                    tracing::warn!(ruta = %url, error = %err, "auditoría TimescaleDB no disponible, usando SQLite");
                     persistencia
                 }
             }
@@ -126,16 +126,19 @@ async fn main() -> anyhow::Result<()> {
     let app = server::router(motor, cfg.token_admin.clone());
     let addr: SocketAddr = format!("0.0.0.0:{}", cfg.port)
         .parse()
-        .context("puerto invalido")?;
+        .context("puerto inválido")?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let dashboard_url = format!("http://localhost:{}", cfg.port);
     tracing::info!(url = %dashboard_url, "servidor iniciado");
     abrir_dashboard_local(&dashboard_url);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }

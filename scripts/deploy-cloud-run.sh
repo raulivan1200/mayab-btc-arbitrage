@@ -191,6 +191,23 @@ grep -q '^transicion,' "$TMP_DIR/auditoria.csv"
 smoke_get "/api/resumen-llm" "$TMP_DIR/resumen-llm.json"
 grep -q '"resumen"' "$TMP_DIR/resumen-llm.json"
 
+smoke_get "/api/research/tapes" "$TMP_DIR/research-tapes.json"
+python3 - "$TMP_DIR/research-tapes.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1]))
+tapes = report.get("tapes") or []
+if not (
+    report.get("available") is True
+    and tapes
+    and tapes[0].get("provenance") == "repository_capture"
+    and tapes[0].get("events", 0) >= 2
+    and tapes[0].get("sha256")
+):
+    raise SystemExit("el deploy no publicó el tape de mercado versionado")
+PY
+
 smoke_get "/" "$TMP_DIR/index.html"
 grep -Eqi '<title>[^<]*Mayab' "$TMP_DIR/index.html"
 grep -Eq 'src="/app\.js|href="/styles\.css' "$TMP_DIR/index.html"

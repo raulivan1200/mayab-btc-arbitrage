@@ -1,6 +1,6 @@
 # Mayab Edge — arbitraje BTC explicable en Rust
 
-Feeds públicos multi-exchange, decisiones auditables y ejecución 100% simulada en un solo binario Rust.
+Feeds públicos multi-exchange, decisiones auditables y ejecución 100% simulada en un solo binario Rust. El mismo proyecto también es mi [bot de Discord](#bot-de-discord-opcional): permite consultar el estado, pedir resúmenes y preparar demos reproducibles mediante slash commands.
 
 > **Rust en el camino crítico; vanilla JS en la última milla: sin GC en el motor, sin hidratación en el dashboard y sin una cadena de servicios entre la señal y la evidencia.**
 

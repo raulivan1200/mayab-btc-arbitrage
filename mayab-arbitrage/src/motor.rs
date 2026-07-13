@@ -81,9 +81,8 @@ struct State {
     pares_activos: Vec<String>,
     demo_forzado: Option<EscenarioDemo>,
     reglas_rebalanceo: Vec<ReglaRebalanceo>,
-    // Captura de datos reales para replay determinístico
     captura_activa: bool,
-    datos_capturados: Vec<Cotizacion>,
+    datos_capturados: VecDeque<Cotizacion>,
     max_captura_len: usize,
     inicio_captura: Option<DateTime<Utc>>,
     historial_replay: VecDeque<Cotizacion>,
@@ -210,9 +209,8 @@ impl Motor {
                 },
                 demo_forzado: None,
                 reglas_rebalanceo: Vec::new(),
-                // Captura de datos reales para replay determinístico
                 captura_activa: false,
-                datos_capturados: Vec::new(),
+                datos_capturados: VecDeque::with_capacity(10_000),
                 max_captura_len: 10000,
                 inicio_captura: None,
                 historial_replay: VecDeque::with_capacity(50_000),
@@ -283,12 +281,10 @@ impl Motor {
             state.historial_replay.pop_front();
         }
 
-        // Guardar en buffer de captura si está activa
         if state.captura_activa {
-            state.datos_capturados.push(cotizacion);
-            if state.datos_capturados.len() > state.max_captura_len {
-                let excess = state.datos_capturados.len() - state.max_captura_len;
-                state.datos_capturados.drain(0..excess);
+            state.datos_capturados.push_back(cotizacion);
+            while state.datos_capturados.len() > state.max_captura_len {
+                state.datos_capturados.pop_front();
             }
         }
     }
@@ -393,7 +389,7 @@ impl Motor {
                 oportunidad.decision_threshold = costos.circuit_breaker_perdida_usd;
                 oportunidad.decision_actual = self.ops_fallidas.load(Ordering::SeqCst) as f64;
                 oportunidad.decision_reason = format!(
-                    "SKIP_CIRCUIT_BREAKER — ejecuciones pausadas; perdida maxima configurada {:.2} USD",
+                    "SKIP_CIRCUIT_BREAKER — ejecuciones pausadas; pérdida máxima configurada {:.2} USD",
                     costos.circuit_breaker_perdida_usd
                 );
             }
@@ -534,7 +530,7 @@ impl Motor {
             insertar_evento_sistema(
                 &mut state,
                 "ejecucion_en_curso",
-                "ruta descartada: ya hay una operacion simulada en validacion/ejecucion",
+                "ruta descartada: ya hay una operación simulada en validación/ejecución",
                 "media",
                 ahora,
             );
@@ -603,7 +599,7 @@ impl Motor {
             let evento = evento_operacion(
                 &op,
                 "fallida",
-                "saldo insuficiente al confirmar ejecucion",
+                "saldo insuficiente al confirmar ejecución",
                 "alta",
                 ahora,
             );
@@ -611,7 +607,7 @@ impl Motor {
             state.eventos_ejecucion.push_front(evento);
             state.eventos_ejecucion.truncate(128);
             self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
-            tracing::warn!(ruta = %format!("{}->{}", op.compra_en, op.venta_en), cantidad = op.cantidad_btc, "operacion simulada fallida por saldo insuficiente");
+            tracing::warn!(ruta = %format!("{}->{}", op.compra_en, op.venta_en), cantidad = op.cantidad_btc, "operación simulada fallida por saldo insuficiente");
         }
         if state.ciclos % 500 == 0 {
             let mut operaciones = state.operaciones.clone();
@@ -714,7 +710,7 @@ impl Motor {
     fn persistir_operacion(&self, op: &Operacion) {
         if let Some(persistencia) = &self.persistencia {
             if let Err(err) = persistencia.registrar_operacion(op) {
-                tracing::warn!(error = %err, id = %op.id, "no se pudo encolar operacion");
+                tracing::warn!(error = %err, id = %op.id, "no se pudo encolar operación");
             }
         }
     }
@@ -811,7 +807,7 @@ impl Motor {
         insertar_evento_sistema(
             &mut state,
             "jury_reset",
-            "corrida simulada restablecida; feeds publicos y configuracion conservados",
+            "corrida simulada restablecida; feeds públicos y configuración conservados",
             "normal",
             ahora,
         );
@@ -925,7 +921,7 @@ impl Motor {
         match escenario {
             EscenarioDemo::FalloOrden => {
                 state.demo_forzado = Some(escenario);
-                let detalle = "demo armado: la siguiente orden ejecutable sera rechazada";
+                let detalle = "demo armado: la siguiente orden ejecutable será rechazada";
                 insertar_evento_sistema(&mut state, "demo_armado", detalle, "media", ahora);
                 if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
@@ -988,7 +984,7 @@ impl Motor {
                         "ledger",
                         0.0,
                         -3.25,
-                        "sin exposicion residual",
+                        "sin exposición residual",
                     ),
                 ];
                 for (idx, (anterior, estado, pierna, exposicion, pnl, detalle)) in
@@ -1011,7 +1007,7 @@ impl Motor {
                 insertar_evento_sistema(
                     &mut state,
                     "segunda_pierna_reconciliada",
-                    "demo: segunda pierna rechazada; unwind aplicado y exposicion BTC llevada a cero",
+                    "demo: segunda pierna rechazada; unwind aplicado y exposición BTC llevada a cero",
                     "alta",
                     ahora,
                 );
@@ -1129,7 +1125,7 @@ impl Motor {
                 insertar_evento_sistema(
                     &mut state,
                     "circuit_breaker",
-                    "demo: ejecuciones pausadas por perdida acumulada simulada",
+                    "demo: ejecuciones pausadas por pérdida acumulada simulada",
                     "alta",
                     ahora,
                 );
@@ -1201,7 +1197,7 @@ impl Motor {
                     let evento = evento_operacion(
                         &op,
                         "demo_rentable",
-                        "operacion sintetica rentable inyectada para demostrar flujo end-to-end",
+                        "operación sintética rentable inyectada para demostrar flujo end-to-end",
                         "normal",
                         op.ejecutada_en,
                     );
@@ -1235,7 +1231,7 @@ impl Motor {
                 insertar_evento_sistema(
                     &mut state,
                     "demo_rentable",
-                    "demo: se inyectaron operaciones rentables y se entreno el GA con ese historial",
+                    "demo: se inyectaron operaciones rentables y se entrenó el GA con ese historial",
                     "normal",
                     ahora,
                 );
@@ -1281,8 +1277,13 @@ impl Motor {
             .iter()
             .filter(|c| ventana_predeterminada_desde.is_some_and(|desde| c.recibida_en >= desde))
             .count();
-        let captura_desde = state.datos_capturados.first().map(|c| c.recibida_en);
-        let captura_hasta = state.datos_capturados.last().map(|c| c.recibida_en);
+        let historial_ventana_predeterminada_desde = state
+            .historial_replay
+            .iter()
+            .find(|c| ventana_predeterminada_desde.is_some_and(|desde| c.recibida_en >= desde))
+            .map(|c| c.recibida_en);
+        let captura_desde = state.datos_capturados.front().map(|c| c.recibida_en);
+        let captura_hasta = state.datos_capturados.back().map(|c| c.recibida_en);
         serde_json::json!({
             "activa": state.captura_activa,
             "snapshots": state.datos_capturados.len(),
@@ -1299,6 +1300,10 @@ impl Motor {
                 .map(|(desde, hasta)| (hasta - desde).num_seconds().max(0))
                 .unwrap_or(0),
             "historialVentanaPredeterminadaSnapshots": historial_ventana_predeterminada,
+            "historialVentanaPredeterminadaDuracionSegundos": historial_ventana_predeterminada_desde
+                .zip(historial_hasta)
+                .map(|(desde, hasta)| (hasta - desde).num_seconds().max(0))
+                .unwrap_or(0),
             "ventanaPredeterminadaMinutos": 10,
         })
     }
@@ -1323,14 +1328,14 @@ impl Motor {
         if datos.is_empty() {
             return serde_json::json!({"ok": false, "error": "no hay muestras dentro de esa ventana"});
         }
-        state.datos_capturados = datos;
+        state.datos_capturados = datos.into();
         serde_json::json!({
             "ok": true,
             "modo": "ventana_historial_cargada",
             "minutosSolicitados": minutos,
             "snapshots": state.datos_capturados.len(),
-            "desde": state.datos_capturados.first().map(|c| c.recibida_en.to_rfc3339()),
-            "hasta": state.datos_capturados.last().map(|c| c.recibida_en.to_rfc3339()),
+            "desde": state.datos_capturados.front().map(|c| c.recibida_en.to_rfc3339()),
+            "hasta": state.datos_capturados.back().map(|c| c.recibida_en.to_rfc3339()),
         })
     }
 
@@ -2014,22 +2019,22 @@ fn calcular_oportunidad(
         );
     } else if utilidad_dec < dec(costos.min_utilidad_usd) {
         ejecutable = false;
-        razon = "utilidad menor al minimo configurado".to_string();
+        razon = "utilidad menor al mínimo configurado".to_string();
         decision_code = "SKIP_MIN_USD".to_string();
         decision_threshold = costos.min_utilidad_usd;
         decision_actual = utilidad;
         decision_reason = format!(
-            "SKIP_MIN_USD — utilidad {:.2} USD < min {:.2} USD despues de costos",
+            "SKIP_MIN_USD — utilidad {:.2} USD < min {:.2} USD después de costos",
             utilidad, costos.min_utilidad_usd
         );
     } else if dec(diferencial_neto_bps) < dec(costos.min_diferencial_neto_bps) {
         ejecutable = false;
-        razon = "diferencial neto bajo despues de costos".to_string();
+        razon = "diferencial neto bajo después de costos".to_string();
         decision_code = "SKIP_NET_BPS".to_string();
         decision_threshold = costos.min_diferencial_neto_bps;
         decision_actual = diferencial_neto_bps;
         decision_reason = format!(
-            "SKIP_NET_BPS — net {:.2} bps < min {:.2} bps despues de fees, slippage y latencia",
+            "SKIP_NET_BPS — net {:.2} bps < min {:.2} bps después de fees, slippage y latencia",
             diferencial_neto_bps, costos.min_diferencial_neto_bps
         );
     } else if latencia_max > costos.stale_ms {
@@ -2251,7 +2256,7 @@ fn aplicar_adversidad(
         return Some(evento_operacion(
             op,
             "mercado_movido",
-            "precio se movio por escenario demo controlado",
+            "precio se movió por escenario demo controlado",
             "media",
             ahora,
         ));
@@ -2277,7 +2282,7 @@ fn aplicar_adversidad(
         return Some(evento_operacion(
             op,
             "mercado_movido",
-            "precio se movio entre deteccion y ejecucion",
+            "precio se movió entre detección y ejecución",
             "media",
             ahora,
         ));
@@ -2660,7 +2665,7 @@ fn oportunidad_desde_operacion(op: &Operacion) -> Oportunidad {
         razon: "demo rentable inyectada".to_string(),
         decision_code: "DEMO_PROFITABLE".to_string(),
         decision_reason: format!(
-            "DEMO_PROFITABLE — operacion sintetica rentable con utilidad {:.2} USD para demostrar flujo end-to-end",
+            "DEMO_PROFITABLE — operación sintética rentable con utilidad {:.2} USD para demostrar flujo end-to-end",
             op.utilidad_usd
         ),
         decision_threshold: 0.0,
@@ -3946,6 +3951,29 @@ mod tests {
         let estado = motor.captura_estado().await;
         assert_eq!(estado["activa"], false);
         assert_eq!(estado["snapshots"], 2);
+    }
+
+    #[tokio::test]
+    async fn captura_descarta_el_snapshot_mas_antiguo_sin_desplazar_el_buffer() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor.iniciar_captura().await;
+        motor.state.write().await.max_captura_len = 2;
+
+        for exchange in ["A", "B", "C"] {
+            motor
+                .recibir_cotizacion(cot(exchange, 100.0, 101.0, 1.0, 1.0))
+                .await;
+        }
+
+        let state = motor.state.read().await;
+        assert_eq!(state.datos_capturados.len(), 2);
+        assert_eq!(
+            state
+                .datos_capturados
+                .front()
+                .map(|quote| quote.exchange.as_str()),
+            Some("B")
+        );
     }
 
     #[tokio::test]

@@ -5,13 +5,17 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 
 use crate::types::EstadoPublico;
 
 const BUCKETS_MS: [f64; 10] = [0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0];
+
+fn lock_recuperable<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
 
 #[derive(Clone, Default)]
 pub struct Metricas {
@@ -57,17 +61,10 @@ impl Metricas {
         status: u16,
         duracion: std::time::Duration,
     ) {
-        *self
-            .inner
-            .http_requests_total
-            .lock()
-            .unwrap()
+        *lock_recuperable(&self.inner.http_requests_total)
             .entry((metodo.to_string(), ruta.to_string(), status))
             .or_insert(0) += 1;
-        self.inner
-            .http_duration
-            .lock()
-            .unwrap()
+        lock_recuperable(&self.inner.http_duration)
             .entry(ruta.to_string())
             .or_default()
             .observe(duracion.as_secs_f64() * 1000.0);
@@ -76,18 +73,11 @@ impl Metricas {
     /// Registra una etapa del pipeline. `etapa` debe pertenecer a un catálogo
     /// estático definido por el llamador; nunca debe contener datos de mercado.
     pub fn registrar_etapa(&self, etapa: &'static str, duracion: std::time::Duration) {
-        self.inner
-            .stage_duration
-            .lock()
-            .unwrap()
+        lock_recuperable(&self.inner.stage_duration)
             .entry(etapa.to_string())
             .or_default()
             .observe(duracion.as_secs_f64() * 1000.0);
-        *self
-            .inner
-            .stage_events
-            .lock()
-            .unwrap()
+        *lock_recuperable(&self.inner.stage_events)
             .entry(etapa.to_string())
             .or_insert(0) += 1;
     }
@@ -123,7 +113,8 @@ impl Metricas {
     pub fn render(&self, estado: &EstadoPublico) -> String {
         let mut out = String::new();
         out.push_str("# HELP mayab_http_requests_total Peticiones HTTP por ruta, metodo y status.\n# TYPE mayab_http_requests_total counter\n");
-        for ((metodo, ruta, status), n) in self.inner.http_requests_total.lock().unwrap().iter() {
+        for ((metodo, ruta, status), n) in lock_recuperable(&self.inner.http_requests_total).iter()
+        {
             out.push_str(&format!("mayab_http_requests_total{{metodo=\"{metodo}\",ruta=\"{ruta}\",status=\"{status}\"}} {n}\n"));
         }
         out.push_str("# HELP mayab_http_request_duration_ms Duracion HTTP en milisegundos.\n# TYPE mayab_http_request_duration_ms histogram\n");
@@ -131,17 +122,17 @@ impl Metricas {
             &mut out,
             "mayab_http_request_duration_ms",
             "ruta",
-            &self.inner.http_duration.lock().unwrap(),
+            &lock_recuperable(&self.inner.http_duration),
         );
         out.push_str("# HELP mayab_stage_duration_ms Duracion por etapa interna del pipeline.\n# TYPE mayab_stage_duration_ms histogram\n");
         Self::render_histogram(
             &mut out,
             "mayab_stage_duration_ms",
             "etapa",
-            &self.inner.stage_duration.lock().unwrap(),
+            &lock_recuperable(&self.inner.stage_duration),
         );
         out.push_str("# HELP mayab_stage_events_total Eventos procesados por etapa interna.\n# TYPE mayab_stage_events_total counter\n");
-        for (stage, count) in self.inner.stage_events.lock().unwrap().iter() {
+        for (stage, count) in lock_recuperable(&self.inner.stage_events).iter() {
             out.push_str(&format!(
                 "mayab_stage_events_total{{etapa=\"{stage}\"}} {count}\n"
             ));
@@ -165,16 +156,16 @@ impl Metricas {
             ));
         }
 
-        // Diagnostico por feed con cardinalidad acotada: exchange y par salen
-        // del catalogo configurado, nunca de payloads o errores arbitrarios.
+        // Diagnóstico por feed con cardinalidad acotada: exchange y par salen
+        // del catálogo configurado, nunca de payloads o errores arbitrarios.
         // Estos contadores hacen visibles los falsos positivos evitados por
         // gaps/checksums y permiten medir MTTR/staleness durante una demo.
-        out.push_str("# HELP mayab_feed_connected Conexion utilizable del feed.\n# TYPE mayab_feed_connected gauge\n");
+        out.push_str("# HELP mayab_feed_connected Conexión utilizable del feed.\n# TYPE mayab_feed_connected gauge\n");
         out.push_str("# HELP mayab_feed_latency_ms Latencia EWMA observada por feed.\n# TYPE mayab_feed_latency_ms gauge\n");
         out.push_str("# HELP mayab_feed_invalidated_ms Tiempo que el libro lleva invalidado.\n# TYPE mayab_feed_invalidated_ms gauge\n");
         out.push_str("# HELP mayab_feed_resyncs_total Resincronizaciones acumuladas del libro.\n# TYPE mayab_feed_resyncs_total counter\n");
         out.push_str("# HELP mayab_feed_sequence_gaps_total Gaps de secuencia detectados.\n# TYPE mayab_feed_sequence_gaps_total counter\n");
-        out.push_str("# HELP mayab_feed_checksum_failures_total Checksums invalidos detectados.\n# TYPE mayab_feed_checksum_failures_total counter\n");
+        out.push_str("# HELP mayab_feed_checksum_failures_total Checksums inválidos detectados.\n# TYPE mayab_feed_checksum_failures_total counter\n");
         for quote in &estado.cotizaciones {
             let exchange = prometheus_label(&quote.exchange);
             let par = prometheus_label(&quote.par);

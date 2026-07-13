@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-/// Identidad inmutable de la revision compilada. Los valores se inyectan al
+/// Identidad inmutable de la revisión compilada. Los valores se inyectan al
 /// construir la imagen; los fallbacks mantienen builds locales reproducibles.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]

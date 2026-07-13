@@ -336,6 +336,22 @@ impl LibroEstado {
             false
         }
     }
+
+    fn truncar_profundidad_kraken(&mut self, depth: usize) {
+        let depth = depth.max(1);
+        while self.bids.len() > depth {
+            self.bids.pop_first();
+        }
+        while self.kraken_bids_crc.len() > depth {
+            self.kraken_bids_crc.pop_first();
+        }
+        while self.asks.len() > depth {
+            self.asks.pop_last();
+        }
+        while self.kraken_asks_crc.len() > depth {
+            self.kraken_asks_crc.pop_last();
+        }
+    }
 }
 
 fn kraken_crc_num(value: &str) -> Option<String> {
@@ -591,10 +607,18 @@ async fn conectar(adaptador: &dyn ExchangeAdapter, motor: Arc<Motor>) -> anyhow:
             }
             msg = ws.next() => {
                 match msg {
-                    Some(Ok(Message::Text(text))) => recibir(adaptador, text.as_bytes(), &motor, &mut libro).await,
-                    Some(Ok(Message::Binary(bytes))) => recibir(adaptador, &bytes, &motor, &mut libro).await,
+                    Some(Ok(Message::Text(text))) => {
+                        if recibir(adaptador, text.as_bytes(), &motor, &mut libro).await {
+                            anyhow::bail!("libro invalidado; se requiere nuevo snapshot");
+                        }
+                    },
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if recibir(adaptador, &bytes, &motor, &mut libro).await {
+                            anyhow::bail!("libro invalidado; se requiere nuevo snapshot");
+                        }
+                    },
                     Some(Ok(Message::Ping(payload))) => ws.send(Message::Pong(payload)).await?,
-                    Some(Ok(Message::Close(_))) | None => anyhow::bail!("conexion cerrada"),
+                    Some(Ok(Message::Close(_))) | None => anyhow::bail!("conexión cerrada"),
                     Some(Err(err)) => return Err(err.into()),
                     _ => {}
                 }
@@ -608,11 +632,15 @@ async fn recibir(
     bytes: &[u8],
     motor: &Motor,
     libro: &mut LibroEstado,
-) {
+) -> bool {
+    let resyncs_antes = libro.resyncs;
     if let Some(mut cotizacion) = adaptador.parse_ws(bytes, libro) {
         cotizacion.exchange = adaptador.nombre().to_string();
         cotizacion.recibida_en = Utc::now();
         motor.recibir_cotizacion(cotizacion).await;
+        false
+    } else {
+        libro.requiere_snapshot && libro.resyncs > resyncs_antes
     }
 }
 
@@ -904,7 +932,11 @@ async fn capture_connection(
             _ => continue,
         };
         let local = Utc::now();
+        let resyncs_antes = book.resyncs;
         let Some(quote) = adapter.parse_ws(&bytes, &mut book) else {
+            if book.requiere_snapshot && book.resyncs > resyncs_antes {
+                anyhow::bail!("libro invalidado; reconexión requerida");
+            }
             continue;
         };
         let exchange_ms = (quote.evento_unix_ms > 0).then_some(quote.evento_unix_ms);
@@ -1089,6 +1121,11 @@ fn parsear_kraken(bytes: &[u8], libro: &mut LibroEstado) -> Option<Cotizacion> {
         .unwrap_or_default();
     libro.actualizar_bids(&bids);
     libro.actualizar_asks(&asks);
+    // Kraken no envía qty=0 para niveles que salen de la profundidad
+    // suscrita. Conservarlos haría reaparecer niveles obsoletos y rompería el
+    // CRC tras unos cuantos updates. La guía oficial exige truncar después de
+    // aplicar el mensaje y antes de calcular el checksum.
+    libro.truncar_profundidad_kraken(10);
     if let Some(checksum) = item.get("checksum").and_then(parse_u64) {
         if !libro.validar_checksum_kraken(checksum as u32) {
             return None;
@@ -1324,8 +1361,8 @@ fn parsear_rest_bitfinex(bytes: &[u8], par: &str) -> Option<Cotizacion> {
             });
         }
     }
-    bids.sort_by(|a, b| b.precio.partial_cmp(&a.precio).unwrap());
-    asks.sort_by(|a, b| a.precio.partial_cmp(&b.precio).unwrap());
+    bids.sort_by(|a, b| b.precio.total_cmp(&a.precio));
+    asks.sort_by(|a, b| a.precio.total_cmp(&b.precio));
     marcar_rest(
         cotizacion(
             par,
@@ -1805,6 +1842,32 @@ mod tests {
         let entrada = "45285210000045286415457195345286615457110945289615456091145290215890660452918154553491452947445474945296135380000452975994554245299518772827452835100000004528341545820154528211000000045281010000000452803154592586452790799000045277633101034527753000000045277315460273745276615445238";
         assert_eq!(crc32fast::hash(entrada.as_bytes()), 3_310_070_434);
         assert_eq!(kraken_crc_num("0.00100000").as_deref(), Some("100000"));
+    }
+
+    #[test]
+    fn kraken_trunca_niveles_fuera_de_profundidad_antes_del_crc() {
+        let mut libro = LibroEstado::new("BTC/USD");
+        for price in 1..=11 {
+            let key = BookPriceUnits::from_f64(price as f64);
+            let value = (price.to_string(), "1".to_string());
+            libro.bids.insert(key, BookQtyUnits::from_f64(1.0));
+            libro.asks.insert(key, BookQtyUnits::from_f64(1.0));
+            libro.kraken_bids_crc.insert(key, value.clone());
+            libro.kraken_asks_crc.insert(key, value);
+        }
+
+        libro.truncar_profundidad_kraken(10);
+
+        assert_eq!(
+            libro.bids.first_key_value().map(|(key, _)| key.to_f64()),
+            Some(2.0)
+        );
+        assert_eq!(
+            libro.asks.last_key_value().map(|(key, _)| key.to_f64()),
+            Some(10.0)
+        );
+        assert_eq!(libro.kraken_bids_crc.len(), 10);
+        assert_eq!(libro.kraken_asks_crc.len(), 10);
     }
 
     #[test]

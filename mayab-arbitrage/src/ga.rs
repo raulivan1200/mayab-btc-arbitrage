@@ -50,6 +50,7 @@ pub fn score_canonico(pesos: &[f64], f: FeaturesScore) -> f64 {
 
 /// Parámetros de evolución del algoritmo genético.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigGa {
     #[serde(rename = "tamanoPoblacion")]
     pub tamano_poblacion: usize,
@@ -1226,6 +1227,14 @@ mod tests {
             ga.api_estado()["politicaCampeon"],
             "max_fitness_ajustado_riesgo_en_primer_frente"
         );
+    }
+
+    #[test]
+    fn config_ga_rechaza_campos_desconocidos() {
+        let resultado = serde_json::from_str::<ConfigGa>(
+            r#"{"tamanoPoblacion":50,"tasaMutacion":0.15,"tasaCruce":0.72,"modoReal":true}"#,
+        );
+        assert!(resultado.is_err());
     }
 
     #[test]

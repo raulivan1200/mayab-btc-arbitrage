@@ -14,20 +14,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-// ---------------------------------------------------------------------------
-// Alias financieros del contrato
-// ---------------------------------------------------------------------------
-
 /// Alias semánticos temporales. Aclaran firmas del dominio, pero aún no
 /// impiden operaciones entre unidades en tiempo de compilación.
 pub type PriceUnits = f64;
 pub type QtyUnits = f64;
 pub type MoneyUnits = f64;
-pub type RatePpb = f64;
-
-// ---------------------------------------------------------------------------
-// NivelOrden (se mantiene f64 para JSON bids/asks arrays)
-// ---------------------------------------------------------------------------
+pub type RateRatio = f64;
 
 /// Nivel individual de un libro de órdenes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -87,10 +79,11 @@ pub struct Cotizacion {
 
 /// Parámetros simulados de costos y confiabilidad por exchange.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExchangeConfig {
     pub nombre: String,
     #[serde(rename = "feeTaker")]
-    pub fee_taker: RatePpb,
+    pub fee_taker: RateRatio,
     #[serde(rename = "retiroBtc")]
     pub retiro_btc: QtyUnits,
     pub confiabilidad: f64,
@@ -259,6 +252,7 @@ pub struct Rebalanceo {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReglaRebalanceo {
     pub id: String,
     #[serde(rename = "activoBase")]
@@ -665,7 +659,6 @@ pub struct EstadoPersistencia {
 }
 
 impl EstadoPersistencia {
-    #[allow(dead_code)]
     pub fn inactiva(ruta: &str) -> Self {
         let is_temp = ruta.starts_with("/tmp/") || ruta.starts_with("/var/folders/");
         Self {

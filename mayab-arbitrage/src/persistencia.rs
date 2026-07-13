@@ -39,7 +39,6 @@ pub struct Persistencia {
     escrituras_desde_mantenimiento: AtomicUsize,
 }
 
-#[allow(dead_code)]
 impl Persistencia {
     pub fn abrir(ruta: &str) -> anyhow::Result<Self> {
         let path = Path::new(ruta);
@@ -331,7 +330,7 @@ impl Persistencia {
     fn conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.conn
             .lock()
-            .map_err(|_| anyhow!("conexion SQLite bloqueada por panic previo"))
+            .map_err(|_| anyhow!("conexión SQLite bloqueada por panic previo"))
     }
 
     fn mantenimiento_si_corresponde(

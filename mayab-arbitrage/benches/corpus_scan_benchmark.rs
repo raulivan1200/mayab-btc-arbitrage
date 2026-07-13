@@ -111,6 +111,7 @@ fn build_fixture(root: &Path) {
         duration_ms: (end - start).num_milliseconds(),
         sha256: sha256(&events_bytes),
         git_commit: "synthetic-benchmark".into(),
+        git_dirty: false,
         config_sha256: sha256(&config_bytes),
     };
     fs::write(

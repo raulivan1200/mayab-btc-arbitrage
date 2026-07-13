@@ -156,7 +156,7 @@ fn square_root(o: &OrdenImpacto<'_>, eta: f64, volumen: f64) -> EstimacionImpact
         return EstimacionImpacto::sin_datos("falta volatilidad_bps");
     };
     if !eta.is_finite() || eta < 0.0 || !volumen.is_finite() || volumen <= 0.0 {
-        return EstimacionImpacto::sin_datos("eta o volumen_diario_btc invalidos");
+        return EstimacionImpacto::sin_datos("eta o volumen_diario_btc inválidos");
     }
     resultado(
         o,
@@ -184,7 +184,7 @@ fn almgren_lite(
         || !permanente.is_finite()
         || permanente < 0.0
     {
-        return EstimacionImpacto::sin_datos("parametros Almgren-lite invalidos");
+        return EstimacionImpacto::sin_datos("parámetros Almgren-lite inválidos");
     }
     let bps = vol
         * o.cantidad_btc.sqrt()

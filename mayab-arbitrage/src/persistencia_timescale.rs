@@ -9,6 +9,7 @@
 
 use anyhow::Context;
 use serde_json::json;
+use std::future::Future;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls, Row};
 
@@ -19,6 +20,7 @@ use crate::types::{
 
 pub struct TimescaleDbAuditoria {
     cliente: Mutex<Client>,
+    runtime: tokio::runtime::Handle,
     url: String,
 }
 
@@ -30,7 +32,7 @@ impl TimescaleDbAuditoria {
             .with_context(|| format!("no se pudo conectar a TimescaleDB {url}"))?;
         tokio::spawn(async move {
             if let Err(err) = conexion.await {
-                tracing::warn!(error = %err, "conexion TimescaleDB cerrada");
+                tracing::warn!(error = %err, "conexión TimescaleDB cerrada");
             }
         });
         cliente
@@ -39,12 +41,17 @@ impl TimescaleDbAuditoria {
             .context("el esquema TimescaleDB no está inicializado")?;
         Ok(Self {
             cliente: Mutex::new(cliente),
+            runtime: tokio::runtime::Handle::current(),
             url: url.to_string(),
         })
     }
 
-    fn rt(&self) -> anyhow::Result<tokio::runtime::Handle> {
-        tokio::runtime::Handle::try_current().context("el registro requiere un runtime Tokio")
+    fn block_on<F: Future>(&self, future: F) -> F::Output {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.runtime.block_on(future))
+        } else {
+            self.runtime.block_on(future)
+        }
     }
 }
 
@@ -56,14 +63,25 @@ async fn contar_tabla(c: &Client, tabla: &str) -> i64 {
         .unwrap_or(0)
 }
 
-fn fila_operacion(fila: &Row) -> Operacion {
-    let raw: String = fila.get("payload_json");
-    serde_json::from_str(&raw).expect("payload de operacion siempre es valido")
+fn fila_operacion(fila: &Row) -> Option<Operacion> {
+    let raw: String = match fila.try_get("payload_json") {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::warn!(%error, "fila de operación inválida en TimescaleDB");
+            return None;
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(operacion) => Some(operacion),
+        Err(error) => {
+            tracing::warn!(%error, "payload de operación inválido en TimescaleDB");
+            None
+        }
+    }
 }
 
 impl Auditoria for TimescaleDbAuditoria {
     fn registrar_operacion(&self, op: &Operacion) -> anyhow::Result<()> {
-        let rt = self.rt()?;
         let payload = json!(op).to_string();
         let (id, compra, venta, par, cantidad, utilidad, costo, parcial) = (
             op.id.clone(),
@@ -75,7 +93,7 @@ impl Auditoria for TimescaleDbAuditoria {
             op.costos.total_usd,
             op.parcial,
         );
-        rt.block_on(async move {
+        self.block_on(async move {
             let c = self.cliente.lock().await;
             c.execute(
                 "INSERT INTO operaciones (tiempo, id, compra_en, venta_en, par, cantidad_btc, utilidad_usd, costo_usd, score, partial_fill, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)",
@@ -87,7 +105,6 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn registrar_evento(&self, evento: &EventoEjecucion) -> anyhow::Result<()> {
-        let rt = self.rt()?;
         let payload = json!(evento).to_string();
         let (id, tipo, severidad, detalle) = (
             evento.id.clone(),
@@ -95,7 +112,7 @@ impl Auditoria for TimescaleDbAuditoria {
             evento.severidad.clone(),
             evento.detalle.clone(),
         );
-        rt.block_on(async move {
+        self.block_on(async move {
             let c = self.cliente.lock().await;
             c.execute(
                 "INSERT INTO eventos (tiempo, id, tipo, severidad, mensaje, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
@@ -107,7 +124,6 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn registrar_rebalanceo(&self, r: &Rebalanceo) -> anyhow::Result<()> {
-        let rt = self.rt()?;
         let payload = json!(r).to_string();
         let (id, desde, hacia, cantidad, costo) = (
             r.id.clone(),
@@ -116,7 +132,7 @@ impl Auditoria for TimescaleDbAuditoria {
             r.cantidad,
             r.costo_usd,
         );
-        rt.block_on(async move {
+        self.block_on(async move {
             let c = self.cliente.lock().await;
             c.execute(
                 "INSERT INTO rebalanceos (tiempo, id, desde, hacia, cantidad, costo_usd, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6::jsonb)",
@@ -129,7 +145,6 @@ impl Auditoria for TimescaleDbAuditoria {
 
     fn registrar_oportunidades(&self, oportunidades: &[Oportunidad]) -> anyhow::Result<()> {
         for o in oportunidades {
-            let rt = self.rt()?;
             let payload = json!(o).to_string();
             let (id, compra, venta, utilidad, diff, payload) = (
                 o.id.clone(),
@@ -139,7 +154,7 @@ impl Auditoria for TimescaleDbAuditoria {
                 o.diferencial_neto_bps,
                 payload,
             );
-            rt.block_on(async move {
+            self.block_on(async move {
                 let c = self.cliente.lock().await;
                 c.execute(
                     "INSERT INTO oportunidades (tiempo, id, ruta, utilidad_usd, diferencial, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
@@ -154,7 +169,6 @@ impl Auditoria for TimescaleDbAuditoria {
 
     fn registrar_auditorias(&self, auditorias: &[AuditoriaDecision]) -> anyhow::Result<()> {
         for a in auditorias {
-            let rt = self.rt()?;
             let payload = json!(a).to_string();
             let (id, ruta, decision, score, utilidad, razon, payload) = (
                 a.id.clone(),
@@ -165,7 +179,7 @@ impl Auditoria for TimescaleDbAuditoria {
                 a.decision_reason.clone(),
                 payload,
             );
-            rt.block_on(async move {
+            self.block_on(async move {
                 let c = self.cliente.lock().await;
                 c.execute(
                     "INSERT INTO auditorias (tiempo, id, ruta, decision, score, utilidad_usd, razon, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7::jsonb)",
@@ -179,11 +193,7 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn estado(&self) -> EstadoPersistencia {
-        let rt = match self.rt() {
-            Ok(rt) => rt,
-            Err(_) => return EstadoPersistencia::inactiva(&self.url),
-        };
-        rt.block_on(async {
+        self.block_on(async {
             let c = self.cliente.lock().await;
             let operaciones = contar_tabla(&c, "operaciones").await;
             let oportunidades = contar_tabla(&c, "oportunidades").await;
@@ -212,11 +222,7 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn total_pnl(&self) -> f64 {
-        let rt = match self.rt() {
-            Ok(rt) => rt,
-            Err(_) => return 0.0,
-        };
-        rt.block_on(async {
+        self.block_on(async {
             let c = self.cliente.lock().await;
             c.query_one(
                 "SELECT COALESCE(SUM(utilidad_usd), 0.0) FROM operaciones",
@@ -230,11 +236,7 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn win_rate(&self) -> f64 {
-        let rt = match self.rt() {
-            Ok(rt) => rt,
-            Err(_) => return 0.0,
-        };
-        rt.block_on(async {
+        self.block_on(async {
             let c = self.cliente.lock().await;
             let total: i64 = c
                 .query_one("SELECT COUNT(*) FROM operaciones", &[])
@@ -259,11 +261,7 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn ultimas_operaciones(&self, limite: usize) -> Vec<Operacion> {
-        let rt = match self.rt() {
-            Ok(rt) => rt,
-            Err(_) => return Vec::new(),
-        };
-        rt.block_on(async {
+        self.block_on(async {
             let c = self.cliente.lock().await;
             c.query(
                 "SELECT payload_json::text AS payload_json FROM operaciones ORDER BY tiempo DESC LIMIT $1",
@@ -271,7 +269,7 @@ impl Auditoria for TimescaleDbAuditoria {
             )
             .await
             .ok()
-            .map(|filas| filas.iter().map(fila_operacion).collect::<Vec<_>>())
+            .map(|filas| filas.iter().filter_map(fila_operacion).collect::<Vec<_>>())
             .unwrap_or_default()
         })
     }

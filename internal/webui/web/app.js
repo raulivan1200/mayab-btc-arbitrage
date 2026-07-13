@@ -134,6 +134,7 @@ function iniciarSelectorProcedencia() {
     item.addEventListener("mouseenter", () => mostrar(item.dataset.dataLens));
     item.addEventListener("focus", () => mostrar(item.dataset.dataLens));
     item.addEventListener("mouseleave", () => mostrar(lensSeleccionado));
+    item.addEventListener("blur", () => mostrar(lensSeleccionado));
     item.addEventListener("click", (event) => {
       const lens = item.dataset.dataLens;
       lensSeleccionado = lens;
@@ -143,7 +144,7 @@ function iniciarSelectorProcedencia() {
       const tab = document.querySelector(`[data-tab="${DATA_LENS_COPY[lens]?.tab}"]`);
       tab?.click();
       // La pestaña restaura su scroll en el siguiente frame. Esperar ese frame y
-      // mover el contenedor principal evita dos animaciones simultaneas que, en
+      // mover el contenedor principal evita dos animaciones simultáneas que, en
       // especial en Safari/touch, pueden dejar el gesto hacia arriba bloqueado.
       requestAnimationFrame(() => irAlDashboard(!reducirMovimiento));
     });
@@ -339,16 +340,26 @@ function descargarTablaCsv(tabla, panel, indice) {
 }
 
 async function alternarPantallaCompleta(panel) {
+  if (panel.classList.contains("tabla-pantalla-completa")) {
+    panel.classList.remove("tabla-pantalla-completa");
+    document.body.classList.remove("tabla-fullscreen-activa");
+    return;
+  }
   if (document.fullscreenElement) {
     await document.exitFullscreen();
     return;
   }
   if (panel.requestFullscreen) {
-    await panel.requestFullscreen();
-    return;
+    try {
+      await panel.requestFullscreen();
+      return;
+    } catch (_) {
+      // Safari/iOS y algunos webviews exponen la API pero rechazan la llamada.
+      // En ese caso conservamos el fallback CSS y su salida por Escape/botón.
+    }
   }
-  panel.classList.toggle("tabla-pantalla-completa");
-  document.body.classList.toggle("tabla-fullscreen-activa", panel.classList.contains("tabla-pantalla-completa"));
+  panel.classList.add("tabla-pantalla-completa");
+  document.body.classList.add("tabla-fullscreen-activa");
 }
 
 function iniciarHerramientasTablas() {
@@ -449,7 +460,6 @@ function iniciarDebug() {
   }, 5000);
 }
 
-// Inicializar configuración y tema
 iniciarDebug();
 iniciarTema();
 arrancar();
@@ -737,7 +747,6 @@ function iniciarAjusteMetricas() {
 let parActivo = "ALL";
 
 function renderizar(datos) {
-  // Selector de par
   const selector = $("parSelector");
   if (selector && datos.paresActivos) {
     const paresActuales = new Set([...selector.options].map(o => o.value));
@@ -758,7 +767,6 @@ function renderizar(datos) {
     }
   }
 
-  // Métricas principales
   const executionPnlVal = datos.metricas.utilidadAcumuladaUsd;
   const pnlExecutionEl = $("pnlExecution");
   renderCantidadMetrica(pnlExecutionEl, dinero.format(executionPnlVal));
@@ -766,7 +774,7 @@ function renderizar(datos) {
 
   const rebalanceCostVal = datos.metricas.costoRebalanceoAcumuladoUsd || 0;
   const pnlRebalanceEl = $("pnlRebalance");
-  renderCantidadMetrica(pnlRebalanceEl, dinero.format(-rebalanceCostVal)); // Usualmente negativo o costo
+  renderCantidadMetrica(pnlRebalanceEl, dinero.format(-rebalanceCostVal));
   aplicarAnimacionCambio(pnlRebalanceEl, -rebalanceCostVal, "pnlRebalance");
 
   const capitalDeltaVal = datos.metricas.capitalActualUsd - datos.metricas.capitalInicialUsd;
@@ -1970,7 +1978,7 @@ function renderLatencias(datos) {
 
     const estado = (lat.estado || "").includes("alta") ? "mala" : "buena";
 
-    row.querySelector(".latencia-exchange").textContent = lat.exchange;
+    row.querySelector(".latencia-exchange").textContent = `#${index + 1} ${lat.exchange}`;
     const span = row.querySelector(".latencia-prom");
     span.className = `latencia-prom ${estado}`;
     span.textContent = `prom ${formato(lat.promedioMs || 0, 0)}ms`;
@@ -3017,7 +3025,6 @@ function lanzarNotificacion(o) {
     container.firstElementChild?.remove();
   }
 
-  // Oculta la notificación después de cinco segundos.
   setTimeout(() => {
     if (div.parentNode) {
       div.style.animation = "slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards";
@@ -3720,7 +3727,7 @@ function prepararCanvas(canvas) {
   const ratio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   // El ancho debe seguir al contenedor: forzar 320 px desbordaba los paneles
-  // en telefonos estrechos y terminaba recortando la parte derecha del grafico.
+  // en teléfonos estrechos y terminaba recortando la parte derecha del gráfico.
   const ancho = Math.max(1, Math.floor(rect.width));
   const alto = Math.max(220, Math.floor(rect.height));
   const anchoFisico = Math.floor(ancho * ratio);
@@ -3798,7 +3805,6 @@ function formato(valor, decimales) {
 
 // Navegación de pestañas (Tabs)
 document.addEventListener("DOMContentLoaded", () => {
-  const overview = document.getElementById("tab-overview");
   const pantalla = document.querySelector(".pantalla");
   const scrollPorTab = new Map();
 
@@ -3818,6 +3824,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const mobileNavToggle = document.querySelector(".mobile-nav-toggle");
   const tabsNav = document.querySelector(".tabs-nav");
   const mobileNavLabel = document.getElementById("mobileNavLabel");
+  const tabButtons = [...document.querySelectorAll(".tab-btn")];
+  tabsNav?.setAttribute("role", "tablist");
+  tabButtons.forEach((button) => {
+    const targetId = button.getAttribute("data-tab");
+    const targetContent = targetId ? document.getElementById(targetId) : null;
+    if (!targetId || !targetContent) return;
+    if (!button.id) button.id = `${targetId}-control`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-controls", targetId);
+    button.setAttribute("aria-selected", String(button.classList.contains("activo")));
+    button.tabIndex = button.classList.contains("activo") ? 0 : -1;
+    targetContent.setAttribute("role", "tabpanel");
+    targetContent.setAttribute("aria-labelledby", button.id);
+  });
   const cerrarMenuMobile = () => {
     mobileNavToggle?.setAttribute("aria-expanded", "false");
     tabsNav?.classList.remove("mobile-open");
@@ -3831,13 +3851,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!mobileNavToggle?.contains(event.target) && !tabsNav?.contains(event.target)) cerrarMenuMobile();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && mobileNavToggle?.getAttribute("aria-expanded") === "true") {
       cerrarMenuMobile();
       mobileNavToggle?.focus();
     }
   });
 
-  document.querySelectorAll(".tab-btn").forEach(btn => {
+  tabButtons.forEach(btn => {
     btn.addEventListener("click", () => {
       const pantalla = document.querySelector(".pantalla");
       const scrollActual = pantalla ? pantalla.scrollTop : 0;
@@ -3848,7 +3868,10 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("activo"));
 
       btn.classList.add("activo");
-      document.querySelectorAll(".tab-btn").forEach(b => b.setAttribute("aria-selected", String(b === btn)));
+      tabButtons.forEach((b) => {
+        b.setAttribute("aria-selected", String(b === btn));
+        b.tabIndex = b === btn ? 0 : -1;
+      });
       if (mobileNavLabel) mobileNavLabel.textContent = btn.textContent.trim();
       cerrarMenuMobile();
       const targetId = btn.getAttribute("data-tab");
@@ -3869,19 +3892,41 @@ document.addEventListener("DOMContentLoaded", () => {
         // Forzar resize para que los canvas recalcule su bounding rect (ya que display: none devuelve width/height 0)
         requestAnimationFrame(() => {
           if (pantalla) {
-            // Una pestaña nueva conserva el punto visual actual. Si ya se visitó,
-            // recupera su posición propia (también después de recargar la página).
-            pantalla.scrollTop = scrollPorTab.get(targetId) ?? scrollActual;
+            // Las pestañas visitadas recuperan su posición. Una pestaña nueva
+            // empieza en su encabezado para no aparecer a media sección cuando
+            // la vista anterior era más alta o mostraba el header de Resumen.
+            const posicionGuardada = scrollPorTab.get(targetId);
+            const inicioElemento = targetId === "tab-overview" ? headerDashboard() : tabsNav;
+            const inicioTab = Math.max(0, (inicioElemento?.offsetTop ?? 18) - 18);
+            pantalla.scrollTop = posicionGuardada ?? inicioTab;
           }
           window.dispatchEvent(new Event("resize"));
-          window.dispatchEvent(new CustomEvent("mayab:tab-visible"));
+          window.dispatchEvent(new CustomEvent("mayab:tab-visible", {
+            detail: { targetId },
+          }));
         });
       }
     });
   });
 
+  tabsNav?.addEventListener("keydown", (event) => {
+    if (!event.target.classList.contains("tab-btn")) return;
+    const actual = tabButtons.indexOf(event.target);
+    if (actual < 0) return;
+    let siguiente = actual;
+    if (event.key === "ArrowRight") siguiente = (actual + 1) % tabButtons.length;
+    else if (event.key === "ArrowLeft") siguiente = (actual - 1 + tabButtons.length) % tabButtons.length;
+    else if (event.key === "Home") siguiente = 0;
+    else if (event.key === "End") siguiente = tabButtons.length - 1;
+    else return;
+    event.preventDefault();
+    tabButtons[siguiente].click();
+    tabButtons[siguiente].focus();
+  });
+
   document.querySelectorAll("[data-tab-target]").forEach((control) => {
-    control.addEventListener("click", () => {
+    const activar = (event) => {
+      if (event.type === "click" && event.target !== control && event.target.closest("a, button, input, select, textarea")) return;
       const target = control.getAttribute("data-tab-target");
       const tab = document.querySelector(`.tab-btn[data-tab="${target}"]`);
       if (!tab) return;
@@ -3889,12 +3934,17 @@ document.addEventListener("DOMContentLoaded", () => {
       // Usar el contenedor que realmente hace scroll evita dos animaciones
       // compitiendo entre sí, especialmente en Safari/Chrome móvil.
       requestAnimationFrame(() => irAlDashboard());
-    });
+    };
+    control.addEventListener("click", activar);
+    if (!control.matches("a, button, input, select, textarea")) {
+      control.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        activar(event);
+      });
+    }
   });
 
-  if (overview) {
-    overview.addEventListener("scroll", actualizarHeaderColapsable, { passive: true });
-  }
   if (pantalla) {
     pantalla.addEventListener("scroll", actualizarVisibilidadNotificaciones, { passive: true });
     pantalla.addEventListener("scrollend", guardarScroll, { passive: true });
@@ -4083,7 +4133,9 @@ function iniciarTutorial() {
 }
 
 function iniciarLanding() {
-  const elementsToReveal = document.querySelectorAll('.panel, .ga-panel, .metricas article, .landing-card, .llm-strip, .barra-superior, .tabs-nav');
+  // El header es una referencia estructural del dashboard: animarlo con scale
+  // hace que el contenedor y su grid parezcan encogerse al entrar en el scroll.
+  const elementsToReveal = document.querySelectorAll('.panel, .ga-panel, .metricas article, .landing-card, .llm-strip, .tabs-nav');
   const ordenPorGrupo = new Map();
   elementsToReveal.forEach(el => {
     if (!el.classList.contains('reveal-card')) {
@@ -4159,8 +4211,25 @@ function iniciarLanding() {
     });
   };
 
+  const revelarTabActivo = (event) => {
+    const targetId = event?.detail?.targetId;
+    const contenido = targetId
+      ? document.getElementById(targetId)
+      : document.querySelector(".tab-content.activo");
+    if (!contenido?.classList.contains("activo")) return;
+
+    // IntersectionObserver puede conservar la medición de cuando el tab tenía
+    // display:none. Al entrar a una vista, hacer visible su contenido de forma
+    // explícita evita un panel blanco hasta el siguiente scroll o hover.
+    contenido.querySelectorAll(".reveal-card:not(.is-visible)").forEach((card) => {
+      card.classList.add("is-visible");
+      observer.unobserve(card);
+    });
+    revelarCercanas();
+  };
+
   requestAnimationFrame(revelarCercanas);
-  window.addEventListener("mayab:tab-visible", revelarCercanas);
+  window.addEventListener("mayab:tab-visible", revelarTabActivo);
 }
 
 function irAlDashboard(suave = true) {
@@ -4182,6 +4251,10 @@ function irAlDashboard(suave = true) {
   history.replaceState(null, "", "#dashboard");
 }
 
+function headerDashboard() {
+  return document.querySelector(".barra-superior");
+}
+
 function iniciarHeaderColapsable() {
   if (document.readyState === "loading") return;
   actualizarHeaderColapsable();
@@ -4199,14 +4272,13 @@ function actualizarVisibilidadNotificaciones() {
 function actualizarHeaderColapsable() {
   const pantalla = document.querySelector(".pantalla");
   const header = document.querySelector(".barra-superior");
-  const overview = document.getElementById("tab-overview");
   const activo = document.querySelector(".tab-content.activo");
   if (!pantalla || !header) return;
 
   const esOverview = activo?.id === "tab-overview";
   header.style.display = esOverview ? "" : "none";
   pantalla.classList.toggle("header-fuera-tab", !esOverview);
-
-  const scrollTop = esOverview && overview ? overview.scrollTop : 0;
-  pantalla.classList.toggle("header-colapsado", esOverview && scrollTop > 42);
+  // El encabezado conserva siempre su altura: el titulo y el grid son parte de
+  // la identidad visual del dashboard, no un elemento que se contrae al leer.
+  pantalla.classList.remove("header-colapsado");
 }

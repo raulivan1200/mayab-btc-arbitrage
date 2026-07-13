@@ -4,6 +4,13 @@ const stop = $("stop");
 const run = $("run");
 const loadWindow = $("loadWindow");
 const windowMinutes = $("windowMinutes");
+let automaticLoadState = "waiting";
+
+const timeFormat = new Intl.DateTimeFormat("es-MX", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
 
 function mutationHeaders() {
   const headers = { "Content-Type": "application/json" };
@@ -30,7 +37,7 @@ function renderState(state) {
   const snapshotsDisponibles = snapshotsSeleccionados || snapshotsRecientes;
   const duracion = snapshotsSeleccionados
     ? Number(state.duracionSegundos || 0)
-    : Math.min(Number(state.historialDuracionSegundos || 0), 600);
+    : Number(state.historialVentanaPredeterminadaDuracionSegundos || 0);
   $("snapshots").textContent = snapshotsDisponibles.toLocaleString("es-MX");
   $("duration").textContent = duracion >= 60
     ? `${Math.floor(duracion / 60)} min ${duracion % 60} s`
@@ -41,14 +48,23 @@ function renderState(state) {
     : snapshotsSeleccionados > 0
       ? "Ventana seleccionada lista para replay"
       : snapshotsRecientes > 0 ? "Últimos 10 minutos listos" : "Listo para capturar";
+  const historyFrom = state.historialDesde ? new Date(state.historialDesde) : null;
+  const historyTo = state.historialHasta ? new Date(state.historialHasta) : null;
+  const validHistoryRange = historyFrom && historyTo
+    && !Number.isNaN(historyFrom.getTime()) && !Number.isNaN(historyTo.getTime());
   $("historyStatus").textContent = historialTotal > 0
-    ? `${historialTotal.toLocaleString("es-MX")} muestras disponibles · hasta 60 min`
+    ? `${historialTotal.toLocaleString("es-MX")} muestras · ${validHistoryRange ? `${timeFormat.format(historyFrom)}–${timeFormat.format(historyTo)}` : "hasta 60 min"}`
     : "Esperando las primeras cotizaciones públicas";
   start.disabled = state.activa;
   stop.disabled = !state.activa;
   loadWindow.disabled = state.activa || historialTotal === 0;
   windowMinutes.disabled = state.activa || historialTotal === 0;
   run.disabled = state.activa || snapshotsDisponibles === 0;
+
+  if (!state.activa && snapshotsSeleccionados === 0 && historialTotal > 0 && automaticLoadState === "waiting") {
+    automaticLoadState = "loading";
+    void loadReplayWindow(true);
+  }
 }
 
 async function refresh() {
@@ -70,21 +86,27 @@ stop.onclick = async () => {
   try { await request("/api/replay/captura/detener"); await refresh(); }
   catch (error) { $("status").textContent = error.message; stop.disabled = false; }
 };
-loadWindow.onclick = async () => {
+async function loadReplayWindow(automatic = false) {
   loadWindow.disabled = true;
-  $("status").textContent = "Preparando ventana de mercado…";
+  $("status").textContent = automatic
+    ? "Cargando automáticamente los últimos 10 minutos…"
+    : "Preparando ventana de mercado…";
   try {
     const result = await request("/api/replay/captura/ventana", {
       minutos: Number(windowMinutes.value),
     });
-    $("status").textContent = `${Number(result.snapshots).toLocaleString("es-MX")} snapshots listos`;
+    automaticLoadState = "done";
+    $("status").textContent = `${Number(result.snapshots).toLocaleString("es-MX")} snapshots ${automatic ? "cargados automáticamente" : "listos"}`;
     await refresh();
   } catch (error) {
+    if (automatic) automaticLoadState = "failed";
     $("status").textContent = error.message;
   } finally {
     loadWindow.disabled = false;
   }
-};
+}
+
+loadWindow.onclick = () => loadReplayWindow(false);
 run.onclick = async () => {
   run.disabled = true;
   $("resultTitle").textContent = "Ejecutando motor aislado…";

@@ -10,7 +10,8 @@
 /screenshots
 /tmp
 /dist
-/data
+/data/*
+!/data/captura_real.json
 /benches
 /tests
 *.aux

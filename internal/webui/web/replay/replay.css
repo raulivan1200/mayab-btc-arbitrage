@@ -290,16 +290,13 @@
   .replay-page .landing-brand,
   .replay-page .landing-nav-link,
   .replay-page .data-lens-label,
+  .replay-page .data-lens-divider,
   .replay-page .data-lens-item small {
     display: none;
   }
 
   .replay-page .data-lens-menu {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .replay-page .data-lens-item {
-    border-left: 0;
   }
 
   .replay-metrics,

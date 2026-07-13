@@ -191,6 +191,7 @@ struct Report {
     ex_post_holdout_winner: String,
     #[serde(rename = "holdoutWinner", skip_serializing_if = "String::is_empty")]
     holdout_winner: String,
+    holdout_conclusion: String,
     caveats: Vec<String>,
 }
 #[derive(Serialize)]
@@ -270,14 +271,13 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
             }
         })
         .collect::<Vec<_>>();
-    let ex_post_winner = results
+    let holdout_scores = results
         .iter()
-        .max_by(|x, y| x.holdout.pnl_net_usd.total_cmp(&y.holdout.pnl_net_usd))
-        .map(|x| x.strategy.name.clone())
-        .unwrap_or_default();
-    let champion_won_holdout = preregistered_champion == ex_post_winner;
+        .map(|result| (result.strategy.name.clone(), result.holdout.pnl_net_usd))
+        .collect::<Vec<_>>();
+    let holdout_outcome = classify_holdout(&holdout_scores, &preregistered_champion);
     let report = Report {
-        schema_version: 1,
+        schema_version: 2,
         generated_at: Utc::now(),
         seed: cfg.seed,
         source: cfg.tape.display().to_string(),
@@ -310,13 +310,15 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
         results,
         preregistered_champion,
         selection_policy: "máximo objetivo en calibración B; congelado antes de ejecutar C".into(),
-        champion_won_holdout,
-        ex_post_holdout_winner: ex_post_winner.clone(),
-        holdout_winner: ex_post_winner,
+        champion_won_holdout: holdout_outcome.champion_won,
+        ex_post_holdout_winner: holdout_outcome.winner.clone(),
+        holdout_winner: holdout_outcome.winner,
+        holdout_conclusion: holdout_outcome.conclusion.into(),
         caveats: vec![
             "Evaluación simulada; no demuestra rentabilidad real.".into(),
             "Se conservan todas las estrategias, ventanas negativas y derrotas del campeón GA."
                 .into(),
+            "Los empates o resultados indistinguibles no se reportan como victoria.".into(),
         ],
     };
     fs::create_dir_all(&cfg.output)
@@ -345,6 +347,54 @@ fn select_by_calibration(strategies: &[Strategy], scores: &[f64]) -> Option<Stri
             },
         )
         .map(|(strategy, _)| strategy.name.clone())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HoldoutOutcome {
+    winner: String,
+    champion_won: bool,
+    conclusion: &'static str,
+}
+
+/// Sólo declara un ganador cuando el mejor PnL es único fuera de una
+/// tolerancia numérica. Un empate, incluido el caso de cero operaciones para
+/// todas las estrategias, es evidencia inconclusa y nunca una victoria del
+/// último elemento del arreglo.
+fn classify_holdout(scores: &[(String, f64)], preregistered: &str) -> HoldoutOutcome {
+    let finite = scores
+        .iter()
+        .filter(|(_, pnl)| pnl.is_finite())
+        .collect::<Vec<_>>();
+    let Some(max_pnl) = finite.iter().map(|(_, pnl)| *pnl).max_by(f64::total_cmp) else {
+        return HoldoutOutcome {
+            winner: "sin_resultados_validos".into(),
+            champion_won: false,
+            conclusion: "sin_resultados_validos",
+        };
+    };
+    let tolerance = (max_pnl.abs() * 1e-9).max(1e-9);
+    let leaders = finite
+        .into_iter()
+        .filter(|(_, pnl)| (max_pnl - *pnl).abs() <= tolerance)
+        .collect::<Vec<_>>();
+    if leaders.len() != 1 {
+        return HoldoutOutcome {
+            winner: "empate_inconcluso".into(),
+            champion_won: false,
+            conclusion: "empate_inconcluso",
+        };
+    }
+    let winner = leaders[0].0.clone();
+    let champion_won = winner == preregistered;
+    HoldoutOutcome {
+        winner,
+        champion_won,
+        conclusion: if champion_won {
+            "campeon_supera_estrictamente"
+        } else {
+            "otra_estrategia_supera"
+        },
+    }
 }
 
 fn quantitative_funnel(quotes: &[Cotizacion], events: &[TapeEvent]) -> QuantitativeFunnel {
@@ -951,7 +1001,7 @@ fn csv_report(r: &Report) -> String {
 }
 fn markdown_report(r: &Report) -> String {
     let f = &r.quantitative_funnel;
-    let mut s=format!("# Evaluación cronológica de tape\n\n- Split: **{}/{}/{}** (A/B/C)\n- Eventos comparables A/B/C: **{}/{}/{}**\n- Quotes crudos/válidos: **{}/{}**\n- Candidatos comparables: **{}**\n- Dislocaciones brutas/netas/netas con liquidez: **{}/{}/{}**\n- Netas por millón de quotes: **{:.2}**\n- Seed de optimización: **{}** (no se usa para seleccionar con C)\n- Campeón preregistrado con B: **{}**\n- Mejor resultado ex post en C: **{}**\n- ¿El campeón ganó C?: **{}**\n\n> Política de selección: {}\n\n> Definición: {}\n\n| Estrategia | P&L neto | P&L/BTC | Max DD | Fill órdenes | Profit factor | Costos | Ventanas negativas |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",r.split.train,r.split.calibration,r.split.holdout,r.event_counts[0],r.event_counts[1],r.event_counts[2],f.raw_quotes,f.valid_quotes,f.comparable_candidates,f.gross_dislocations,f.net_dislocations,f.liquid_net_dislocations,f.net_per_million_quotes,r.seed,r.preregistered_champion,r.ex_post_holdout_winner,r.champion_won_holdout,r.selection_policy,f.definition);
+    let mut s=format!("# Evaluación cronológica de tape\n\n- Split: **{}/{}/{}** (A/B/C)\n- Eventos comparables A/B/C: **{}/{}/{}**\n- Quotes crudos/válidos: **{}/{}**\n- Candidatos comparables: **{}**\n- Dislocaciones brutas/netas/netas con liquidez: **{}/{}/{}**\n- Netas por millón de quotes: **{:.2}**\n- Seed de optimización: **{}** (no se usa para seleccionar con C)\n- Campeón preregistrado con B: **{}**\n- Mejor resultado ex post en C: **{}**\n- ¿El campeón ganó C?: **{}**\n- Conclusión holdout: **{}**\n\n> Política de selección: {}\n\n> Definición: {}\n\n| Estrategia | P&L neto | P&L/BTC | Max DD | Fill órdenes | Profit factor | Costos | Ventanas negativas |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",r.split.train,r.split.calibration,r.split.holdout,r.event_counts[0],r.event_counts[1],r.event_counts[2],f.raw_quotes,f.valid_quotes,f.comparable_candidates,f.gross_dislocations,f.net_dislocations,f.liquid_net_dislocations,f.net_per_million_quotes,r.seed,r.preregistered_champion,r.ex_post_holdout_winner,r.champion_won_holdout,r.holdout_conclusion,r.selection_policy,f.definition);
     for x in &r.results {
         let m = &x.holdout;
         let _ = writeln!(
@@ -1042,6 +1092,7 @@ mod tests {
             duration_ms: 2,
             sha256: format!("{:x}", Sha256::digest(&events_bytes)),
             git_commit: "fixture".into(),
+            git_dirty: false,
             config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
         };
         fs::write(
@@ -1207,6 +1258,30 @@ mod tests {
             select_by_calibration(&strategies, &scores).as_deref(),
             Some(expected)
         );
+    }
+
+    #[test]
+    fn holdout_tied_at_zero_is_inconclusive_not_a_champion_win() {
+        let scores = vec![
+            ("baseline".to_string(), 0.0),
+            ("campeon_ga_congelado".to_string(), 0.0),
+        ];
+        let outcome = classify_holdout(&scores, "campeon_ga_congelado");
+        assert_eq!(outcome.winner, "empate_inconcluso");
+        assert!(!outcome.champion_won);
+        assert_eq!(outcome.conclusion, "empate_inconcluso");
+    }
+
+    #[test]
+    fn holdout_requires_strict_unique_superiority_to_declare_champion_win() {
+        let scores = vec![
+            ("baseline".to_string(), 9.0),
+            ("campeon_ga_congelado".to_string(), 10.0),
+        ];
+        let outcome = classify_holdout(&scores, "campeon_ga_congelado");
+        assert_eq!(outcome.winner, "campeon_ga_congelado");
+        assert!(outcome.champion_won);
+        assert_eq!(outcome.conclusion, "campeon_supera_estrictamente");
     }
 
     #[test]

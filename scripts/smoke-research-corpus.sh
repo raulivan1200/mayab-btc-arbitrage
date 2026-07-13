@@ -27,6 +27,8 @@ jq -e '
   .evidenceGates.multiVenue == true and
   .evidenceGates.venueEventCoverage == true and
   .evidenceGates.minimumEventsPerVenue >= 2 and
+  (.evidenceGates | has("cleanSourceTree")) and
+  .evidenceGates.singleSourceCommit == true and
   .evidenceGates.publishableScale == false and
   .evidenceGates.status == "insufficient_scale"
 ' "$REPORT" >/dev/null

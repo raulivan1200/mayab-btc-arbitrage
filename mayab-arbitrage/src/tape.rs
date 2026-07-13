@@ -133,6 +133,8 @@ pub struct TapeManifest {
     pub duration_ms: i64,
     pub sha256: String,
     pub git_commit: String,
+    #[serde(default = "legacy_git_dirty")]
+    pub git_dirty: bool,
     pub config_sha256: String,
 }
 
@@ -148,6 +150,8 @@ pub async fn capture(
     let config_bytes = serde_json::to_vec_pretty(&config)?;
     fs::write(output.join(CONFIG_FILE), &config_bytes)?;
     let config_sha256 = hex_sha(&config_bytes);
+    let source_commit = git_commit();
+    let source_dirty = git_dirty();
     let started_at = Utc::now();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8192);
     mercado::capture_public_books(
@@ -166,10 +170,8 @@ pub async fn capture(
     let mut reconnects = 0;
     let mut events_by_exchange = BTreeMap::<String, u64>::new();
     loop {
-        let event = tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => break,
-            event = rx.recv() => event.context("todos los capturadores terminaron")?,
-            _ = tokio::signal::ctrl_c() => break,
+        let Some(event) = receive_until_deadline(&mut rx, deadline).await? else {
+            break;
         };
         serde_json::to_writer(&mut writer, &event)?;
         writer.write_all(b"\n")?;
@@ -211,7 +213,8 @@ pub async fn capture(
         uncompressed_bytes,
         duration_ms: (ended_at - started_at).num_milliseconds().max(0),
         sha256,
-        git_commit: git_commit(),
+        git_commit: source_commit,
+        git_dirty: source_dirty,
         config_sha256,
     };
     fs::write(
@@ -219,6 +222,21 @@ pub async fn capture(
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     Ok(manifest)
+}
+
+async fn receive_until_deadline<T>(
+    rx: &mut tokio::sync::mpsc::Receiver<T>,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<Option<T>> {
+    if tokio::time::Instant::now() >= deadline {
+        return Ok(None);
+    }
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(deadline) => Ok(None),
+        event = rx.recv() => event.map(Some).context("todos los capturadores terminaron"),
+        _ = tokio::signal::ctrl_c() => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,6 +259,8 @@ pub struct Verification {
     pub duration_ms: i64,
     pub uncompressed_bytes: u64,
     pub events_by_exchange: BTreeMap<String, u64>,
+    pub git_commit: String,
+    pub git_dirty: bool,
     pub sha256: String,
 }
 
@@ -256,6 +276,8 @@ pub struct CorpusTape {
     pub ended_at: DateTime<Utc>,
     pub exchanges: Vec<String>,
     pub pairs: Vec<String>,
+    pub git_commit: String,
+    pub git_dirty: bool,
     pub sha256: String,
 }
 
@@ -316,6 +338,7 @@ pub struct CorpusReport {
     pub total_capture_duration_ms: i64,
     pub events_by_exchange: BTreeMap<String, u64>,
     pub pairs: Vec<String>,
+    pub source_commits: Vec<String>,
     pub evidence_gates: EvidenceGates,
     pub tapes: Vec<CorpusTape>,
 }
@@ -332,6 +355,8 @@ pub struct EvidenceGates {
     pub twenty_four_captured_hours: bool,
     pub delivery_is_loss_accounted: bool,
     pub sequence_gap_rate_below_one_percent: bool,
+    pub clean_source_tree: bool,
+    pub single_source_commit: bool,
     pub publishable_scale: bool,
     pub status: &'static str,
     pub note: &'static str,
@@ -422,6 +447,7 @@ fn verify_corpus_classified(
         .context("corpus sin fin")?;
     let mut events_by_exchange = BTreeMap::<String, u64>::new();
     let mut configured_exchanges = std::collections::BTreeSet::new();
+    let mut source_commits = std::collections::BTreeSet::new();
     let mut pairs = std::collections::BTreeSet::new();
     let mut corpus_hashes = Vec::with_capacity(verifications.len());
     let mut tapes = Vec::with_capacity(verifications.len());
@@ -461,6 +487,8 @@ fn verify_corpus_classified(
                 .context("overflow en eventsByExchange")?;
         }
         configured_exchanges.extend(verified.exchanges.iter().cloned());
+        source_commits.insert(verified.git_commit.clone());
+        let shard_git_dirty = verified.git_dirty;
         pairs.extend(verified.pairs.iter().cloned());
         corpus_hashes.push(verified.sha256.clone());
         tapes.push(CorpusTape {
@@ -477,6 +505,8 @@ fn verify_corpus_classified(
             ended_at: verified.ended_at,
             exchanges: verified.exchanges,
             pairs: verified.pairs,
+            git_commit: verified.git_commit,
+            git_dirty: shard_git_dirty,
             sha256: verified.sha256,
         });
     }
@@ -497,6 +527,11 @@ fn verify_corpus_classified(
     let twenty_four_captured_hours = total_capture_duration_ms >= 24 * 60 * 60 * 1_000;
     let sequence_gap_rate_below_one_percent =
         total_sequence_gaps as f64 / total_events.max(1) as f64 <= 0.01;
+    let clean_source_tree = tapes.iter().all(|tape| !tape.git_dirty);
+    let single_source_commit = source_commits.len() == 1
+        && source_commits
+            .iter()
+            .all(|commit| commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit()));
     let corpus_classification = match source_classification.as_deref() {
         Some("public_market_capture") => "public_market_capture_corpus",
         Some("synthetic_benchmark") => "synthetic_benchmark_corpus",
@@ -508,7 +543,9 @@ fn verify_corpus_classified(
         && million_event_scale
         && twenty_four_captured_hours
         && delivery_is_loss_accounted
-        && sequence_gap_rate_below_one_percent;
+        && sequence_gap_rate_below_one_percent
+        && clean_source_tree
+        && single_source_commit;
     let (publishable_scale, publication_status) =
         corpus_publication_status(corpus_classification, scale_requirements_met);
     Ok(CorpusReport {
@@ -529,6 +566,7 @@ fn verify_corpus_classified(
         total_capture_duration_ms,
         events_by_exchange,
         pairs: pairs.into_iter().collect(),
+        source_commits: source_commits.into_iter().collect(),
         evidence_gates: EvidenceGates {
             multi_venue,
             venue_event_coverage,
@@ -539,6 +577,8 @@ fn verify_corpus_classified(
             twenty_four_captured_hours,
             delivery_is_loss_accounted,
             sequence_gap_rate_below_one_percent,
+            clean_source_tree,
+            single_source_commit,
             publishable_scale,
             status: publication_status,
             note: "escala verificada no implica rentabilidad ni un millón de dislocaciones; solo volumen de eventos públicos deduplicados",
@@ -648,6 +688,13 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
             ON shard_pair(pair, corpus_sha256, shard_sha256);",
     )?;
     let transaction = connection.transaction()?;
+    if previous_schema_version < 3 {
+        transaction.execute_batch(
+            "ALTER TABLE shard ADD COLUMN git_commit TEXT NOT NULL DEFAULT 'unknown';
+             ALTER TABLE shard ADD COLUMN git_dirty INTEGER NOT NULL DEFAULT 1
+                 CHECK(git_dirty IN (0,1));",
+        )?;
+    }
     if previous_schema_version < 2 {
         let legacy_shards = {
             let mut statement = transaction
@@ -726,8 +773,8 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
             "INSERT INTO shard (
                 corpus_sha256, sha256, dataset_id, relative_path, events,
                 sequence_gaps, reconnect_events, started_at, ended_at,
-                exchanges_json, pairs_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                exchanges_json, pairs_json, git_commit, git_dirty
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &report.corpus_sha256,
                 &shard.sha256,
@@ -740,6 +787,8 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
                 shard.ended_at.to_rfc3339(),
                 exchanges_json,
                 pairs_json,
+                &shard.git_commit,
+                i64::from(shard.git_dirty),
             ],
         )?;
         for exchange in &shard.exchanges {
@@ -764,7 +813,7 @@ pub fn index_corpus_sqlite(report: &CorpusReport, database: &Path) -> anyhow::Re
         )?;
     }
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 2)?;
+    connection.pragma_update(None, "user_version", 3)?;
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     Ok(())
 }
@@ -787,7 +836,7 @@ pub fn query_corpus_sqlite(
     let mut statement = connection.prepare(
         "SELECT s.dataset_id, s.relative_path, s.events, s.sequence_gaps,
                 s.reconnect_events, s.started_at, s.ended_at,
-                s.exchanges_json, s.pairs_json, s.sha256
+                s.exchanges_json, s.pairs_json, s.git_commit, s.git_dirty, s.sha256
          FROM shard s
          WHERE s.corpus_sha256 = COALESCE(
                ?1,
@@ -837,6 +886,8 @@ pub fn query_corpus_sqlite(
                 exchanges_json,
                 pairs_json,
                 row.get::<_, String>(9)?,
+                row.get::<_, bool>(10)?,
+                row.get::<_, String>(11)?,
             ))
         },
     )?;
@@ -852,6 +903,8 @@ pub fn query_corpus_sqlite(
             ended,
             exchanges,
             pairs,
+            git_commit,
+            git_dirty,
             sha256,
         ) = row?;
         tapes.push(CorpusTape {
@@ -864,6 +917,8 @@ pub fn query_corpus_sqlite(
             ended_at: DateTime::parse_from_rfc3339(&ended)?.with_timezone(&Utc),
             exchanges: serde_json::from_str(&exchanges)?,
             pairs: serde_json::from_str(&pairs)?,
+            git_commit,
+            git_dirty,
             sha256,
         });
     }
@@ -1344,7 +1399,8 @@ pub fn verify(path: &Path) -> anyhow::Result<Verification> {
         bail!("sha256 de events.jsonl no coincide");
     }
     let mut books: HashMap<(String, String), BookSides> = HashMap::new();
-    let mut last_local = None;
+    let mut last_local_by_market = HashMap::<(String, String), DateTime<Utc>>::new();
+    let mut latest_local = None;
     let mut last_seq: HashMap<(String, String), u64> = HashMap::new();
     let mut count = 0;
     let mut snapshots = 0;
@@ -1361,11 +1417,20 @@ pub fn verify(path: &Path) -> anyhow::Result<Verification> {
         if event.schema_version != 1 {
             bail!("schemaVersion inválida en línea {}", line_no + 1);
         }
-        if last_local.is_some_and(|v| event.local_timestamp < v) {
-            bail!("orden temporal inválido en línea {}", line_no + 1);
-        }
-        last_local = Some(event.local_timestamp);
         let key = (event.exchange.clone(), event.pair.clone());
+        if !record_local_timestamp(&mut last_local_by_market, &key, event.local_timestamp) {
+            bail!(
+                "orden temporal inválido para {}/{} en línea {}",
+                key.0,
+                key.1,
+                line_no + 1
+            );
+        }
+        latest_local = Some(
+            latest_local
+                .map(|latest: DateTime<Utc>| latest.max(event.local_timestamp))
+                .unwrap_or(event.local_timestamp),
+        );
         if let Some(seq) = event.sequence_id {
             if !event.integrity.resync && last_seq.get(&key).is_some_and(|old| seq < *old) {
                 bail!("secuencia no monótona en línea {}", line_no + 1);
@@ -1406,7 +1471,7 @@ pub fn verify(path: &Path) -> anyhow::Result<Verification> {
     if manifest.uncompressed_bytes > 0 && actual_bytes != manifest.uncompressed_bytes {
         bail!("uncompressedBytes del manifiesto no coincide con events.jsonl");
     }
-    if last_local.is_none_or(|v| v < manifest.started_at || v > manifest.ended_at) {
+    if latest_local.is_none_or(|v| v < manifest.started_at || v > manifest.ended_at) {
         bail!("ventana temporal del manifiesto no contiene los eventos");
     }
     Ok(Verification {
@@ -1433,12 +1498,33 @@ pub fn verify(path: &Path) -> anyhow::Result<Verification> {
             .max(0),
         uncompressed_bytes: actual_bytes,
         events_by_exchange,
+        git_commit: manifest.git_commit,
+        git_dirty: manifest.git_dirty,
         sha256: actual_sha,
     })
 }
 
 fn default_source_classification() -> String {
     "public_market_capture".to_string()
+}
+
+fn legacy_git_dirty() -> bool {
+    true
+}
+
+fn record_local_timestamp(
+    last_by_market: &mut HashMap<(String, String), DateTime<Utc>>,
+    market: &(String, String),
+    timestamp: DateTime<Utc>,
+) -> bool {
+    if last_by_market
+        .get(market)
+        .is_some_and(|previous| timestamp < *previous)
+    {
+        return false;
+    }
+    last_by_market.insert(market.clone(), timestamp);
+    true
 }
 
 fn default_delivery_policy() -> String {
@@ -1497,6 +1583,15 @@ fn git_commit() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+fn git_dirty() -> bool {
+    Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_none_or(|output| !output.stdout.is_empty())
+}
+
 pub fn parse_duration(value: &str) -> anyhow::Result<Duration> {
     let split = value
         .find(|c: char| !c.is_ascii_digit())
@@ -1540,6 +1635,8 @@ mod tests {
             duration_ms: end_ms - start_ms,
             uncompressed_bytes: 1,
             events_by_exchange: BTreeMap::from([(exchange.into(), 1)]),
+            git_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            git_dirty: false,
             sha256: id.into(),
         }
     }
@@ -1556,6 +1653,32 @@ mod tests {
         assert!(parse_duration("s").is_err());
         assert!(parse_duration("1.5h").is_err());
         assert!(parse_duration("10ms").is_err());
+    }
+
+    #[tokio::test]
+    async fn flooded_channel_cannot_starve_capture_deadline() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let producer = tokio::spawn(async move {
+            loop {
+                if tx.send(()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let started = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
+        let mut received = 0_u64;
+        while receive_until_deadline(&mut rx, deadline)
+            .await
+            .unwrap()
+            .is_some()
+        {
+            received += 1;
+        }
+        producer.abort();
+
+        assert!(received > 0);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
@@ -1646,6 +1769,10 @@ mod tests {
         assert_eq!(manifest.reconnect_events, 0);
         assert!(manifest.dataset_id.is_empty());
         assert!(manifest.events_by_exchange.is_empty());
+        assert!(
+            manifest.git_dirty,
+            "un manifiesto legado no prueba un árbol limpio"
+        );
     }
 
     #[test]
@@ -1744,6 +1871,7 @@ mod tests {
             total_capture_duration_ms: 1_000,
             events_by_exchange: BTreeMap::from([("Kraken".into(), 10)]),
             pairs: vec!["BTC/USD".into()],
+            source_commits: vec!["0123456789abcdef0123456789abcdef01234567".into()],
             evidence_gates: EvidenceGates {
                 multi_venue: false,
                 venue_event_coverage: false,
@@ -1754,6 +1882,8 @@ mod tests {
                 twenty_four_captured_hours: false,
                 delivery_is_loss_accounted: true,
                 sequence_gap_rate_below_one_percent: true,
+                clean_source_tree: true,
+                single_source_commit: true,
                 publishable_scale: false,
                 status: "insufficient_scale",
                 note: "fixture",
@@ -1768,6 +1898,8 @@ mod tests {
                 ended_at: end,
                 exchanges: vec!["Kraken".into()],
                 pairs: vec!["BTC/USD".into()],
+                git_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                git_dirty: false,
                 sha256: "shard-fixture".into(),
             }],
         };
@@ -1835,7 +1967,7 @@ mod tests {
         assert_eq!((corpus_count, shard_count, indexed_events), (2, 2, 10));
         assert_eq!(
             (normalized_exchanges, normalized_pairs, schema_version),
-            (2, 2, 2)
+            (2, 2, 3)
         );
         drop(connection);
         let page = query_corpus_sqlite(
@@ -1850,6 +1982,11 @@ mod tests {
         .unwrap();
         assert_eq!(page.tapes.len(), 1);
         assert_eq!(page.tapes[0].dataset_id, "dataset-fixture");
+        assert_eq!(
+            page.tapes[0].git_commit,
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert!(!page.tapes[0].git_dirty);
         assert!(!page.has_more);
         let migrated = query_corpus_sqlite(
             &database,
@@ -1986,6 +2123,20 @@ mod tests {
             venue_event_coverage(&configured, &counts, 10_000).unwrap(),
             (true, 2)
         );
+    }
+
+    #[test]
+    fn temporal_order_is_enforced_per_market_not_globally() {
+        let mut last = HashMap::new();
+        let kraken = ("Kraken".to_string(), "BTC/USD".to_string());
+        let coinbase = ("Coinbase".to_string(), "BTC/USD".to_string());
+        let t1 = DateTime::<Utc>::from_timestamp_millis(1_000).unwrap();
+        let t2 = DateTime::<Utc>::from_timestamp_millis(2_000).unwrap();
+
+        assert!(record_local_timestamp(&mut last, &kraken, t2));
+        assert!(record_local_timestamp(&mut last, &coinbase, t1));
+        assert!(!record_local_timestamp(&mut last, &kraken, t1));
+        assert!(record_local_timestamp(&mut last, &kraken, t2));
     }
 
     #[test]

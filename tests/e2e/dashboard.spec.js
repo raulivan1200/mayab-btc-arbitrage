@@ -13,6 +13,9 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
   await expect(page.locator("#pnl")).toBeVisible();
   await expect(page.locator("#balances")).toBeAttached();
   await expect(page.locator(".landing-stack-phrase")).toContainText("Rust en el camino crítico");
+  // Cierra explícitamente el stream antes de que Playwright destruya el
+  // contexto; el dashboard mantiene un WebSocket vivo por diseño.
+  await page.close();
   expect(errors).toEqual([]);
   expect(logs).toEqual([]);
 });
@@ -35,6 +38,44 @@ test("replay y consola operativa cargan sin errores de navegador", async ({ page
   await expect(page.locator("#exchanges")).toBeAttached();
 
   expect(errors).toEqual([]);
+});
+
+test("replay carga diez minutos automáticamente y permite cambiar la ventana", async ({ page }) => {
+  let selectedSnapshots = 0;
+  const requestedWindows = [];
+  await page.route("**/api/replay/captura/estado", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      activa: false,
+      snapshots: selectedSnapshots,
+      duracionSegundos: selectedSnapshots ? 300 : 0,
+      historialSnapshots: 240,
+      historialVentanaPredeterminadaSnapshots: 120,
+      historialVentanaPredeterminadaDuracionSegundos: 600,
+      historialDesde: "2026-07-12T18:00:00Z",
+      historialHasta: "2026-07-12T18:10:00Z",
+    }),
+  }));
+  await page.route("**/api/replay/captura/ventana", async route => {
+    const payload = route.request().postDataJSON();
+    requestedWindows.push(payload.minutos);
+    selectedSnapshots = payload.minutos === 5 ? 60 : 120;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, snapshots: selectedSnapshots }),
+    });
+  });
+
+  await page.goto("/replay/");
+  await expect.poll(() => requestedWindows).toEqual([10]);
+  await expect(page.locator("#status")).toContainText("Ventana seleccionada lista");
+
+  await page.locator("#windowMinutes").selectOption("5");
+  await page.locator("#loadWindow").click();
+  await expect.poll(() => requestedWindows).toEqual([10, 5]);
+  await expect(page.locator("#snapshots")).toHaveText("60");
 });
 
 test("salud, readiness y caching exponen contratos operativos", async ({ request }) => {
@@ -83,6 +124,47 @@ test("selector superior separa mercado, replay, demo y escala del corpus", async
   await expect(page.locator("#dataLensScale")).toHaveAttribute("data-status", "verified");
   await expect(page.locator("#dataLensScale")).toContainText("12,345 netas");
   await expect(page.locator("#dataLensScale")).toHaveAttribute("title", /IC Wilson 95%.*netas con liquidez/);
+});
+
+test("al cambiar entre mercado y demo el contenido se revela sin hover", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('[data-data-lens="live"]').click();
+  await expect(page.locator("#tab-mercado")).toHaveClass(/activo/);
+  await expect(page.locator("#tab-mercado .panel").first()).toHaveClass(/is-visible/);
+  await expect(page.locator("#tab-mercado .panel").first()).toHaveCSS("opacity", "1");
+
+  await page.locator('[data-data-lens="demo"]').click();
+  await expect(page.locator("#tab-riesgo")).toHaveClass(/activo/);
+  await expect(page.locator("#tab-riesgo .panel").first()).toHaveClass(/is-visible/);
+  await expect(page.locator("#tab-riesgo .panel").first()).toHaveCSS("opacity", "1");
+  await page.close();
+});
+
+test("el header y su grid conservan su tamaño al hacer scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Esta prueba valida geometría, no animación. Reducir movimiento evita que
+  // los reveals y el canvas compitan con las mediciones de layout en CI.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+
+  const pantalla = page.locator(".pantalla");
+  const header = page.locator("#dashboard");
+  const grid = page.locator("#header-grid");
+  await header.scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.fonts.ready);
+
+  await expect(header).not.toHaveClass(/reveal-card/);
+  await expect(header).toHaveCSS("transform", "none");
+  const antes = await Promise.all([header.boundingBox(), grid.boundingBox()]);
+  await pantalla.evaluate((elemento) => elemento.scrollBy(0, 280));
+  await page.waitForTimeout(250);
+  const despues = await Promise.all([header.boundingBox(), grid.boundingBox()]);
+
+  expect(antes[0]?.height).toBeGreaterThanOrEqual(310);
+  expect(despues[0]?.height).toBe(antes[0]?.height);
+  expect(despues[1]?.height).toBe(antes[1]?.height);
+  await page.close();
 });
 
 test("demo rentable mantiene PnL positivo y GA activo", async ({ request }) => {

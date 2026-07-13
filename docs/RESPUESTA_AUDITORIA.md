@@ -15,7 +15,7 @@ reproducible y separa claramente lo implementado de lo que sigue fuera de alcanc
 | Backoff no se restablece | Corregido: reconexión con jitter y reset después de una sesión saludable | loops de conexión en `src/mercado.rs` |
 | Fallos de integridad invisibles | Corregido: secuencias, checksum, resync e invalidación viajan en el contrato público y en Prometheus | `Cotizacion` en `src/types.rs`, parsers de `src/mercado.rs`, métricas `mayab_feed_*` |
 | Sin kill switch ni límites de pérdida | Corregido para ejecución simulada | endpoints admin, `Motor::activar_kill_switch`, circuit breaker y tests asociados |
-| Sin auth/rate limit/origin policy | Corregido en mutaciones; lecturas de mercado permanecen públicas por diseño | `src/http/auth.rs`, `rate_limit.rs`, `origin.rs` y tests del router |
+| Sin auth/rate limit/origin policy | Corregido en mutaciones; lecturas de mercado permanecen públicas por diseño | `src/server.rs`, `src/http/origin.rs` y tests del router |
 | Sin CI, race/integración/cobertura | Corregido | `.github/workflows/rust.yml`, `coverage.yml`, `security.yml`, `benchmarks.yml`, `tests/integration_test.rs`, Playwright E2E |
 | Sin evidencia experimental | Corregido sin prometer rentabilidad futura | `src/evaluation.rs`, `src/microestructura.rs`, `src/ou.rs`, `evaluate-tape`, `/api/backtest`, `/api/lab/sweep`, `FINAL_EVIDENCE.md` |
 

@@ -25,7 +25,7 @@
       html[data-theme="light"] { background: #f4e9e1; color-scheme: light; }
     </style>
     <script src="/theme-init.js"></script>
-    <link rel="stylesheet" href="/styles.css?v=20260712-fill-hover-unified" />
+    <link rel="stylesheet" href="/styles.css?v=20260712-latency-layout" />
   </head>
   <body>
     <noscript>
@@ -40,6 +40,7 @@
           <a class="landing-brand" href="#landing-top" aria-label="Mayab inicio">Mayab BTC</a>
           <nav class="data-lens-menu" aria-label="Elegir procedencia de datos">
             <span class="data-lens-label">Ver datos</span>
+            <hr class="data-lens-divider" aria-hidden="true" />
             <a class="data-lens-item is-active" href="#dashboard" data-data-lens="live" aria-current="page">
               <i class="data-lens-dot" aria-hidden="true"></i>
               <span><strong>Mercado</strong><small>WS públicos · paper</small></span>
@@ -106,7 +107,7 @@
         </div>
 
         <div class="landing-grid">
-          <article class="landing-card landing-card-green reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-riesgo\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
+          <article class="landing-card landing-card-green landing-card-link reveal-card" data-tab-target="tab-riesgo" role="button" tabindex="0" aria-label="Abrir Riesgo y escenarios">
             <span>03</span>
             <h2>Riesgo defendible</h2>
             <ul>
@@ -115,7 +116,7 @@
               <li>Rebalanceos internos con costo explícito</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-purple reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-galab\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
+          <article class="landing-card landing-card-purple landing-card-link reveal-card" data-tab-target="tab-galab" role="button" tabindex="0" aria-label="Abrir Optimización GA">
             <span>04</span>
             <h2>Optimización explicable</h2>
             <ul>
@@ -124,7 +125,7 @@
               <li>JSON/CSV para auditar fuera del dashboard</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-black reveal-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-logs\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
+          <article class="landing-card landing-card-black landing-card-link reveal-card" data-tab-target="tab-logs" role="button" tabindex="0" aria-label="Abrir Auditoría y backtest">
             <span>05</span>
             <h2>Listo para evaluar</h2>
             <ul>
@@ -133,7 +134,7 @@
               <li>Sin llaves, sin custodia, sin trading real</li>
             </ul>
           </article>
-          <article class="landing-card landing-card-blue reveal-card" id="seguridad-card" style="cursor: pointer;" onclick="if(event.target.tagName.toLowerCase() !== 'a'){ document.querySelector('[data-tab=\'tab-overview\']').click(); document.getElementById('dashboard').scrollIntoView({behavior: 'smooth'}); }">
+          <article class="landing-card landing-card-blue reveal-card" id="seguridad-card">
             <span>06</span>
             <h2>Seguridad y observabilidad</h2>
             <ul>
@@ -142,6 +143,7 @@
               <li>Sin llaves API ni superficie de órdenes privadas</li>
             </ul>
             <div class="landing-actions" style="margin-top: 1.5rem; margin-bottom: 1rem;">
+              <button class="btn-link" type="button" data-tab-target="tab-overview">Abrir resumen</button>
               <a class="btn-link" href="/metrics" target="_blank" rel="noopener">Ver métricas Prometheus</a>
             </div>
             <p class="seguridad-estado seguridad-ok">Demo segura: solo datos públicos y estado simulado.</p>
@@ -1210,6 +1212,6 @@
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260712-demo-scroll" type="module"></script>
+    <script src="/app.js?v=20260712-navigation-audit" type="module"></script>
   </body>
 </html>

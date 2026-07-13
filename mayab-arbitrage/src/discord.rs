@@ -83,7 +83,7 @@ impl ConfigDiscord {
             bot_token = self.bot_token.is_some(),
             guild_id = self.guild_id.is_some(),
             nvidia = self.nvidia.is_some(),
-            "configuracion de Discord cargada"
+            "configuración de Discord cargada"
         );
     }
 }
@@ -143,8 +143,8 @@ pub async fn responder_interaccion(
     let interaccion: Interaccion = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
-            tracing::warn!(%error, body_bytes = body.len(), "payload de Discord invalido");
-            return (StatusCode::BAD_REQUEST, "Payload invalido").into_response();
+            tracing::warn!(%error, body_bytes = body.len(), "payload de Discord inválido");
+            return (StatusCode::BAD_REQUEST, "Payload inválido").into_response();
         }
     };
     tracing::info!(
@@ -165,7 +165,7 @@ pub async fn responder_interaccion(
         return ejecutar_comando(&motor, &data.name).await;
     }
     let Some(nvidia) = config.nvidia.clone() else {
-        return respuesta("La IA no esta configurada: falta NVIDIA_API_KEY.", true);
+        return respuesta("La IA no está configurada: falta NVIDIA_API_KEY.", true);
     };
     let pregunta = data
         .options
@@ -188,7 +188,7 @@ pub async fn responder_interaccion(
         let resultado = agente_nvidia(motor, nvidia, pregunta, puede_mutar).await;
         completar_interaccion(&application_id, &token, &resultado).await;
     });
-    Json(json!({ "type": 5, "data": { "content": "Mayab IA esta analizando..." } })).into_response()
+    Json(json!({ "type": 5, "data": { "content": "Mayab IA está analizando..." } })).into_response()
 }
 
 fn firma_valida(public_key: &VerifyingKey, headers: &HeaderMap, body: &[u8]) -> bool {
@@ -240,12 +240,12 @@ fn resumen_estado(estado: &EstadoPublico) -> String {
         || "inactivo".into(),
         |ga| {
             format!(
-                "generacion {} · fitness {:.2}",
+                "generación {} · fitness {:.2}",
                 ga.generacion, ga.mejor_fitness
             )
         },
     );
-    format!("**Mayab Arbitraje BTC** (simulacion)\nPnL: **${:.2} USD** · retorno: **{:.2} bps**\nOperaciones: **{}** · riesgo: **{}**\nGA: {} · feeds: {} cotizaciones", estado.metricas.utilidad_acumulada_usd, estado.metricas.retorno_bps, estado.metricas.operaciones, estado.metricas.estado_riesgo, ga, estado.cotizaciones.len())
+    format!("**Mayab Arbitraje BTC** (simulación)\nPnL: **${:.2} USD** · retorno: **{:.2} bps**\nOperaciones: **{}** · riesgo: **{}**\nGA: {} · feeds: {} cotizaciones", estado.metricas.utilidad_acumulada_usd, estado.metricas.retorno_bps, estado.metricas.operaciones, estado.metricas.estado_riesgo, ga, estado.cotizaciones.len())
 }
 
 fn respuesta(content: &str, ephemeral: bool) -> Response {
@@ -277,8 +277,8 @@ pub async fn registrar_comandos(config: ConfigDiscord) {
         json!({"name":"estado","type":1,"description":"Muestra PnL, riesgo, operaciones y GA"}),
         json!({"name":"resumen","type":1,"description":"Resumen compacto de Mayab Arbitraje BTC"}),
         json!({"name":"demo-rentable","type":1,"description":"Prepara el escenario rentable estrictamente simulado"}),
-        json!({"name":"mayab","type":1,"description":"Consulta a la IA o ajusta la simulacion con tools","options":[{"name":"pregunta","description":"Ejemplo: muestra el riesgo o cambia el slippage a 0.5 bps","type":3,"required":true,"max_length":600}]}),
-        json!({"name":"ask","type":1,"description":"Pregunta cualquier cosa a Mayab IA","options":[{"name":"pregunta","description":"Pregunta general o sobre datos y configuracion de Mayab","type":3,"required":true,"max_length":1200}]}),
+        json!({"name":"mayab","type":1,"description":"Consulta a la IA o ajusta la simulación con tools","options":[{"name":"pregunta","description":"Ejemplo: muestra el riesgo o cambia el slippage a 0.5 bps","type":3,"required":true,"max_length":600}]}),
+        json!({"name":"ask","type":1,"description":"Pregunta cualquier cosa a Mayab IA","options":[{"name":"pregunta","description":"Pregunta general o sobre datos y configuración de Mayab","type":3,"required":true,"max_length":1200}]}),
     ];
     let client = reqwest::Client::new();
     for command in commands {
@@ -319,7 +319,7 @@ async fn agente_nvidia(
     can_mutate: bool,
 ) -> String {
     let mut messages = vec![
-        json!({"role":"system","content":"Eres Mayab IA, un asistente general dentro de Discord. Puedes responder preguntas generales con tu conocimiento y preguntas sobre Mayab Arbitraje BTC usando siempre las tools disponibles para datos actuales. Mayab es una demo estrictamente simulada: nunca afirmes trading real. La auditoria es de solo lectura. Solo cambia parametros si el usuario lo pide explicitamente y la tool esta disponible; explica brevemente cualquier cambio. No inventes datos que una tool pueda consultar. Responde en el idioma del usuario, de forma clara y concisa."}),
+        json!({"role":"system","content":"Eres Mayab IA, un asistente general dentro de Discord. Puedes responder preguntas generales con tu conocimiento y preguntas sobre Mayab Arbitraje BTC usando siempre las tools disponibles para datos actuales. Mayab es una demo estrictamente simulada: nunca afirmes trading real. La auditoría es de solo lectura. Solo cambia parámetros si el usuario lo pide explícitamente y la tool está disponible; explica brevemente cualquier cambio. No inventes datos que una tool pueda consultar. Responde en el idioma del usuario, de forma clara y concisa."}),
         json!({"role":"user","content":question}),
     ];
     let tools = tools_nvidia(can_mutate);
@@ -365,7 +365,7 @@ fn tools_nvidia(can_mutate: bool) -> Vec<Value> {
         ),
         tool(
             "get_config",
-            "Obtiene parametros actuales",
+            "Obtiene parámetros actuales",
             json!({"type":"object","properties":{}}),
         ),
         tool(
@@ -380,7 +380,7 @@ fn tools_nvidia(can_mutate: bool) -> Vec<Value> {
         ),
     ];
     if can_mutate {
-        tools.push(tool("update_parameters", "Cambia parametros simples del simulador", json!({"type":"object","properties":{"maxOperacionBtc":{"type":"number"},"minDiferencialNetoBps":{"type":"number"},"deslizamientoBps":{"type":"number"},"minUtilidadUsd":{"type":"number"},"enfriamientoMs":{"type":"integer"}},"additionalProperties":false})));
+        tools.push(tool("update_parameters", "Cambia parámetros simples del simulador", json!({"type":"object","properties":{"maxOperacionBtc":{"type":"number"},"minDiferencialNetoBps":{"type":"number"},"deslizamientoBps":{"type":"number"},"minUtilidadUsd":{"type":"number"},"enfriamientoMs":{"type":"integer"}},"additionalProperties":false})));
     }
     tools
 }
@@ -453,7 +453,7 @@ async fn chat_fallback(
                         return Ok((model.clone(), body["choices"][0]["message"].clone()))
                     }
                     Ok(_) => errors.push(format!("{model}: respuesta vacia")),
-                    Err(error) => errors.push(format!("{model}: JSON invalido ({error})")),
+                    Err(error) => errors.push(format!("{model}: JSON inválido ({error})")),
                 }
             }
             Ok(response) => errors.push(format!("{model}: HTTP {}", response.status())),

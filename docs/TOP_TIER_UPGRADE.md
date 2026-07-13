@@ -18,7 +18,7 @@ Plan original para llevar Mayab BTC Arbitrage de una entrega de challenge a un p
 - [ ] Classify all routes as `public_read`, `public_demo_sandbox`, `admin_mutation`, `internal_observability`
 - [ ] Centralize classification in HTTP architecture
 - [ ] No mutable endpoints mixed with public routes
-- [ ] **Files**: `src/server.rs` → `src/http/routes/*`, `src/http/auth.rs`
+- [ ] **Files**: `src/server.rs` → `src/http/routes/*`
 
 ### P0.2 ADMIN_TOKEN Required in Production
 - [ ] `MAYAB_ENV=production` requires non-empty `ADMIN_TOKEN` with minimum length
@@ -28,14 +28,14 @@ Plan original para llevar Mayab BTC Arbitrage de una entrega de challenge a un p
 - [ ] Constant-time comparison where available
 - [ ] Accept `Authorization: Bearer <token>` (primary) and `X-Admin-Token` (compat)
 - [ ] **Tests**: prod without token fails, prod with token starts, 401 without token, 401 wrong token, token works, token not in logs
-- [ ] **Files**: `src/config.rs`, `src/http/auth.rs`, `src/main.rs`
+- [ ] **Files**: `src/config.rs`, `src/server.rs`, `src/main.rs`
 
 ### P0.3 Protect All Mutations
 - [ ] All state-mutating endpoints require auth
 - [ ] Move admin mutations to `/admin/*` namespace
 - [ ] Keep temporary aliases for old routes (deprecated, same auth)
 - [ ] Public demo endpoints: isolated session, no global state, no secrets, rate limited, tested for isolation
-- [ ] **Files**: `src/http/routes/admin.rs`, `src/http/routes/demo.rs`, `src/http/auth.rs`
+- [ ] **Files**: `src/http/routes/admin.rs`, `src/http/routes/demo.rs`, `src/server.rs`
 
 ### P0.4 Origin Validation (ALLOWED_ORIGINS)
 - [ ] Exact allowlist comparison (scheme, host, port normalized)
@@ -54,7 +54,7 @@ Plan original para llevar Mayab BTC Arbitrage de una entrega de challenge a un p
 - [ ] Max body size, read timeout, handler timeout, concurrency limit for expensive ops
 - [ ] No auto-trust `X-Forwarded-For` without explicit proxy config
 - [ ] **Tests**: 429 response, recovery after window, public vs admin separation, oversized body rejected
-- [ ] **Files**: `src/http/rate_limit.rs`, `src/http/router.rs`
+- [ ] **Files**: `src/server.rs`, `src/http/router.rs`
 
 ### P0.6 Security Headers & Observability
 - [ ] Content-Security-Policy

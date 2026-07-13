@@ -68,6 +68,21 @@ fn normalize_origin(origin: &str) -> String {
     }
 }
 
+fn is_same_origin(origin: Option<&str>, host: Option<&str>) -> bool {
+    let (Some(origin), Some(host)) = (origin, host) else {
+        return false;
+    };
+    let normalized = normalize_origin(origin);
+    normalized
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| {
+            uri.authority()
+                .map(|authority| authority.as_str().to_string())
+        })
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host.trim()))
+}
+
 pub async fn origin_middleware(
     State(policy): State<OriginPolicy>,
     request: Request,
@@ -82,8 +97,16 @@ pub async fn origin_middleware(
         return next.run(request).await;
     }
     let origin = request.headers().get(ORIGIN).and_then(|v| v.to_str().ok());
+    let host = request
+        .headers()
+        .get(http::header::HOST)
+        .and_then(|v| v.to_str().ok());
 
-    if !policy.is_allowed(origin) {
+    // Un dashboard servido por este mismo binario debe poder abrir su
+    // WebSocket y sus recorridos POST aun cuando producción no configure una
+    // allowlist externa. La comparación de authority es exacta; un subdominio
+    // o puerto distinto sigue requiriendo ALLOWED_ORIGINS.
+    if !policy.is_allowed(origin) && !is_same_origin(origin, host) {
         warn!(origin = ?origin, allowed = ?policy.allowed_origins(), "origin rejected");
         return (
             StatusCode::FORBIDDEN,
@@ -104,15 +127,17 @@ pub async fn origin_middleware(
 pub fn cors_layer(policy: &OriginPolicy) -> tower_http::cors::CorsLayer {
     use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, ExposeHeaders};
 
-    let origins: Vec<_> = policy.allowed_origins();
+    let policy = policy.clone();
 
     tower_http::cors::CorsLayer::new()
-        .allow_origin(AllowOrigin::list(
-            origins
-                .iter()
-                .filter_map(|o| o.parse().ok())
-                .collect::<Vec<_>>(),
-        ))
+        .allow_origin(AllowOrigin::predicate(move |origin, request| {
+            let origin = origin.to_str().ok();
+            let host = request
+                .headers
+                .get(http::header::HOST)
+                .and_then(|value| value.to_str().ok());
+            policy.is_allowed(origin) || is_same_origin(origin, host)
+        }))
         .allow_methods(AllowMethods::list([
             http::Method::GET,
             http::Method::POST,
@@ -177,6 +202,26 @@ mod tests {
         assert!(!policy.is_allowed(Some("https://evil.com")));
     }
 
+    #[test]
+    fn test_same_origin_requires_exact_host_and_port() {
+        assert!(is_same_origin(
+            Some("https://mayab.example"),
+            Some("mayab.example")
+        ));
+        assert!(is_same_origin(
+            Some("http://127.0.0.1:18082"),
+            Some("127.0.0.1:18082")
+        ));
+        assert!(!is_same_origin(
+            Some("https://evil.mayab.example"),
+            Some("mayab.example")
+        ));
+        assert!(!is_same_origin(
+            Some("http://127.0.0.1:9999"),
+            Some("127.0.0.1:18082")
+        ));
+    }
+
     #[tokio::test]
     async fn browser_mutation_accepts_exact_origin_and_rejects_another() {
         let policy = OriginPolicy {
@@ -208,5 +253,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn browser_mutation_accepts_same_origin_without_external_allowlist() {
+        let policy = OriginPolicy {
+            allowed: Arc::new(HashSet::new()),
+        };
+        let app = Router::new()
+            .route("/mutate", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(middleware::from_fn_with_state(policy, origin_middleware));
+
+        let response = app
+            .oneshot(
+                Request::post("/mutate")
+                    .header(ORIGIN, "https://mayab.example")
+                    .header(http::header::HOST, "mayab.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }

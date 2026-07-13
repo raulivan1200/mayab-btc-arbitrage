@@ -31,7 +31,12 @@ B y queda registrada como `preregisteredChampion` antes de ejecutar C. El mejor
 resultado retrospectivo de C se publica aparte como `exPostHoldoutWinner`,
 incluso cuando derrota al campeón. El campo `championWonHoldout` hace visible
 esa derrota y evita reetiquetar al ganador ex post como si hubiera sido elegido
-de antemano.
+de antemano. Si dos o más estrategias quedan dentro de la tolerancia numérica
+del mejor PnL —incluido el caso común de cero fills y PnL cero para todas— el
+reporte publica `holdoutWinner: "empate_inconcluso"`,
+`holdoutConclusion: "empate_inconcluso"` y `championWonHoldout: false`. El
+orden del arreglo nunca decide una victoria. Esta semántica corresponde a
+`schemaVersion: 2` del artefacto de evaluación.
 
 ## Identidad de un shard
 
@@ -81,7 +86,10 @@ capturadas, política de entrega sin drops de aplicación y una tasa de gaps de
 secuencia menor o igual a 1%. Además, `venueEventCoverage` exige que cada venue
 configurado aporte al menos un evento útil por cada cinco segundos capturados;
 unos snapshots iniciales de un feed que después muere no satisfacen evidencia
-multi-venue. La diferencia entre `observedSpanMs` y
+multi-venue. `cleanSourceTree` y `singleSourceCommit` exigen que todos los
+shards publicables provengan del mismo SHA confirmado y de un worktree limpio;
+una captura exploratoria desde cambios locales sigue siendo verificable, pero
+no supera el gate de publicación. La diferencia entre `observedSpanMs` y
 `totalCaptureDurationMs` evita presentar huecos entre sesiones como horas de
 observación efectiva.
 
@@ -121,6 +129,13 @@ terminar se generan `corpus.json` y `corpus.sqlite`. SQLite indexa corpus,
 shards y exchanges; los eventos permanecen en JSONL y fuera del hot path. La
 decisión se documenta en
 [`ADRs/0004-corpus-storage.md`](ADRs/0004-corpus-storage.md).
+
+`artifacts/tapes/` está excluido de Git para evitar agregar por accidente
+gigabytes de JSONL al historial. Al publicar una corrida se distribuyen los
+shards como artefacto externo o release junto con `corpus.json`,
+`corpus-scan.json`, `corpus.sqlite` y `evidence-seal.json`; el enlace público y
+los SHA-256 se documentan en el repo, no se sustituye el corpus por una cifra en
+el README.
 
 Para contar el embudo sobre millones de eventos sin materializar el corpus en
 RAM, `scan-corpus` hace una pasada secuencial y conserva solo los 50 mejores
