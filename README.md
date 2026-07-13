@@ -80,12 +80,13 @@ Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.a
 
 ## Quick start (3–5 minutos)
 
-Requiere una toolchain estable de Rust.
+Requiere `rustup`; el repositorio fija Rust `1.96.0` en
+`rust-toolchain.toml` y lo selecciona automáticamente.
 
 ```bash
 git clone https://github.com/raulivan1200/mayab-rust-coding-challenge-mx.git
 cd mayab-rust-coding-challenge-mx
-cargo run
+cargo run -p mayab-cli --bin mayab-arbitrage
 ```
 
 En otra terminal:
@@ -871,6 +872,8 @@ se valida con Ed25519 antes de leerla. El bot publica `/estado`, `/resumen`,
 últimos usan NVIDIA NIM como agente con herramientas locales sobre la
 simulación.
 
+[Agregar Mayab Arbitraje BTC a Discord](https://discord.com/oauth2/authorize?client_id=1525827513073274891)
+
 ![Bot de Mayab respondiendo comandos en Discord](screenshots/discord-bot.png)
 
 Segunda evidencia: estado inicial, preparación reproducible de la demo rentable
@@ -889,7 +892,7 @@ Configura el entorno sin versionar el token:
 ```bash
 cp .env.example .env
 # Edita .env y reemplaza <YOUR_BOT_TOKEN> con el token de la página Bot.
-cargo run
+cargo run -p mayab-cli --bin mayab-arbitrage
 ```
 
 En **General Information → Interactions Endpoint URL**, usa la URL pública:
