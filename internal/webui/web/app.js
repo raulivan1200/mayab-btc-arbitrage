@@ -2234,17 +2234,18 @@ async function cargarAblacionGA() {
     const res = await fetch("/api/ga/ablacion");
     if (!res.ok) throw new Error("Error en API");
     const data = await res.json();
+    setText("gaSensitivityMethod", data.metodologia || "Train y holdout separados; configuración congelada antes de evaluar.");
     
     tbody.innerHTML = "";
     
     const filas = data.resultados || [];
     
     filas.forEach((d, index) => {
-      const isCampeon = index === filas.length - 1;
+      const isActiva = index === filas.length - 1;
       const label = d.modelo || "Configuración";
       
       const tr = document.createElement("tr");
-      if (isCampeon) {
+      if (isActiva) {
         tr.style.backgroundColor = "var(--card-bg)";
       }
       
@@ -2255,7 +2256,7 @@ async function cargarAblacionGA() {
       const fPct = (n) => `<td class="num">${formato(n * 100, 1)}%</td>`;
       
       tr.innerHTML = `
-        <td>${isCampeon ? `<strong style="color:var(--morado)">${label}</strong>` : label}</td>
+        <td>${isActiva ? `<strong style="color:var(--morado)">${label}</strong>` : label}</td>
         ${fNum(formato(d.profitFactor, 2))}
         ${fPct(d.winRate)}
         ${fMoneda(-d.worstRunLoss, "")}

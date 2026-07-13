@@ -310,14 +310,15 @@ test("la prueba de un clic no pinta éxito con una respuesta casi lista", async 
 
   await page.goto("/");
   const status = page.locator("#juryMinuteStatus");
-  for (const _ of respuestasInvalidas) {
+  for (const caso of respuestasInvalidas) {
     await page.locator("#btnJuryProofHero").click();
+    await expect(page.locator("#btnJuryProofHero")).toBeEnabled();
     await expect(status).toContainText("BLOCKED");
+    await expect(status).toContainText(`${caso.passed}/${caso.total} checks`);
     await expect(status).not.toHaveClass(/\bok\b/);
     await expect(page.locator("#demoEstado")).toHaveText("evidencia bloqueada");
     await expect(page.locator("#demoFeedback")).toContainText("incompleta");
     await expect(page.locator("#demoFeedback")).toHaveAttribute("style", /var\(--rojo\)/);
-    await expect(page.locator("#btnJuryProofHero")).toBeEnabled();
   }
   expect(llamada).toBe(respuestasInvalidas.length);
 });

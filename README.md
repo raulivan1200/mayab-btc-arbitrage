@@ -161,6 +161,7 @@ La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENC
 - **Z-Score con ventana histórica** de 100 muestras: scoring estadístico de cada ruta.
 - **Rebalanceo inteligente de carteras simuladas** cada 100 ciclos con movimientos internos USD/BTC, umbrales configurables y bitácora de movimientos.
 - **Backtest reproducible multisemilla** vía API/UI: compara baseline contra el campeón GA publicado en 24 semillas comunes y muestra mediana y P05–P95.
+- **Sensibilidad GA sin fuga de holdout**: `/api/ga/sensibilidad` entrena siete configuraciones sobre semillas 101..124, congela cada estrategia y luego la evalúa sobre 24 semillas distintas 401..424.
 - **Bootstrap temporal pareado**: 10,000 remuestras moving-block con seed explícita, sensibilidad de bloques de 30/60/120 s, IC percentiles de PnL neto, fill rate, drawdown y sus diferencias; incluye P(ΔPnL > 0), permutación por bloques, tamaño del efecto, corrección Holm y conclusión inconclusa si el IC de ΔPnL cruza cero.
 - **Preflight operacional** (`/api/preflight`) con salud de feeds, configuración, riesgo, GA, archivos del dashboard y endpoints de auditoría.
 - **Jury Mode** (`/api/jurado`) como superficie única de evaluación: matriz de evidencia PASS/WARN/FAIL, cobertura contra la rúbrica, checks, timestamps y enlaces verificables. Mayab no se asigna una calificación a sí mismo.
